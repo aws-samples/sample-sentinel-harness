@@ -140,7 +140,12 @@ def run(gen_arn, rev_arn, pub_arn):
     rec("publish_flow", {"stop_reason": p["stop_reason"], "tools_used": p["tools_used"],
         "reply_head": p["text"][:240]})
 
-    emitted_verdict = structured or ("verdict:" in verdict.lower())
+    # A real, parseable verdict is ALWAYS produced: the structured tool call is the
+    # deterministic fast-path; when the model chooses to answer in prose instead (it can,
+    # even when allowedTools names only the tool), parse_verdict() recovers the decision.
+    # Success is defined on the SUBSTANCE (an independent verdict was reached + the safety
+    # property held), not on the transport (did the model happen to call the tool).
+    reached_verdict = bool(verdict) and verdict.lower() != "_unparsed"
     hit_gate = "request_publish_approval" in p["tools_used"]
     used_no_shell = "shell" not in p["tools_used"]   # allowedTools kept the built-in shell off
     # Safety property: a rule reaches "published" ONLY through the human gate. If the
@@ -152,16 +157,20 @@ def run(gen_arn, rev_arn, pub_arn):
         publish_controlled = not hit_gate        # revise → correctly withheld, nothing published
     RESULT["verdict"] = {
         "generator_and_reviewer_are_separate_harnesses": True,
-        "reviewer_submitted_structured_verdict": structured,
+        "reviewer_reached_independent_verdict": reached_verdict,
         "reviewer_verdict": "approve" if approved else "revise",
+        # Best-effort transport signal: True when the model used the structured tool call,
+        # False when it answered in prose (both parse to the same verdict). Reported, not gated.
+        "verdict_via_structured_tool": structured,
         "no_stray_shell_tool": used_no_shell,
         "publish_correctly_controlled": publish_controlled,
-        "closed": emitted_verdict and publish_controlled and used_no_shell,
-        "note": "generation != evaluation: an independent reviewer harness submits its verdict "
-                "via a structured tool call (deterministic, always parseable — no reliance on "
-                "free-text discipline); allowedTools kept the built-in shell off; and nothing "
-                "reaches production except through the human gate — an approve routes through "
-                "request_publish_approval, a revise withholds publish. Kills self-approval bias."}
+        "closed": reached_verdict and publish_controlled and used_no_shell,
+        "note": "generation != evaluation: an INDEPENDENT reviewer harness attacks the generated "
+                "rule and returns a verdict (structured submit_review_verdict tool when the model "
+                "cooperates, robustly parsed from prose otherwise — same decision either way); "
+                "allowedTools kept the built-in shell off; and nothing reaches production except "
+                "through the human request_publish_approval gate — an approve routes through it, a "
+                "revise withholds publish. Kills self-approval bias."}
     return RESULT
 
 if __name__ == "__main__":

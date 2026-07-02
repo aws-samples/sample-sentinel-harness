@@ -12,7 +12,7 @@
   <img alt="license" src="https://img.shields.io/badge/license-MIT--0-30d158"/>
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-2997ff"/>
   <img alt="bedrock-agentcore" src="https://img.shields.io/badge/Amazon%20Bedrock-AgentCore%20Harness-ff9900"/>
-  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-134%20passing-1D8102"/>
+  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-137%20passing-1D8102"/>
   <img alt="status" src="https://img.shields.io/badge/live--validated-CVE%20%C2%B7%20multi--harness%20%C2%B7%20HITL%20%C2%B7%20Play%20Mode-8b5cf6"/>
 </p>
 
@@ -44,7 +44,7 @@ Honest build status per capability — mirrors the self-audit.
 |---|---|:--:|---|
 | **L1 Strategy** | CVE triage (deterministic calc + HITL pause + memory) | 🟢 **live-validated** | `scenarios/scenario_cve_triage.py` |
 | **L1 Strategy** | Multi-harness parallel + supervisor (≈2.6× speedup) | 🟢 **live-validated** | `scenarios/scenario_multi_harness.py` |
-| **L1 Strategy** | Detection-gen + independent adversarial reviewer + publish gate | 🟢 **live-validated** (verdict-first review; flawed rule correctly withheld) | `scenarios/scenario_detection_gen.py` |
+| **L1 Strategy** | Detection-gen + independent adversarial reviewer + publish gate | 🟢 **live-validated** (independent reviewer reached `revise`; flawed rule withheld; no stray shell) | `scenarios/scenario_detection_gen.py` |
 | **L1 Strategy** | **Human-in-the-loop full pause→approve→resume** | 🟢 **live-validated** | `scenarios/scenario_hitl_resume.py`, `core.invoke_with_tool_result` |
 | **L1 Strategy** | Alert triage (TP/FP, correlate, contain) | 🟠 **designed** (loadable harness.yaml) | `harnesses/alert-triage/` |
 | **L1 Strategy** | Research supervisor → specialist delegation via registry/A2A | 🟠 **designed** (loadable harness.yaml) | `harnesses/research-supervisor/` |
@@ -58,7 +58,7 @@ Honest build status per capability — mirrors the self-audit.
 | **Tools** | `sigma_yara_lint` (real, deterministic, LLM-free) | 🟢 **functional** | `tools/sigma_yara_lint/` |
 | **Tools** | `nvd_lookup` / `epss_kev` / `attack_lookup` / `web_search` | 🟡 **reference stubs** (offline-safe) | `tools/` |
 
-🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **134 offline tests pass.**
+🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **137 offline tests pass.**
 
 ## 🚀 Quickstart
 
@@ -67,7 +67,7 @@ git clone https://github.com/neosun100/sentinel-harness && cd sentinel-harness
 pip install -e .          # Python 3.10+ ; installs the `sentinel` CLI
 
 # offline tests need no AWS
-SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/test pytest tests/ -q   # 134 passing
+SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/test pytest tests/ -q   # 137 passing
 
 # configure for live runs (12-factor — nothing hardcoded)
 export AWS_PROFILE=<your-non-prod-profile>          # never production
@@ -90,7 +90,7 @@ Each scenario is runnable end-to-end and writes a result JSON to [`evidence/`](e
 |---|---|---|
 | **CVE triage** | one harness = deterministic compute (code interpreter) + a mandatory HITL pause + managed memory, zero orchestration code | HITL gate fired; CVSS math ran in-sandbox |
 | **Multi-harness parallel** | "a harness is single-agent" → parallelism via multiple harnesses + a supervisor | **≈2.6×** wall-clock speedup vs serial |
-| **Detection-gen** | generation ≠ evaluation: an **independent** reviewer harness + publish control | reviewer emits a real verdict; a flawed rule is **withheld from publish**; no stray `shell` (allowedTools-scoped) |
+| **Detection-gen** | generation ≠ evaluation: an **independent** reviewer harness + publish control | reviewer reached `revise` with concrete FP/logic objections; flawed rule **withheld from publish**; no stray `shell` (allowedTools-scoped) |
 | **HITL resume** | full pause→approve→resume via the two-message `toolUse`+`toolResult` contract | `closed_hitl_loop: true` — analyst approval flows back, agent finishes |
 | **Play Mode (L2)** | adversary emulation, every offensive step human-gated + checkpoint/resume | every step gated; reject halts; simulated no-ops (nothing real touched) |
 

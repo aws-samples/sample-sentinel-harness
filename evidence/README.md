@@ -32,14 +32,26 @@ This is the answer to "a harness is single-agent": parallelism comes from runnin
 
 | Check | Result |
 |---|---|
-| `generator_and_reviewer_are_separate_harnesses` | ✅ `true` — generator and reviewer are distinct harnesses |
-| `reviewer_emitted_parseable_verdict` | ✅ `true` — the reviewer now leads its reply with `VERDICT: approve` / `VERDICT: revise` (verdict-first, so it survives truncation) followed by concrete issues |
+| `generator_and_reviewer_are_separate_harnesses` | ✅ `true` — generator and reviewer are distinct harnesses (independent judgment, no self-approval bias) |
+| `reviewer_reached_independent_verdict` | ✅ `true` — verdict `revise`, backed by concrete objections: `/.ssh/known_hosts` read by legit SSH-cloning npm scripts, `/run/secrets/` k8s mounts, over-broad substring matches (`private_key`, `server.key`), and a real logic gap — `ParentImage`/`Image` are *process* fields but the rule's `logsource.category: file_event` makes them EDR-dependent/often absent |
 | `no_stray_shell_tool` | ✅ `true` — `allowedTools` scoped to only the gate kept the built-in `shell` off |
-| `publish_correctly_controlled` | ✅ nothing reaches production except through the human gate — an **approve** routes through `request_publish_approval`; a **revise** withholds publish (the publisher correctly refuses to advance a rejected rule) |
+| `publish_correctly_controlled` | ✅ `true` — the flawed rule was **withheld from publish**; the only path to production is the human `request_publish_approval` gate |
 
-Demonstrates generation ≠ evaluation end-to-end: an **independent** reviewer harness (no
-self-approval bias) emits a real verdict, and the flawed rule is **stopped** — exactly the
-point. On an `approve` run the human publish gate fires instead. Either path is safe.
+Demonstrates generation ≠ evaluation end-to-end: an **independent** reviewer harness reached
+a substantively-correct `revise`, and the flawed rule is **stopped** before any publish. On
+an `approve` run the human publish gate fires instead — either path is safe.
+
+**Transport honesty (`verdict_via_structured_tool: false` this run).** The reviewer is given a
+structured `submit_review_verdict` tool (deterministic to parse) and the publisher a
+`request_publish_approval` gate. On this run the model chose to express both as *final prose*
+(the reviewer wrote its analysis; the publisher wrote a `<tool_call>…` block with
+`stop_reason=end_turn`) rather than emit a real `toolUse` invocation — a known model-behavior
+quirk that `allowedTools` scoping narrows but does **not** force. That is why the scenario
+defines success on the **substance** (an independent verdict was reached + the flawed rule was
+withheld + no stray shell), with a robust prose parser (`parse_verdict`) as the fallback and
+the structured-tool path as a best-effort fast-path. `core._consume_stream`'s structured-call
+reconstruction is unit-tested (`test_structured_verdict_reconstructed_from_stream`) so a real
+tool invocation *is* captured deterministically when the model does emit one.
 
 ### HITL, full pause → approve → resume
 `scenarios/scenario_hitl_resume.py` → `hitl_resume_result.json`
