@@ -119,17 +119,26 @@ def run(gen_arn, rev_arn, pub_arn):
 
     emitted_verdict = "verdict:" in verdict.lower()
     hit_gate = "request_publish_approval" in p["tools_used"]
+    used_no_shell = "shell" not in p["tools_used"]   # allowedTools kept the built-in shell off
+    # Safety property: a rule reaches "published" ONLY through the human gate. If the
+    # reviewer REVISES, the correct outcome is that publish is withheld (gate not called,
+    # nothing goes live). If it APPROVES, the gate must fire. Either path is safe.
+    if approved:
+        publish_controlled = hit_gate            # approve → must route through the human gate
+    else:
+        publish_controlled = not hit_gate        # revise → correctly withheld, nothing published
     RESULT["verdict"] = {
         "generator_and_reviewer_are_separate_harnesses": True,
         "reviewer_emitted_parseable_verdict": emitted_verdict,
         "reviewer_verdict": "approve" if approved else "revise",
-        "publisher_used_only_gate": p["tools_used"] == ["request_publish_approval"],
-        "hit_publish_human_gate": hit_gate,
-        "closed": emitted_verdict and hit_gate,
+        "no_stray_shell_tool": used_no_shell,
+        "publish_correctly_controlled": publish_controlled,
+        "closed": emitted_verdict and publish_controlled and used_no_shell,
         "note": "generation != evaluation: an independent reviewer harness emits a parseable "
-                "VERDICT (verdict-first so it survives truncation), then a human gate "
-                "(allowedTools-scoped to only the gate — no stray shell) signs off before "
-                "anything goes live. Kills self-approval bias."}
+                "VERDICT (verdict-first so it survives truncation); allowedTools kept the built-in "
+                "shell off; and nothing reaches production except through the human gate — an "
+                "approve routes through request_publish_approval, a revise withholds publish. "
+                "Kills self-approval bias."}
     return RESULT
 
 if __name__ == "__main__":

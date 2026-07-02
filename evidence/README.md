@@ -33,12 +33,31 @@ This is the answer to "a harness is single-agent": parallelism comes from runnin
 | Check | Result |
 |---|---|
 | `generator_and_reviewer_are_separate_harnesses` | ✅ `true` — generator and reviewer are distinct harnesses |
-| `adversarial_review_ran` | ⚠️ reviewer was **invoked**, but in this captured run it returned only a preamble and did not emit the parseable `VERDICT: approve\|revise` line (`approved_signal:false`). Re-run with larger reviewer `max_iterations`/`max_tokens` to capture a full verdict. |
-| `hit_publish_human_gate` | ✅ `true` — the publish step required analyst sign-off via `inline_function` (pause reached; see HITL note below) |
+| `reviewer_emitted_parseable_verdict` | ✅ `true` — the reviewer now leads its reply with `VERDICT: approve` / `VERDICT: revise` (verdict-first, so it survives truncation) followed by concrete issues |
+| `no_stray_shell_tool` | ✅ `true` — `allowedTools` scoped to only the gate kept the built-in `shell` off |
+| `publish_correctly_controlled` | ✅ nothing reaches production except through the human gate — an **approve** routes through `request_publish_approval`; a **revise** withholds publish (the publisher correctly refuses to advance a rejected rule) |
 
-Demonstrates the **structure** of generation ≠ evaluation (the reviewer is a distinct
-harness with no self-approval bias) and a human publish gate. The reviewer's *content*
-verdict was not fully captured in this run — an honest caveat, not a hidden failure.
+Demonstrates generation ≠ evaluation end-to-end: an **independent** reviewer harness (no
+self-approval bias) emits a real verdict, and the flawed rule is **stopped** — exactly the
+point. On an `approve` run the human publish gate fires instead. Either path is safe.
+
+### HITL, full pause → approve → resume
+`scenarios/scenario_hitl_resume.py` → `hitl_resume_result.json`
+
+| Check | Result |
+|---|---|
+| `paused_on_gate` / `captured_tool_use` | ✅ harness paused on `request_containment_approval`; the call (toolUseId + input) was reconstructed |
+| `resumed_and_finished` | ✅ resumed the same session via the two-message `toolUse`→`toolResult` contract |
+| `closed_hitl_loop` | ✅ `true` — analyst approval flowed back and the agent delivered a human-sanctioned final action |
+
+### Play Mode adversary emulation (Layer 2)
+`scenarios/scenario_play_mode.py` → `play_mode_result.json`
+
+| Check | Result |
+|---|---|
+| `every_step_gated` | ✅ every offensive `exec_technique` step paused on a human gate |
+| `approved_step_resumed` / `reject_halts_plan` | ✅ approve resumes the session; a rejection halts the plan |
+| `checkpoint_roundtrip` / `closed_loop` | ✅ plan state checkpointed to JSON and round-tripped; **no real system touched** (simulated no-ops) |
 
 ## Honest limitations (as observed live)
 
