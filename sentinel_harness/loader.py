@@ -2,8 +2,8 @@
 sentinel-harness · YAML → harness config loader
 ================================================
 Turns a shipped ``harnesses/<name>/harness.yaml`` into a kwargs dict ready for
-``core.create_harness(**kwargs)`` — the roadmap item that makes the declarative
-harness files *live* rather than illustrative.
+``core.create_harness(**kwargs)`` — this is what makes the declarative harness
+files *live* (via ``sentinel create <harness.yaml>``) rather than illustrative.
 
 Design
 ------

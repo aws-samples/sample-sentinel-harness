@@ -123,7 +123,7 @@ def _build_memory(spec) -> dict | None:
     if not isinstance(spec, dict):
         raise ValueError("memory must be a mapping")
     if spec.get("arn"):  # bring-your-own memory
-        return sh.byo_memory(spec["arn"], spec.get("messages_count"))
+        return sh.byo_memory(spec["arn"], spec.get("retrieval_config"))
     return sh.managed_memory(spec.get("strategies"), spec.get("expiry_days"))
 
 

@@ -216,10 +216,11 @@ def tool_gateway(name, gateway_arn, outbound_auth=None) -> dict:
 
 def tool_inline(name, description, input_schema) -> dict:
     """Human-in-the-loop / client-side gate. When the agent calls this tool the harness
-    PAUSES the loop (stop_reason=tool_use) and returns the call to your code. The
-    scenarios demonstrate this pause half of the contract. To fully close the loop,
-    send the analyst decision back via the two-message resume (assistant toolUse +
-    user toolResult with the matching toolUseId) on the next invoke — a roadmap item.
+    PAUSES the loop (stop_reason=tool_use) and returns the call to your code as
+    ``result["tool_use"]``. The loop is fully closed: feed the analyst decision back with
+    :func:`invoke_with_tool_result`, which resumes the same session via the two-message
+    turn (assistant toolUse + user toolResult with the matching toolUseId). See
+    ``scenarios/scenario_hitl_resume.py`` for a live pause→approve→resume round trip.
     Use for high-stakes security decisions (publish / contain / offensive step)."""
     return {"type": "inline_function", "name": name,
             "config": {"inlineFunction": {"description": description, "inputSchema": input_schema}}}
