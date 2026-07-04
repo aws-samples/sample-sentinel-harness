@@ -22,6 +22,23 @@ All notable changes to this project are documented here. The format is based on
   PreToolUse sandbox hook (command allowlist + path containment).
 - **Unit coverage for previously untested code**: the functional `sigma_yara_lint` linter,
   the four reference tool handlers, and the `sentinel` CLI.
+- **Gateway wiring** (`sentinel_harness/gateway.py`): create/wait/target/teardown helpers over
+  the AgentCore Gateway control plane, plus `lambda_mcp_target` / `openapi_http_target` /
+  `mcp_server_target` builders. **Live-validated** create→READY→delete on the GA API. An
+  end-to-end named-supervisor scenario (`scenarios/scenario_named_supervisor.py`) loads the
+  `research-supervisor` from its `harness.yaml` and wires it to a Gateway.
+- **Agent Factory** (`sentinel_harness/factory.py`): config-driven fleet provisioning from one
+  manifest — dry-run validation with zero AWS calls, idempotency (one shared `list_harnesses`),
+  and a cross-env `sentinel:env` tag-guard that refuses to touch a same-named harness owned by
+  another environment.
+- **BAS long-running tier** (`longrunning/bas-runner/`): async-generator entrypoint skeleton with
+  HITL-gated offensive steps (reusing Play Mode), local/S3 checkpoint, and a self-restart hook —
+  the tier for jobs that exceed a harness `timeoutSeconds`.
+- **A2A specialist skeleton** (`specialists/cve-intel/`): import-safe Strands + A2AServer +
+  LiteLLM Runtime container with a tested agent-card (deps/Docker intentionally not built here).
+- **CDK stack** (`iac-cdk/`): synth-validated Gateway/Registry/Memory + DynamoDB tool-registry
+  stacks, fully env-parameterized. Gateway/Memory CFN types are registered; the Registry CFN
+  type is not yet GA, so that stack is synth-only for now.
 
 ### Fixed
 - CLI BYO-memory config silently dropped its retrieval tuning: `_build_memory` read the
@@ -29,6 +46,11 @@ All notable changes to this project are documented here. The format is based on
   is now `retrieval_config` (`retrievalConfig`). Now reads the correct key (regression-tested).
 - Corrected two stale "roadmap item" comments (`core.tool_inline`, `loader.py` header) that
   described already-shipped, live-validated features.
+- Gateway name validation matched the wrong rule. A real `CreateGateway` `ValidationException`
+  revealed the live constraint is `([0-9a-zA-Z][-]?){1,48}` — alphanumerics with optional single
+  hyphens, **no underscores**, max 48 chars — not the harness name rule. Tightened
+  `gateway._NAME_RE` and corrected the tests that had asserted the wrong (looser) shape. (Caught
+  only because we ran a real smoke test, not just the offline mocks.)
 
 ### Changed
 - Detection-gen scenario defines success on **substance** (an independent verdict was
@@ -37,16 +59,18 @@ All notable changes to this project are documented here. The format is based on
   known model-behavior quirk that `allowedTools` narrows but cannot force. Documented honestly.
 
 ### Tests
-- Offline suite grown **42 → 213** (still zero AWS calls): `test_sigma_yara_lint.py` (24),
-  `test_tool_handlers.py` (29), `test_cli.py` (23), `test_sandbox_hooks.py` (33),
-  `test_registry.py` (20), `test_loader.py` (10), `test_simulation.py` (11), and
-  `test_detection_gen_scenario.py` (21) alongside the original config-validation set.
+- Offline suite grown **42 → 295** (still zero AWS calls; +1 skipped when optional deps absent):
+  adds `test_gateway.py` (41), `test_bas_runner.py` (17), `test_factory.py` (14),
+  `test_specialist.py` (11) on top of `test_sigma_yara_lint.py` (24), `test_tool_handlers.py` (29),
+  `test_cli.py` (23), `test_sandbox_hooks.py` (33), `test_registry.py` (20), `test_loader.py` (10),
+  `test_simulation.py` (11), `test_detection_gen_scenario.py` (21), and the original
+  config-validation set.
 
 ### Planned
-- Wire the reference `tools/` handlers to a live AgentCore Gateway; add an end-to-end
-  named-supervisor scenario that creates from `harnesses/*.yaml`.
-- Layer 3 remainder: Agent Factory provisioning, LiteLLM specialists, a Gateway CDK stack.
-- BAS / attack-path on a genuinely long-running Runtime (beyond the Play Mode driver).
+- Deploy the CDK stack end-to-end once the `AWS::BedrockAgentCore::Registry` CFN type is GA
+  (Gateway/Memory types are already registered; synth passes today).
+- Build & push the A2A specialist container and run a live 3-specialist parallel scan through
+  the supervisor → registry → A2A path.
 
 ## [0.1.0] — 2026-07-03
 

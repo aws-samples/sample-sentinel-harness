@@ -6,6 +6,14 @@ from .core import (  # noqa: F401
     MODEL_SONNET, MODEL_HAIKU, MODEL_OPUS, REGION,
 )
 from .loader import load_harness_config, create_from_config  # noqa: F401
+from .gateway import (  # noqa: F401
+    create_gateway, wait_gateway_ready, create_gateway_target,
+    lambda_mcp_target, openapi_http_target, mcp_server_target,
+    delete_gateway, list_gateways, cleanup_gateways,
+)
+from .factory import (  # noqa: F401
+    provision_fleet, teardown_fleet, FactoryError, ENV_TAG_KEY,
+)
 from .registry import (  # noqa: F401
     ToolRegistry, ToolEntry, GovernanceReport, RegistryError, load_registry,
 )

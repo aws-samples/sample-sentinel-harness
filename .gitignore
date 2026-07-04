@@ -12,3 +12,8 @@ dist/
 build/
 .ruff_cache/
 uv.lock
+
+# CDK (iac-cdk/) build artifacts and deps
+node_modules/
+cdk.out/
+*.js.map

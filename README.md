@@ -12,7 +12,7 @@
   <img alt="license" src="https://img.shields.io/badge/license-MIT--0-30d158"/>
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-2997ff"/>
   <img alt="bedrock-agentcore" src="https://img.shields.io/badge/Amazon%20Bedrock-AgentCore%20Harness-ff9900"/>
-  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-213%20passing-1D8102"/>
+  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-295%20passing-1D8102"/>
   <img alt="status" src="https://img.shields.io/badge/live--validated-CVE%20%C2%B7%20multi--harness%20%C2%B7%20HITL%20%C2%B7%20Play%20Mode-8b5cf6"/>
 </p>
 
@@ -28,7 +28,7 @@ A security team usually already has models, internal MCP servers, and a pile of 
 
 Everything here is **generic SecOps content** built and tested against a **non-production** account — no proprietary data, no real vulnerable assets, no real malware. It reverse-engineers a common three-layer SecOps agent architecture into AgentCore primitives, borrowing verified patterns from four AWS samples.
 
-> **What's real vs. aspirational — read this first.** Layer 1 ships **three live-validated scenarios** and a library-grade core. Layers 2–3 are **design specs with reference stubs**, not runnable end-to-end yet. The [status matrix](#-status-validated--designed--missing) is precise about what's proven, designed, or missing. This honesty is deliberate — see the self-audit in [`docs/FIDELITY-REPORT.md`](docs/FIDELITY-REPORT.md).
+> **What's real vs. aspirational — read this first.** Layer 1 ships **live-validated scenarios** (including a real Gateway create→READY→delete on the GA API) and a library-grade core. Layer 2 Play Mode is live-validated; the BAS long-running tier is a built+tested skeleton. Layer 3 ships a built+tested tool/skill registry, sandbox hooks, and Agent Factory, plus a synth-validated CDK stack and an import-safe A2A specialist skeleton (container deps/Docker not built). The [status matrix](#-status-validated--designed--missing) is precise about what's proven, built, designed, or skeleton — 🟡 rows are honest about their limits. This honesty is deliberate — see the self-audit in [`docs/FIDELITY-REPORT.md`](docs/FIDELITY-REPORT.md).
 
 ## 🏛 Architecture
 
@@ -47,18 +47,21 @@ Honest build status per capability — mirrors the self-audit.
 | **L1 Strategy** | Detection-gen + independent adversarial reviewer + publish gate | 🟢 **live-validated** (independent reviewer reached `revise`; flawed rule withheld; no stray shell) | `scenarios/scenario_detection_gen.py` |
 | **L1 Strategy** | **Human-in-the-loop full pause→approve→resume** | 🟢 **live-validated** | `scenarios/scenario_hitl_resume.py`, `core.invoke_with_tool_result` |
 | **L1 Strategy** | Alert triage (TP/FP, correlate, contain) | 🟠 **designed** (loadable harness.yaml) | `harnesses/alert-triage/` |
-| **L1 Strategy** | Research supervisor → specialist delegation via registry/A2A | 🟠 **designed** (loadable harness.yaml) | `harnesses/research-supervisor/` |
+| **L1 Strategy** | Gateway wiring + end-to-end named-supervisor scenario | 🟢 **live-validated** (real Gateway create→READY→delete on GA API; named-supervisor loads from `harness.yaml`) | `sentinel_harness/gateway.py`, `scenarios/scenario_named_supervisor.py` |
+| **L1 Strategy** | Research supervisor → specialist delegation via registry/A2A | 🟠 **designed** (loadable harness.yaml; A2A specialist skeleton) | `harnesses/research-supervisor/`, `specialists/cve-intel/` |
 | **L1 Strategy** | Feedback loop closure (teach → recall) | 🟠 **designed** (memory writes proven; recall async) | `docs/BLUEPRINT.md` |
 | **L2 Simulation** | Adversary emulation, Play Mode (every step human-gated) + checkpoint/resume | 🟢 **live-validated** | `scenarios/scenario_play_mode.py`, `sentinel_harness/simulation.py` |
-| **L2 Simulation** | BAS / attack-path (long-running Runtime tier) | 🟠 **designed** | `docs/BLUEPRINT.md` |
+| **L2 Simulation** | BAS / attack-path (long-running Runtime tier) | 🟡 **built** (async-gen entrypoint + HITL-gated steps + checkpoint/restart skeleton, tested) | `longrunning/bas-runner/` |
 | **L3 Foundation** | Tool/skill registry (dual-gate governance) + PreToolUse sandbox hook | 🟢 **built + tested** | `sentinel_harness/registry.py`, `sentinel_harness/sandbox_hooks.py` |
-| **L3 Foundation** | Agent Factory · LiteLLM specialists · Gateway stack · CDK | ⚪ **design only** | `docs/BLUEPRINT.md` |
+| **L3 Foundation** | Agent Factory (fleet provision, dry-run, cross-env tag-guard) | 🟢 **built + tested** | `sentinel_harness/factory.py` |
+| **L3 Foundation** | LiteLLM A2A specialist Runtime (container skeleton) | 🟡 **skeleton** (import-safe, agent-card tested; deps/Docker not built) | `specialists/cve-intel/` |
+| **L3 Foundation** | Gateway/Registry/Memory CDK stack | 🟡 **synth-validated** (Gateway/Memory CFN types registered; Registry type not yet in CFN) | `iac-cdk/` |
 | **Config** | YAML→harness loader (`sentinel create <harness.yaml>`) | 🟢 **built + tested** | `sentinel_harness/loader.py` |
 | **Core** | Harness lifecycle library + builders (create/invoke/HITL-resume/tools/memory) | 🟢 **library-grade, tested** | `sentinel_harness/core.py` |
 | **Tools** | `sigma_yara_lint` (real, deterministic, LLM-free) | 🟢 **functional + unit-tested** | `tools/sigma_yara_lint/`, `tests/test_sigma_yara_lint.py` |
 | **Tools** | `nvd_lookup` / `epss_kev` / `attack_lookup` / `web_search` | 🟡 **reference stubs** (offline-safe, contract-tested) | `tools/`, `tests/test_tool_handlers.py` |
 
-🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **213 offline tests pass.**
+🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **295 offline tests pass** (+1 skipped when optional deps absent).
 
 ## 🚀 Quickstart
 
@@ -67,7 +70,7 @@ git clone https://github.com/neosun100/sentinel-harness && cd sentinel-harness
 pip install -e .          # Python 3.10+ ; installs the `sentinel` CLI
 
 # offline tests need no AWS
-SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/test pytest tests/ -q   # 213 passing
+SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/test pytest tests/ -q   # 295 passing
 
 # configure for live runs (12-factor — nothing hardcoded)
 export AWS_PROFILE=<your-non-prod-profile>          # never production
@@ -117,22 +120,28 @@ Borrowed patterns (see [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md)): supervisor→s
 - [x] **Close the HITL loop** — `invoke_with_tool_result()` two-message resume + a full live pause→approve→resume trace. — `scenario_hitl_resume.py`
 - [x] **Layer 2** — Play Mode adversary emulation: every offensive step human-gated + checkpoint/resume, live-validated. — `simulation.py` / `scenario_play_mode.py`
 - [x] **Layer 3** — tool/skill registry (dual-gate governance) + a PreToolUse sandbox hook, with tests. — `registry.py` / `sandbox_hooks.py`
-- [ ] Wire the reference `tools/` handlers to a live Gateway; add an end-to-end named-supervisor scenario that creates from `harnesses/*.yaml`.
-- [ ] Layer 3 remainder: Agent Factory provisioning, LiteLLM specialists, a Gateway CDK stack.
-- [ ] BAS / attack-path on a genuinely long-running Runtime (beyond the Play Mode driver).
+- [x] **Gateway wiring + named-supervisor scenario** — `gateway.py` (create/target/teardown helpers, live-validated create→READY→delete on the GA API) + `scenario_named_supervisor.py` (loads `research-supervisor` from `harness.yaml`, wires it to a Gateway). — `gateway.py`
+- [x] **Agent Factory** — config-driven fleet provisioning with dry-run validation, idempotency, and a cross-env tag-guard. — `factory.py`
+- [x] **Gateway/Registry/Memory CDK stack** — synth-validated TypeScript CDK (Gateway/Memory CFN types are registered; the Registry CFN type is not yet GA, so that stack is synth-only for now). — `iac-cdk/`
+- [x] **LiteLLM A2A specialist** — import-safe Strands+A2A+LiteLLM Runtime container skeleton with a tested agent-card (deps/Docker not built here). — `specialists/cve-intel/`
+- [x] **BAS long-running tier** — async-gen entrypoint, HITL-gated offensive steps (reusing Play Mode), checkpoint + self-restart skeleton, tested. — `longrunning/bas-runner/`
+- [ ] Deploy the CDK stack end-to-end once the Registry CFN type is GA; build & push the specialist container; run a live 3-specialist parallel A2A scan.
 
 ## 📁 Repo layout
 
 ```
 sentinel-harness/
-├── sentinel_harness/     core library (core.py) + CLI          🟢 tested
+├── sentinel_harness/     core · loader · gateway · factory · registry · CLI  🟢 tested
 ├── scenarios/            runnable, live-validated scenarios     🟢
 ├── evidence/             captured live-run results (scrubbed)   🟢
 ├── tools/                MCP tool templates (sigma-lint real)   🟡 reference
 ├── skills/               Agent Skills (SKILL.md)                🟡 reference
-├── harnesses/            illustrative declarative configs       🟠 not loader-consumed yet
+├── harnesses/            declarative configs (loader-consumed)  🟢
+├── specialists/          A2A LiteLLM specialist container       🟡 skeleton
+├── longrunning/          BAS long-running Runtime tier          🟡 skeleton
+├── iac-cdk/              Gateway/Registry/Memory CDK stack      🟡 synth-validated
 ├── docs/                 ARCHITECTURE · BLUEPRINT · SETUP · HARNESSES · FIDELITY-REPORT
-├── tests/                offline unit + config tests (213)      🟢
+├── tests/                offline unit + config tests (295)      🟢
 └── .github/workflows/    CI incl. a customer-name / secret gate
 ```
 
