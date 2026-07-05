@@ -12,7 +12,7 @@
   <img alt="license" src="https://img.shields.io/badge/license-MIT--0-30d158"/>
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-2997ff"/>
   <img alt="bedrock-agentcore" src="https://img.shields.io/badge/Amazon%20Bedrock-AgentCore%20Harness-ff9900"/>
-  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-295%20passing-1D8102"/>
+  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-591%20passing-1D8102"/>
   <img alt="status" src="https://img.shields.io/badge/live--validated-CVE%20%C2%B7%20multi--harness%20%C2%B7%20HITL%20%C2%B7%20Play%20Mode-8b5cf6"/>
 </p>
 
@@ -28,7 +28,7 @@ A security team usually already has models, internal MCP servers, and a pile of 
 
 Everything here is **generic SecOps content** built and tested against a **non-production** account — no proprietary data, no real vulnerable assets, no real malware. It reverse-engineers a common three-layer SecOps agent architecture into AgentCore primitives, borrowing verified patterns from four AWS samples.
 
-> **What's real vs. aspirational — read this first.** Layer 1 ships **live-validated scenarios** (including a real Gateway create→READY→delete on the GA API) and a library-grade core. Layer 2 Play Mode is live-validated; the BAS long-running tier is a built+tested skeleton. Layer 3 ships a built+tested tool/skill registry, sandbox hooks, and Agent Factory, plus a synth-validated CDK stack and an import-safe A2A specialist skeleton (container deps/Docker not built). The [status matrix](#-status-validated--designed--missing) is precise about what's proven, built, designed, or skeleton — 🟡 rows are honest about their limits. This honesty is deliberate — see the self-audit in [`docs/FIDELITY-REPORT.md`](docs/FIDELITY-REPORT.md).
+> **What's real vs. aspirational — read this first.** Layer 1 ships **live-validated scenarios** (including a real Gateway create→READY→delete on the GA API) and a library-grade core. Layer 2 Play Mode is live-validated, and BAS detection-replay is real (a deterministic Sigma matcher finds detection blind spots offline); sample detonation stays an import-safe SIMULATED skeleton (no real malware/VM/network). Layer 3 ships a built+tested tool/skill registry, sandbox hooks, and Agent Factory, plus a synth-validated CDK stack and an import-safe A2A specialist skeleton (container deps/Docker not built). The [status matrix](#-status-validated--designed--missing) is precise about what's proven, built, designed, or skeleton — 🟡 rows are honest about their limits. This honesty is deliberate — see the self-audit in [`docs/FIDELITY-REPORT.md`](docs/FIDELITY-REPORT.md).
 
 ## 🏛 Architecture
 
@@ -51,7 +51,9 @@ Honest build status per capability — mirrors the self-audit.
 | **L1 Strategy** | Research supervisor → specialist delegation via registry/A2A | 🟠 **designed** (loadable harness.yaml; A2A specialist skeleton) | `harnesses/research-supervisor/`, `specialists/cve-intel/` |
 | **L1 Strategy** | Feedback loop closure (teach → recall) | 🟠 **designed** (memory writes proven; recall async) | `docs/BLUEPRINT.md` |
 | **L2 Simulation** | Adversary emulation, Play Mode (every step human-gated) + checkpoint/resume | 🟢 **live-validated** | `scenarios/scenario_play_mode.py`, `sentinel_harness/simulation.py` |
-| **L2 Simulation** | BAS / attack-path (long-running Runtime tier) | 🟡 **built** (async-gen entrypoint + HITL-gated steps + checkpoint/restart skeleton, tested) | `longrunning/bas-runner/` |
+| **L2 Simulation** | BAS detection-replay + blind-spot report (real Sigma matcher) | 🟢 **live-validated** (offline, deterministic; 4 techniques × 2 rules → 2 blind spots, coverage 0.5) | `tools/sigma_match/`, `longrunning/bas-runner/bas_cases.py`, `scenarios/scenario_bas_replay.py` |
+| **L2 Simulation** | Attack-path reasoning + threat-hunt planning | 🟢 **built + tested** (real `build_attack_paths` / `build_hunt_plan`; A2A serving = skeleton) | `specialists/attack-mapper/`, `specialists/threat-hunt/`, `tools/asset_lookup/` |
+| **L2 Simulation** | Sample detonation (one-shot microVM, long-running tier) | 🟡 **skeleton** (import-safe, SIMULATED no-ops; destroy-after-use + sandbox-gated + HITL) | `longrunning/detonation/`, `longrunning/bas-runner/` |
 | **L3 Foundation** | Tool/skill registry (dual-gate governance) + PreToolUse sandbox hook | 🟢 **built + tested** | `sentinel_harness/registry.py`, `sentinel_harness/sandbox_hooks.py` |
 | **L3 Foundation** | Agent Factory (fleet provision, dry-run, cross-env tag-guard) | 🟢 **built + tested** | `sentinel_harness/factory.py` |
 | **L3 Foundation** | LiteLLM A2A specialist Runtime (container skeleton) | 🟡 **skeleton** (import-safe, agent-card tested; deps/Docker not built) | `specialists/cve-intel/` |
@@ -61,7 +63,7 @@ Honest build status per capability — mirrors the self-audit.
 | **Tools** | `sigma_yara_lint` (real, deterministic, LLM-free) | 🟢 **functional + unit-tested** | `tools/sigma_yara_lint/`, `tests/test_sigma_yara_lint.py` |
 | **Tools** | `nvd_lookup` / `epss_kev` / `attack_lookup` / `web_search` | 🟡 **reference stubs** (offline-safe, contract-tested) | `tools/`, `tests/test_tool_handlers.py` |
 
-🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **295 offline tests pass** (+1 skipped when optional deps absent).
+🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **591 offline tests pass** (+3 skipped when optional A2A deps absent).
 
 ## 🚀 Quickstart
 
@@ -70,7 +72,7 @@ git clone https://github.com/neosun100/sentinel-harness && cd sentinel-harness
 pip install -e .          # Python 3.10+ ; installs the `sentinel` CLI
 
 # offline tests need no AWS
-SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/test pytest tests/ -q   # 295 passing
+SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/test pytest tests/ -q   # 591 passing
 
 # configure for live runs (12-factor — nothing hardcoded)
 export AWS_PROFILE=<your-non-prod-profile>          # never production
@@ -141,7 +143,7 @@ sentinel-harness/
 ├── longrunning/          BAS long-running Runtime tier          🟡 skeleton
 ├── iac-cdk/              Gateway/Registry/Memory CDK stack      🟡 synth-validated
 ├── docs/                 ARCHITECTURE · BLUEPRINT · SETUP · HARNESSES · FIDELITY-REPORT
-├── tests/                offline unit + config tests (295)      🟢
+├── tests/                offline unit + config tests (591)      🟢
 └── .github/workflows/    CI incl. a customer-name / secret gate
 ```
 

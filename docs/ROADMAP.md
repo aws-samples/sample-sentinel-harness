@@ -278,7 +278,18 @@ the managed Evaluator + Harness endpoint APIs (§2).
 `request_promotion_approval` → approve creates the endpoint; reject once → assert no promotion.
 **Traps:** eval is async → poll; hard cap the retry loop + require a reasoning change each round.
 
-### M3 — L2 attack validation & simulation (skeletons → real)
+### M3 — L2 attack validation & simulation — ✅ DELIVERED (real core validated; detonation/specialists = honest skeletons)
+**Status:** shipped. The provable core is REAL, deterministic, offline (no LLM, no invoke quota):
+`tools/sigma_match` (a Sigma detection *matcher*, not a linter), `longrunning/bas-runner/bas_cases.py`
+(BAS case-gen + detection-replay), and `scenarios/scenario_bas_replay.py` — live-validated offline:
+4 ATT&CK techniques × 2 Sigma rules → detected {T1059.001, T1046}, **blind spots {T1003.001,
+T1547.001}**, coverage 0.5 (`evidence/bas_replay_result.json`). `specialists/attack-mapper` ships a
+real `build_attack_paths()` graph reasoner + `tools/asset_lookup`; `specialists/threat-hunt` a real
+`build_hunt_plan()`. **Honest skeletons (import-safe, SIMULATED — no real malware/VM/exploit/network):**
+`longrunning/detonation/` models the one-shot-microVM-per-session lifecycle (destroy-after-use enforced,
+every action gated through `sandbox_hooks`, samples referenced only by an `s3://` dropbox URI, offensive
+steps HITL-gated); the A2A serving wrappers use guarded imports. 112 new tests; suite → 591 (+3 skips).
+
 **Goal:** BAS case auto-generation + detection-replay, sample detonation in a one-shot microVM, attack-path reasoning.
 ```
 longrunning/bas-runner/runner_loop.py       # [implement] BAS case gen + replay vs. current detection rules
