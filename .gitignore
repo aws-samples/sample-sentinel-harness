@@ -26,3 +26,7 @@ docs/*-FIT-AND-ROADMAP.md
 docs/DEVELOPMENT-GUIDE.md
 # belt-and-suspenders: any doc a reviewer marks private
 docs/*.private.md
+
+# coverage artifacts
+.coverage
+htmlcov/
