@@ -63,7 +63,14 @@ export class IdentityStack extends Stack {
   constructor(scope: Construct, id: string, props: IdentityStackProps) {
     super(scope, id, props);
 
-    const domainPrefix = props.cognitoDomainPrefix ?? props.appName;
+    // Cognito hosted-UI domain prefixes are GLOBALLY scarce (unique per region, and a
+    // bare "sentinel" collides trivially / lingers after a delete in another region).
+    // Default to an account+region-derived suffix so a plain deploy never collides;
+    // an explicit `sentinel:cognitoDomainPrefix` context value still wins for a vanity domain.
+    const acct = Stack.of(this).account;
+    const region = Stack.of(this).region;
+    const autoSuffix = `${props.appName}-${acct.slice(-6)}-${region}`.toLowerCase().slice(0, 63);
+    const domainPrefix = props.cognitoDomainPrefix ?? autoSuffix;
     const resourceServerId = props.resourceServerId ?? "sentinel";
 
     // --- User Pool: the OIDC issuer. LITE tier, self-signup OFF (admin-created

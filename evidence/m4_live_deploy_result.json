@@ -7,7 +7,8 @@
       "masked": [
         "{aws-access-key-id}",
         "{generic-api-token}"
-      ]
+      ],
+      "region_note": "redeployed in us-east-1, GUARDRAIL_INTERVENED re-verified"
     },
     "identity": {
       "deployed": true,
@@ -15,7 +16,8 @@
       "oidc_discovery_reachable": true,
       "signing_alg": "RS256",
       "token_endpoint_present": true,
-      "authorizer_contract_ok": true
+      "authorizer_contract_ok": true,
+      "oidc_region": "us-east-1"
     },
     "observability": {
       "deployed": true,
@@ -26,6 +28,7 @@
     },
     "vpc_endpoints_cost_gated_off": true,
     "closed": true,
-    "note": "M4 L3 foundation, LIVE on real AWS (non-prod dev acct, us-west-2). Three free-tier stacks deployed via the M4 CDK and left running for future validation: (1) Guardrail really intervened + masked a fake AWS key + sk- token in a tool response; (2) Cognito identity (user pool + resource server + domain + human/M2M clients) with a reachable OIDC discovery endpoint (RS256, token_endpoint) that gateway.cognito_jwt_authorizer() wires into a CUSTOM_JWT gateway; (3) CloudWatch dashboard + TokensPerScenario metric + monthly Budgets alarm. The private-VPC PrivateLink interface endpoints (the only standing ~$30/mo cost) stay cost-gated OFF by default (-c sentinel:deployVpcEndpoints=true opts in). IDs/account scrubbed."
+    "note": "M4 L3 foundation, LIVE + RETAINED for demos on the real non-prod dev account, REGION-UNIFIED to us-east-1 (earlier us-west-2 deploy — caused by a stray AWS_REGION env — was torn down; Cognito domain prefix root-fixed to an account+region-unique value to avoid the global collision). Three free-tier stacks retained: Guardrail (re-verified GUARDRAIL_INTERVENED masking a fake AWS key + sk- token), Cognito identity (us-east-1 OIDC discovery reachable, RS256, authorizer contract verified), CloudWatch dashboard + TokensPerScenario + monthly Budgets alarm. VPC PrivateLink endpoints (the only standing ~$30/mo cost) stay cost-gated OFF. All CDK stacks use the NATIVE AWS::BedrockAgentCore::{Gateway,Registry,Memory,Harness} CFN types — genuinely AgentCore-based, not generic-resource stand-ins. IDs/account scrubbed.",
+    "region": "us-east-1 (unified; us-west-2 torn down)"
   }
 }
