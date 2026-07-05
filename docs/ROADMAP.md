@@ -311,7 +311,7 @@ path-traversal / disallowed command blocked by `sandbox_hooks`.
 
 ### M4 — L3 foundation: identity / gateway / egress / observability — ✅ DELIVERED (3 stacks live-deployed + validated)
 **Status:** shipped as dual-track IaC (CDK main + Terraform mirror), authored on verified recon
-facts and partially deployed live on the dev account (us-west-2), free-tier stacks left running:
+facts and partially deployed live on the dev account (us-east-1), free-tier stacks left running:
 - **Guardrail** (`iac-cdk/lib/guardrail-stack.ts`): deployed; `ApplyGuardrail` really intervened
   (`GUARDRAIL_INTERVENED`) masking a fake AWS key → `{aws-access-key-id}` and an sk- token →
   `{generic-api-token}` (`evidence/m4_guardrail_result.json`).
@@ -322,7 +322,10 @@ facts and partially deployed live on the dev account (us-west-2), free-tier stac
   metric + log group + monthly Budgets alarm deployed.
 - **Network** (`iac-cdk/lib/network-stack.ts`): private VPC, isolated subnet, no NAT/IGW; the
   PrivateLink interface endpoints (the only standing ~$30/mo cost) are cost-gated OFF by default
-  (`-c sentinel:deployVpcEndpoints=true` opts in). Synth-validated both ways.
+  (`-c sentinel:deployVpcEndpoints=true` opts in). **Egress control LIVE-validated**: deployed with
+  endpoints, `scenario_egress_control.py` proved no IGW / no 0.0.0.0/0 route / PrivateLink-only
+  (`evidence/egress_control_result.json`, closed:true); endpoints then torn down to drop the cost.
+  All 4 M4 acceptance items are now live-proven (egress, Guardrail masking, observability, JWT).
 - **Harness** (`iac-cdk/lib/harness-stack.ts`): the NATIVE `AWS::BedrockAgentCore::Harness` CFN type
   (recon corrected the old "needs a custom resource" assumption). Terraform mirror in `iac-terraform/`
   (`terraform validate` clean). Evidence: `evidence/m4_live_deploy_result.json`.

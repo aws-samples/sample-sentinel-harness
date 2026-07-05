@@ -61,7 +61,7 @@ Honest build status per capability — mirrors the self-audit.
 | **L3 Foundation** | Guardrail — masks secrets/PII in tool responses | 🟢 **live-deployed + validated** (`GUARDRAIL_INTERVENED` masked a fake AWS key + token) | `iac-cdk/lib/guardrail-stack.ts`, `evidence/m4_guardrail_result.json` |
 | **L3 Foundation** | Cognito identity for Gateway CUSTOM_JWT (human + M2M) | 🟢 **live-deployed** (OIDC discovery reachable, RS256; authorizer contract verified) | `iac-cdk/lib/identity-stack.ts`, `gateway.cognito_jwt_authorizer` |
 | **L3 Foundation** | Observability — CW dashboard + TokensPerScenario + Budgets | 🟢 **live-deployed** | `iac-cdk/lib/observability-stack.ts` |
-| **L3 Foundation** | Private VPC + default-deny egress (PrivateLink, no NAT) | 🟢 **built + synth-validated** (endpoints cost-gated off) | `iac-cdk/lib/network-stack.ts` |
+| **L3 Foundation** | Private VPC + default-deny egress (PrivateLink, no NAT) | 🟢 **live-validated** (deployed; topology proves no IGW / no 0.0.0.0/0 / PrivateLink-only — `evidence/egress_control_result.json`; endpoints then torn down, cost-gated off) | `iac-cdk/lib/network-stack.ts`, `scenarios/scenario_egress_control.py` |
 | **L3 Foundation** | Deployable Terraform mirror (identity/vpc/guardrail/obs/harness) | 🟢 **built** (`terraform validate` clean) | `iac-terraform/` |
 | **Config** | YAML→harness loader (`sentinel create <harness.yaml>`) | 🟢 **built + tested** | `sentinel_harness/loader.py` |
 | **Core** | Harness lifecycle library + builders (create/invoke/HITL-resume/tools/memory) | 🟢 **library-grade, tested** | `sentinel_harness/core.py` |
