@@ -85,3 +85,32 @@ tools:
       deterministic offline surface (hosts, exposed services/ports, known-vuln
       flags, trust edges) for M3 attack-path reasoning. Offline stub by default;
       a *_LIVE env opts into a real asset backend later (M5).
+
+  - name: siem_query
+    owner: detection-engineering
+    status: approved
+    description: >-
+      Read-only SIEM alert/event query over the fictional mockdata world: filter
+      events by host / ATT&CK technique / severity / alert_id / since (ISO time) /
+      wildcard, returning normalized deterministic events. Offline mock world by
+      default; SIEM_QUERY_LIVE opts into a real SIEM backend later. No writes.
+
+  - name: enrich_ioc
+    owner: threat-intel
+    status: approved
+    description: >-
+      IOC reputation/enrichment: given one indicator or a batch (ip/domain/sha256
+      auto-detected by shape), returns a deterministic offline verdict
+      (type/known/threat_category/confidence/first_seen/related_hosts/verdict) from
+      the mockdata world for alert triage. Offline stub by default; ENRICH_IOC_LIVE
+      opts into a real reputation backend later.
+
+  - name: create_ticket
+    owner: platform
+    status: approved
+    description: >-
+      Ticketing WRITE tool: given a triaged finding (title+severity+description,
+      optional assignee/related_alert_id/related_host), returns a deterministic
+      offline ticket record (content-hash SEC-<hex> id, status=open, echoed fields).
+      Side-effect-free mock by default; CREATE_TICKET_LIVE opts into a real
+      HITL-gated tracker POST later. Terminal step of the M5 alert-triage flow.
