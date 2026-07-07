@@ -124,3 +124,14 @@ tools:
       (CDN domain / process / CIDR) and emits a Sigma suppression clause that quiets
       the noisy rule WITHOUT suppressing a provided true positive (over-fit guarded).
       Makes no network calls; the terminal strategy-improvement step of the loop.
+
+  - name: ops_query
+    owner: platform
+    status: approved
+    description: >-
+      Read-only multi-account operations query over the fictional mockdata account
+      inventory: given an account id / wildcard / finding_type, returns a normalized
+      deterministic view (accounts + resource footprint, or estate-wide open findings)
+      for the M5 ops-automation supervisor to triage and open tickets on. Offline mock
+      by default; OPS_QUERY_LIVE opts into AWS Organizations / a support API / per-account
+      CloudWatch later (raises rather than silently falling back). No writes.
