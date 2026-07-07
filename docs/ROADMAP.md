@@ -362,15 +362,20 @@ trace + `TokensPerScenario` + a Budgets alarm ④ JWT/API-key auth paths work.
 **Reuse:** M1/M4 Gateway + registry dual-gate + JWT/API-key. **Trap:** data planes vary →
 use `tool_remote_mcp(url, headers=${arn:...})` (token via the vault, agent never sees plaintext).
 
-### M6 — Feedback-loop automation (strategy self-iteration closed)
+### M6 — Feedback-loop automation (strategy self-iteration closed) — ✅ DELIVERED (offline, deterministic)
 **Goal:** disposition results auto-feed strategy.
-- [ ] After alert-triage writes TP/FP to Memory `facts/{tenant}`, **auto-trigger** detection-eng
-      whitelist optimization / rule regeneration (event-driven, not just a memory write).
-- [ ] Wire the M1/M2 self-iteration engine into the strategy domain: detection hit-rate drop →
-      auto-generate an improvement task → run the self-improving loop.
+- [x] After alert-triage writes TP/FP to Memory `facts/{tenant}` (a `managed_memory_writer` seam),
+      **auto-trigger** whitelist optimization / rule regeneration — event-driven via
+      `feedback.detect_triggers` (fp_rate + min_events thresholds), not just a memory write. — `sentinel_harness/feedback.py`
+- [x] Wire the M1/M2 self-iteration engine into the strategy domain: an only-FP / hit-rate-drop rule
+      auto-generates a `rule_regeneration` task handed toward `harnesses/self-improving` (via `harness_ops`). — `scenarios/scenario_feedback_loop.py`
 
-**Acceptance (`evidence/feedback_loop_*.json`):** inject a batch of FPs → assert an automatic
-whitelist-optimization + rule-regeneration task is produced and published through an HITL gate.
+**Acceptance (`evidence/feedback_loop_result.json`, closed:true):** a batch of FP dispositions for the
+noisy rule "Known-Good CDN Traffic" auto-triggered a `whitelist_optimization` task; `tools/whitelist_optimizer`
+synthesized a Sigma filter (`dst_domain|endswith: assets.example.com`) that suppresses 3/3 FPs while
+**provably preserving the Log4Shell true positive**; the healthy TP rule produced no task; and nothing
+publishes except through the `request_publish_approval` HITL gate. Deterministic + offline; the rule-regen
+hand-off reuses the live-capable M1/M2 engine (driven offline here, labeled a wiring point).
 
 ### M7 — Delivery form (one-command deploy + no lock-in)
 - [ ] `deploy.sh`: one command `cdk bootstrap+deploy` all stacks → seed registry → create harnesses (CFN CR) → smoke-test.
