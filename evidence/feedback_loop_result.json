@@ -1,0 +1,128 @@
+{
+  "scenario": "feedback_loop",
+  "steps": [
+    {
+      "step": "inject_dispositions",
+      "ok": true,
+      "data": {
+        "batch_size": 7,
+        "fp_events": 4,
+        "tp_events": 3,
+        "rules": [
+          "Known-Good CDN Traffic",
+          "Log4Shell JNDI Exploit Attempt",
+          "Scheduled Backup Job"
+        ]
+      }
+    },
+    {
+      "step": "detect_triggers",
+      "ok": true,
+      "data": {
+        "task_types": [
+          "rule_regeneration",
+          "whitelist_optimization"
+        ],
+        "healthy_rule_no_task": true,
+        "ledger_rules": {
+          "Known-Good CDN Traffic": {
+            "tp_count": 0,
+            "fp_count": 3,
+            "total": 3,
+            "fp_rate": 1.0
+          },
+          "Scheduled Backup Job": {
+            "tp_count": 0,
+            "fp_count": 1,
+            "total": 1,
+            "fp_rate": 1.0
+          },
+          "Log4Shell JNDI Exploit Attempt": {
+            "tp_count": 3,
+            "fp_count": 0,
+            "total": 3,
+            "fp_rate": 0.0
+          }
+        }
+      }
+    },
+    {
+      "step": "whitelist_optimizer",
+      "ok": true,
+      "data": {
+        "rule_name": "Known-Good CDN Traffic",
+        "whitelist": {
+          "fields": {
+            "dst_domain": "assets.example.com"
+          },
+          "match_type": "domain_suffix"
+        },
+        "suppressed_count": 3,
+        "sigma_filter_yaml": "detection:\n    filter_known_good:\n        dst_domain|endswith: 'assets.example.com'\n    condition: selection and not filter_known_good\n",
+        "preserves_tp": true
+      }
+    },
+    {
+      "step": "rule_regeneration_handoff",
+      "ok": true,
+      "data": {
+        "simulated": true,
+        "wiring_point": true,
+        "target_harness": "harnesses/self-improving/harness.yaml",
+        "driver_tool": "tools/harness_ops",
+        "harness_ops_action": "update",
+        "regenerates_rule": "Known-Good CDN Traffic",
+        "reference_scenario": "scenarios/scenario_self_improve_loop.py",
+        "note": "WIRING POINT (simulated offline): the rule_regeneration task is handed to the EXISTING M1/M2 self-improving loop — harnesses/self-improving drives tools/harness_ops to regenerate the collapsed rule, then re-scores and (on HITL approval) promotes. That loop is live-capable; this POC drives the hand-off in-process/offline and never claims a live regenerate."
+      }
+    },
+    {
+      "step": "hitl_publish_gate",
+      "ok": true,
+      "data": {
+        "approve": {
+          "gate": "request_publish_approval",
+          "approval_required": true,
+          "approved": true,
+          "published": true,
+          "artifact_kind": "whitelist_clause",
+          "note": "Analyst sign-off is REQUIRED before any whitelist/regenerated rule goes live; an approve publishes, a reject withholds. Mirrors the detection-gen publish gate: production is reachable ONLY through this gate."
+        },
+        "reject": {
+          "gate": "request_publish_approval",
+          "approval_required": true,
+          "approved": false,
+          "published": false,
+          "artifact_kind": "whitelist_clause",
+          "note": "Analyst sign-off is REQUIRED before any whitelist/regenerated rule goes live; an approve publishes, a reject withholds. Mirrors the detection-gen publish gate: production is reachable ONLY through this gate."
+        }
+      }
+    },
+    {
+      "step": "verdict",
+      "ok": true,
+      "data": {
+        "fp_batch_size": 4,
+        "auto_triggered_whitelist_task": true,
+        "healthy_rule_no_task": true,
+        "whitelist_suppresses_fps": true,
+        "whitelist_preserves_tp": true,
+        "rule_regen_task_generated": true,
+        "hitl_gate_required": true,
+        "closed": true,
+        "note": "MOCK POC (offline, deterministic): a batch of false-positive dispositions for the noisy rule 'Known-Good CDN Traffic' AUTO-triggered a whitelist_optimization task (event-driven via feedback.detect_triggers, not manual); the whitelist_optimizer synthesized a Sigma filter clause that suppresses the FP cohort while provably preserving the Log4Shell true positive; the only-FP rule ALSO produced a rule_regeneration task handed (simulated) to the M1/M2 self-improving loop; the healthy TP rule 'Log4Shell JNDI Exploit Attempt' produced no task; and nothing publishes except through the request_publish_approval HITL gate (approve publishes, reject withholds). Rule regeneration reuses the live-capable M1/M2 engine, driven offline here and labeled a wiring point — never claimed live."
+      }
+    }
+  ],
+  "verdict": {
+    "fp_batch_size": 4,
+    "auto_triggered_whitelist_task": true,
+    "healthy_rule_no_task": true,
+    "whitelist_suppresses_fps": true,
+    "whitelist_preserves_tp": true,
+    "rule_regen_task_generated": true,
+    "hitl_gate_required": true,
+    "closed": true,
+    "note": "MOCK POC (offline, deterministic): a batch of false-positive dispositions for the noisy rule 'Known-Good CDN Traffic' AUTO-triggered a whitelist_optimization task (event-driven via feedback.detect_triggers, not manual); the whitelist_optimizer synthesized a Sigma filter clause that suppresses the FP cohort while provably preserving the Log4Shell true positive; the only-FP rule ALSO produced a rule_regeneration task handed (simulated) to the M1/M2 self-improving loop; the healthy TP rule 'Log4Shell JNDI Exploit Attempt' produced no task; and nothing publishes except through the request_publish_approval HITL gate (approve publishes, reject withholds). Rule regeneration reuses the live-capable M1/M2 engine, driven offline here and labeled a wiring point — never claimed live."
+  }
+}

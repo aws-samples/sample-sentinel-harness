@@ -27,5 +27,9 @@ from .simulation import (  # noqa: F401
     exec_technique_gate, save_checkpoint, load_checkpoint,
     auto_approve, auto_reject, reject_after,
 )
+from .feedback import (  # noqa: F401
+    FeedbackEvent, TenantFactStore, record_disposition, detect_triggers,
+    managed_memory_writer, DISPOSITIONS,
+)
 
 __version__ = "0.1.0"

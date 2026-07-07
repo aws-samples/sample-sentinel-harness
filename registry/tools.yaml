@@ -114,3 +114,13 @@ tools:
       offline ticket record (content-hash SEC-<hex> id, status=open, echoed fields).
       Side-effect-free mock by default; CREATE_TICKET_LIVE opts into a real
       HITL-gated tracker POST later. Terminal step of the M5 alert-triage flow.
+
+  - name: whitelist_optimizer
+    owner: detection-engineering
+    status: approved
+    description: >-
+      Deterministic, LLM-free FP-to-whitelist synthesizer for the M6 feedback loop:
+      given a rule's false-positive events, extracts the common discriminating field
+      (CDN domain / process / CIDR) and emits a Sigma suppression clause that quiets
+      the noisy rule WITHOUT suppressing a provided true positive (over-fit guarded).
+      Makes no network calls; the terminal strategy-improvement step of the loop.
