@@ -45,3 +45,6 @@ htmlcov/
 
 # CDK context cache (caches real account/AZ lookups — never commit)
 cdk.context.json
+
+# oh-my-claudecode local session/memory (may reference gitignored private notes — never commit)
+.omc/
