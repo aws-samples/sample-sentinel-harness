@@ -15,6 +15,7 @@
  *   sentinel:jwtAllowedAudience      comma-separated JWT audiences (CUSTOM_JWT)
  *   sentinel:jwtAllowedClients       comma-separated JWT client ids (CUSTOM_JWT)
  *   sentinel:registryAutoApproval    false (default, governance) | true
+ *   sentinel:registryViaCustomResource false (default, raw CfnResource) | true (Lambda CR fallback)
  *   sentinel:memoryExpiryDays        event retention window in days (default 90)
  */
 import { App, Environment, Tags } from "aws-cdk-lib";
@@ -62,6 +63,12 @@ const autoApprovalRaw = ctx<unknown>("sentinel:registryAutoApproval", false);
 const autoApproval =
   typeof autoApprovalRaw === "boolean" ? autoApprovalRaw : String(autoApprovalRaw) === "true";
 
+// Registry provisioning path: default false = raw CfnResource (synth-only until the
+// CFN type is GA); true = Lambda-backed custom-resource fallback (deploy-ready).
+const registryViaCrRaw = ctx<unknown>("sentinel:registryViaCustomResource", false);
+const registryViaCustomResource =
+  typeof registryViaCrRaw === "boolean" ? registryViaCrRaw : String(registryViaCrRaw) === "true";
+
 const memoryExpiryRaw = ctx<unknown>("sentinel:memoryExpiryDays", 90);
 const memoryExpiryDays = Number(memoryExpiryRaw) || 90;
 
@@ -79,6 +86,7 @@ const registry = new RegistryStack(app, `${appName}-registry`, {
   env,
   appName,
   autoApproval,
+  viaCustomResource: registryViaCustomResource,
   description: "Sentinel AgentCore Registry (governance) + DynamoDB tool/skill registry.",
 });
 
