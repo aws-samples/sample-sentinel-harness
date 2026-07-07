@@ -67,11 +67,19 @@ Validation failures return `{"ok": false, "error": "validation_error", "message"
   `mockdata/accounts.py`. The same query always yields the same
   accounts/findings. It is *synthetic* (no real environment), but nothing is
   fabricated at call time.
-- The **live path is a documented, guarded stub**: with `OPS_QUERY_LIVE=1` it
-  raises an explicit `upstream_error` until a concrete backend (AWS
-  Organizations for account enumeration + a support / Trusted-Advisor-style
-  findings API + per-account CloudWatch) is wired in. It **never** silently
-  falls back to fixtures.
+- The **live path is a REAL, dependency-free HTTP client** (`urllib.request`
+  from the standard library — no third-party SDK): with `OPS_QUERY_LIVE=1` it
+  POSTs the validated selector as JSON to `OPS_QUERY_URL`, parses the JSON
+  reply, and returns it in the **same** output contract as the stub, tagged
+  `source="live"`. An optional bearer token from `OPS_QUERY_TOKEN` is sent as an
+  `Authorization` header. Any failure (missing URL, timeout, non-2xx, malformed
+  JSON, connection refused) surfaces as an explicit `upstream_error`. It
+  **never** silently falls back to fixtures, so opting into live and getting
+  nothing back is never mistaken for "no accounts". The client is exercised
+  offline in `tests/test_ops_query_live.py` against an in-process **mock**
+  `http.server` on `127.0.0.1` (ephemeral port) — proving request shape,
+  response parsing, and error handling with ZERO external network; no real ops
+  backend is contacted.
 
 ## Mock data disclaimer
 

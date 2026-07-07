@@ -257,13 +257,18 @@ def test_live_without_backend_url_surfaces_upstream_error(monkeypatch):
     assert "OPS_QUERY_URL is not set" in res["message"]
 
 
-def test_live_with_backend_url_surfaces_not_implemented(monkeypatch):
+def test_live_with_unreachable_backend_surfaces_upstream_error(monkeypatch):
+    """The live path is now a REAL urllib client. Pointing it at a refused
+    local port (ZERO external network) must surface upstream_error, never crash
+    and never fall back to the offline fixtures. Full request-shape / response-
+    parsing coverage lives in tests/test_ops_query_live.py against an in-process
+    mock http.server."""
     monkeypatch.setenv("OPS_QUERY_LIVE", "1")
-    monkeypatch.setenv("OPS_QUERY_URL", "https://orgs.example.internal/api")
+    # 127.0.0.1:1 — a privileged port nothing listens on → connection refused.
+    monkeypatch.setenv("OPS_QUERY_URL", "http://127.0.0.1:1/api")
+    monkeypatch.delenv("OPS_QUERY_TOKEN", raising=False)
     res = ops_handler.handler({"query": "*"}, None)
     assert res["ok"] is False and res["error"] == "upstream_error"
-    assert "not wired yet" in res["message"]
-    assert "orgs.example.internal" in res["message"]
 
 
 def test_fetch_live_without_url_raises_runtime_error(monkeypatch):
@@ -272,9 +277,12 @@ def test_fetch_live_without_url_raises_runtime_error(monkeypatch):
         ops_handler._fetch_live({"query": "*"})
 
 
-def test_fetch_live_raises_not_implemented_directly(monkeypatch):
-    monkeypatch.setenv("OPS_QUERY_URL", "https://support.example.internal")
-    with pytest.raises(NotImplementedError, match="not wired yet"):
+def test_fetch_live_with_unreachable_backend_raises_runtime_error(monkeypatch):
+    """Directly exercise the transport-failure branch of the real client: a
+    refused local port raises RuntimeError (ZERO external network)."""
+    monkeypatch.setenv("OPS_QUERY_URL", "http://127.0.0.1:1/api")
+    monkeypatch.delenv("OPS_QUERY_TOKEN", raising=False)
+    with pytest.raises(RuntimeError, match="request failed"):
         ops_handler._fetch_live({"query": "*"})
 
 

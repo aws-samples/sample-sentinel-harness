@@ -74,10 +74,16 @@ that lets triage pivot indicator → asset. This invariant is asserted by
 - The **offline reputation is real, deterministic data** — the same indicator
   always yields the same category/confidence/verdict/related_hosts. It is
   *synthetic* (from `mockdata.world`), but nothing is fabricated at call time.
-- The **live path is a documented, guarded stub**: with `ENRICH_IOC_LIVE=1` it
-  raises an explicit `upstream_error` until a concrete reputation backend
-  (VirusTotal / GreyNoise / internal TIP) is wired in later. It **never**
-  silently falls back to the mock data.
+- The **live path is a real, dependency-free client**: with `ENRICH_IOC_LIVE=1`
+  it POSTs the validated indicators as JSON to `ENRICH_IOC_URL` (adding a
+  `Bearer` header from `ENRICH_IOC_TOKEN` when set) using only stdlib
+  `urllib.request` — no third-party deps — and normalizes the JSON reply into
+  the SAME output contract as the stub (`source: "live"`). Any failure —
+  missing URL, connection refused, timeout, non-2xx status, or malformed JSON —
+  returns `{ok: false, error: "upstream_error", message}`. It **never** silently
+  falls back to the mock data, so opting into live and getting nothing back is
+  never mistaken for "clean". The live client is exercised against an in-process
+  **mock** HTTP server (zero external network) in `tests/test_enrich_ioc_live.py`.
 
 ## Egress & secrets control
 

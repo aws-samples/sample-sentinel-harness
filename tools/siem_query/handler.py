@@ -97,6 +97,11 @@ _SELECTOR_KEYS = ("host", "technique", "severity", "alert_id", "since", "query")
 # Guard rail: reject absurdly long selector values before they hit filtering.
 _MAX_VALUE_LEN = 256
 
+# Live-backend client tunables. Kept small and explicit so a hung or oversized
+# backend can never wedge the tool: a bounded timeout and a bounded read.
+_LIVE_TIMEOUT_S = 15
+_MAX_RESPONSE_BYTES = 2_000_000
+
 
 def _normalize_event(alert: Dict[str, Any]) -> Dict[str, Any]:
     """Project a raw mock-world alert into the stable SIEM event shape.
@@ -214,24 +219,118 @@ def _select(key: str, value: str) -> List[Dict[str, Any]]:
     return sorted(events, key=lambda e: (e["ts"], e["alert_id"]))
 
 
-def _fetch_live(key: str, value: str) -> List[Dict[str, Any]]:
-    """Query a live SIEM backend for matching events.
+def _normalize_live_event(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Project one backend record into the SAME 10-field event shape the stub
+    emits (see ``_normalize_event``).
 
-    Only reached when ``SIEM_QUERY_LIVE=1``. The concrete backend (Splunk /
-    OpenSearch / Sentinel / etc.) is future work; until then this raises an
-    explicit error rather than silently returning the mock fixtures, so opting
-    into live and getting nothing back is never mistaken for "no events".
+    WHY a separate normalizer: a live SIEM record may already use the public
+    ``summary`` field name (or the mock world's ``raw_summary``) and may omit
+    optional fields. We map both summary spellings and default every field so a
+    live event is byte-for-byte the same shape as an offline one — the caller
+    cannot tell offline from live apart from the top-level ``source`` marker.
     """
+    if not isinstance(record, dict):
+        raise RuntimeError(
+            f"SIEM backend returned a non-object event: {type(record).__name__}"
+        )
+    return {
+        "alert_id": record.get("alert_id", ""),
+        "ts": record.get("ts", ""),
+        "severity": record.get("severity", ""),
+        "rule_name": record.get("rule_name", ""),
+        "host": record.get("host", ""),
+        "src_ip": record.get("src_ip"),
+        "dst_ip": record.get("dst_ip"),
+        "technique": record.get("technique", ""),
+        "summary": record.get("summary", record.get("raw_summary", "")),
+        "false_positive": bool(record.get("false_positive", False)),
+    }
+
+
+def _fetch_live(key: str, value: str) -> List[Dict[str, Any]]:
+    """Query a live SIEM backend for matching events (stdlib HTTP, no deps).
+
+    Only reached when ``SIEM_QUERY_LIVE=1``. Builds a POST from environment
+    configuration only — the endpoint ``SIEM_QUERY_URL`` (required) and an
+    OPTIONAL bearer token ``SIEM_QUERY_TOKEN`` (env only; never hardcoded,
+    logged, or echoed). The validated ``{selector: value}`` query is sent as the
+    JSON request body; the JSON reply is parsed and normalized into the SAME
+    event shape the offline stub returns.
+
+    Failure posture (no silent fixture fallback, no swallowed exceptions):
+      - missing ``SIEM_QUERY_URL``  -> RuntimeError (become ``upstream_error``),
+        the message telling the operator to unset ``SIEM_QUERY_LIVE``.
+      - timeout / connection refused / DNS -> RuntimeError.
+      - non-2xx HTTP status                -> RuntimeError.
+      - malformed / non-JSON body          -> RuntimeError.
+    Every one surfaces to the handler as an ``upstream_error`` — opting into
+    live and getting nothing back is never mistaken for "no events".
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
     url = os.environ.get("SIEM_QUERY_URL")
     if not url:
         raise RuntimeError(
             "SIEM_QUERY_LIVE=1 but SIEM_QUERY_URL is not set; no backend to "
             "query. Unset SIEM_QUERY_LIVE to use the offline mock world."
         )
-    raise NotImplementedError(
-        "live SIEM backend not wired yet; configure a concrete client for "
-        f"{url!r} before setting SIEM_QUERY_LIVE=1"
-    )
+    # Optional bearer token: read from the environment only. Never hardcoded,
+    # never logged, never placed in an error message or the response.
+    token = os.environ.get("SIEM_QUERY_TOKEN")
+
+    body = json.dumps({key: value}).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "sentinel-harness",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        # noqa: S310 — the endpoint is operator-configured via env, not attacker
+        # controlled; timeout + bounded read keep a bad backend from wedging us.
+        with urllib.request.urlopen(req, timeout=_LIVE_TIMEOUT_S) as resp:  # noqa: S310
+            raw = resp.read(_MAX_RESPONSE_BYTES)
+    except urllib.error.HTTPError as exc:  # non-2xx status line
+        raise RuntimeError(
+            f"SIEM backend returned HTTP {exc.code} for {url!r}"
+        ) from exc
+    except urllib.error.URLError as exc:  # DNS / refused / timeout / TLS
+        raise RuntimeError(
+            f"could not reach SIEM backend at {url!r}: {exc.reason}"
+        ) from exc
+
+    # json.JSONDecodeError subclasses ValueError; the handler routes bare
+    # ValueError to validation_error, so re-raise as RuntimeError to keep a
+    # malformed backend reply classified as an upstream_error.
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RuntimeError(
+            f"SIEM backend at {url!r} returned malformed JSON: {exc}"
+        ) from exc
+
+    if isinstance(data, dict):
+        records = data.get("events", [])
+    elif isinstance(data, list):
+        records = data
+    else:
+        raise RuntimeError(
+            f"SIEM backend at {url!r} returned an unexpected JSON shape "
+            f"({type(data).__name__}); expected an object or a list"
+        )
+    if not isinstance(records, list):
+        raise RuntimeError(
+            f"SIEM backend at {url!r} returned a non-list 'events' field"
+        )
+
+    events = [_normalize_live_event(r) for r in records]
+    # Same stable ordering as the stub path so live/offline output is identical.
+    return sorted(events, key=lambda e: (e["ts"], e["alert_id"]))
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:

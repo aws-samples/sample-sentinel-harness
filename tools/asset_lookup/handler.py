@@ -23,10 +23,14 @@ What is real vs. stubbed
   the same hosts/services/edges. It is *synthetic* (no real environment), but it
   is a faithful shape for the mapper to reason over — nothing is fabricated at
   call time.
-- The LIVE path is a documented, guarded stub: it raises an explicit
-  ``upstream_error`` until a concrete backend is wired in M5. It never silently
-  falls back to fixtures, so an operator who *opts into* live and gets nothing
-  learns why.
+- The LIVE path is a REAL stdlib HTTP client (``urllib.request``, no third-party
+  dependencies). When ``ASSET_LOOKUP_LIVE=1`` it POSTs the validated query as
+  JSON to ``ASSET_LOOKUP_URL`` (with an optional ``ASSET_LOOKUP_TOKEN`` bearer)
+  and normalizes the JSON reply into the exact same surface shape as the stub,
+  tagged ``source="live"``. On any failure (missing URL, timeout, non-2xx,
+  malformed JSON, unreachable backend) it returns an explicit ``upstream_error``
+  and NEVER silently falls back to fixtures — so an operator who *opts into*
+  live and gets nothing learns why.
 
 Egress & secrets posture
 ------------------------
@@ -79,8 +83,17 @@ Output contract (on success)
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
+import urllib.error
+import urllib.request
 from typing import Any, Dict, List
+
+# Bound the live backend call so a hung/slow upstream can never wedge the tool.
+_LIVE_TIMEOUT_SECS = 10.0
+# Cap the response body we will read/parse so a hostile or misconfigured
+# backend cannot exhaust memory. 8 MiB is generous for an exposure surface.
+_LIVE_MAX_BYTES = 8 * 1024 * 1024
 
 # A query is either a single asset id token, a CIDR subnet, or the "*" wildcard.
 # Asset ids are conservative: lowercase alnum plus dash/underscore/dot.
@@ -255,13 +268,97 @@ def _select_edges(host_ids: set[str]) -> List[Dict[str, str]]:
     return [dict(e) for e in _STUB_EDGES if e["src"] in host_ids]
 
 
-def _fetch_live(query: str) -> Dict[str, Any]:
-    """Fetch the exposure surface from a live asset/CMDB backend.
+def _normalize_service(raw: Any) -> Dict[str, Any]:
+    """Normalize one backend service record into the stub's service shape.
 
-    Only reached when ``ASSET_LOOKUP_LIVE=1``. The concrete backend (CMDB,
-    asset-inventory, or scanner API) is wired in M5; until then this raises an
-    explicit error rather than silently returning fixtures, so opting into live
-    and getting nothing back is never mistaken for "no assets".
+    We coerce into exactly the fields the reasoner consumes
+    (``port``/``proto``/``name``/``known_vuln``/``cve_id``) so a live backend
+    with extra or differently-typed fields still yields the SAME contract the
+    offline surface produces. A missing/absent field is filled with a
+    conservative default (never fabricated as vulnerable): ``known_vuln``
+    defaults to False and ``cve_id`` to None.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError(f"service entry must be an object, got {type(raw).__name__}")
+    port = raw.get("port")
+    return {
+        "port": port,
+        "proto": raw.get("proto"),
+        "name": raw.get("name"),
+        "known_vuln": bool(raw.get("known_vuln", False)),
+        "cve_id": raw.get("cve_id"),
+    }
+
+
+def _normalize_host(raw: Any) -> Dict[str, Any]:
+    """Normalize one backend host record into the stub's host shape."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"host entry must be an object, got {type(raw).__name__}")
+    services_raw = raw.get("services", [])
+    if not isinstance(services_raw, list):
+        raise ValueError("host 'services' must be a list")
+    return {
+        "id": raw.get("id"),
+        "subnet": raw.get("subnet"),
+        "internet_exposed": bool(raw.get("internet_exposed", False)),
+        "services": [_normalize_service(s) for s in services_raw],
+    }
+
+
+def _normalize_edge(raw: Any) -> Dict[str, Any]:
+    """Normalize one backend trust-edge record into the stub's edge shape."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"trust_edge entry must be an object, got {type(raw).__name__}")
+    return {"src": raw.get("src"), "dst": raw.get("dst"), "kind": raw.get("kind")}
+
+
+def _normalize_surface(payload: Any) -> Dict[str, Any]:
+    """Map an arbitrary backend JSON reply into the exact stub surface shape.
+
+    Accepts either a bare surface object (``{"hosts": [...], "trust_edges": [...]}``)
+    or a wrapped one (``{"surface": {...}}``) so the client tolerates a couple of
+    common backend envelopes without fabricating data. Anything that is not a
+    JSON object, or whose hosts/edges are not lists, is a hard error surfaced to
+    the caller as ``upstream_error`` — we never coerce a malformed reply into a
+    (misleadingly empty) success.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"backend reply must be a JSON object, got {type(payload).__name__}"
+        )
+    surface = payload.get("surface", payload)
+    if not isinstance(surface, dict):
+        raise ValueError("backend 'surface' must be an object")
+    hosts_raw = surface.get("hosts", [])
+    edges_raw = surface.get("trust_edges", [])
+    if not isinstance(hosts_raw, list):
+        raise ValueError("backend 'hosts' must be a list")
+    if not isinstance(edges_raw, list):
+        raise ValueError("backend 'trust_edges' must be a list")
+    return {
+        "hosts": [_normalize_host(h) for h in hosts_raw],
+        "trust_edges": [_normalize_edge(e) for e in edges_raw],
+    }
+
+
+def _fetch_live(query: str) -> Dict[str, Any]:
+    """Fetch the exposure surface from a live asset/CMDB backend over HTTP.
+
+    Only reached when ``ASSET_LOOKUP_LIVE=1``. This is a REAL stdlib client
+    (``urllib.request`` — no third-party dependencies): it POSTs the validated
+    query as a JSON body to ``ASSET_LOOKUP_URL`` and normalizes the JSON reply
+    into the SAME surface shape the offline stub returns. It never silently
+    falls back to fixtures, so opting into live and getting nothing back is
+    never mistaken for "no assets".
+
+    Secrets posture: the endpoint comes from ``ASSET_LOOKUP_URL`` and an
+    optional bearer credential from ``ASSET_LOOKUP_TOKEN`` — both read from the
+    environment only, never hardcoded, and never logged or echoed in errors.
+
+    Failure modes (missing URL, timeout, non-2xx, connection refused, malformed
+    JSON) all raise, so the handler turns them into an explicit
+    ``upstream_error`` rather than a swallowed exception or a fabricated
+    surface.
     """
     url = os.environ.get("ASSET_LOOKUP_URL")
     if not url:
@@ -269,13 +366,51 @@ def _fetch_live(query: str) -> Dict[str, Any]:
             "ASSET_LOOKUP_LIVE=1 but ASSET_LOOKUP_URL is not set; no backend to "
             "query. Unset ASSET_LOOKUP_LIVE to use the offline fixture surface."
         )
-    # The live client is intentionally not implemented here: connecting a real
-    # data plane is M5 work (see docs/ROADMAP.md). Raising keeps the contract
-    # honest — we never fabricate a live surface.
-    raise NotImplementedError(
-        "live asset backend not wired yet (M5); configure a concrete client "
-        f"for {url!r} before setting ASSET_LOOKUP_LIVE=1"
+
+    body = json.dumps({"query": query}).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
     )
+    # Bearer auth is applied ONLY from the environment; the token value is never
+    # logged or placed in an error message.
+    token = os.environ.get("ASSET_LOOKUP_TOKEN")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+
+    try:
+        with urllib.request.urlopen(request, timeout=_LIVE_TIMEOUT_SECS) as resp:
+            status = getattr(resp, "status", None) or resp.getcode()
+            if not (200 <= int(status) < 300):
+                raise RuntimeError(f"backend returned HTTP {status}")
+            raw = resp.read(_LIVE_MAX_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        # Non-2xx responses raise HTTPError; surface the status, not the body
+        # (which could echo sensitive detail).
+        raise RuntimeError(f"backend returned HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        # DNS failure, connection refused, timeout, TLS error, etc. ``exc.reason``
+        # describes the transport fault without leaking the token.
+        raise RuntimeError(f"backend request failed: {exc.reason}") from exc
+    except TimeoutError as exc:  # socket timeout can surface directly on 3.10+
+        raise RuntimeError("backend request timed out") from exc
+
+    if len(raw) > _LIVE_MAX_BYTES:
+        raise RuntimeError(
+            f"backend reply exceeds {_LIVE_MAX_BYTES} bytes; refusing to parse"
+        )
+
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RuntimeError(f"backend returned malformed JSON: {exc}") from exc
+
+    return _normalize_surface(payload)
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:

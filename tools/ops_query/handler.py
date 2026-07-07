@@ -23,10 +23,13 @@ What is real vs. stubbed
 - The OFFLINE inventory is REAL, deterministic data: the same query always
   yields the same accounts/findings. It is *synthetic* (no real environment),
   but nothing is fabricated at call time.
-- The LIVE path is a documented, guarded stub: it raises an explicit
-  ``upstream_error`` until a concrete backend is wired later. It never silently
-  falls back to fixtures, so an operator who *opts into* live and gets nothing
-  learns why.
+- The LIVE path is a REAL, dependency-free HTTP client (``urllib.request`` from
+  the standard library — no third-party SDK). It POSTs the validated selector
+  as JSON to ``OPS_QUERY_URL`` and normalizes the JSON reply into the *same*
+  output contract as the stub, only tagged ``source="live"``. Any failure
+  (missing URL, timeout, non-2xx, malformed JSON, connection refused) surfaces
+  as an explicit ``upstream_error`` — it never silently falls back to fixtures,
+  so an operator who *opts into* live and gets nothing learns why.
 
 Egress & secrets posture
 ------------------------
@@ -64,7 +67,10 @@ with the account it belongs to::
 
 from __future__ import annotations
 
+import json
 import os
+import urllib.error
+import urllib.request
 from typing import Any, Dict, List
 
 from mockdata.accounts import accounts as _load_accounts
@@ -74,6 +80,10 @@ from mockdata.accounts import finding_types as _known_finding_types
 # account) — the offline inventory uses fictional repeated-digit demo ids.
 _ACCOUNT_ID_LEN = 12
 _MAX_QUERY_LEN = 64
+
+# Live backend HTTP settings. The endpoint and bearer token are read from the
+# environment ONLY (never hardcoded, logged, or echoed in responses).
+_LIVE_TIMEOUT_SECONDS = 10
 
 
 def _validate(event: Dict[str, Any]) -> Dict[str, str]:
@@ -160,14 +170,57 @@ def _select_findings(finding_type: str) -> List[Dict[str, Any]]:
     return out
 
 
-def _fetch_live(selector: Dict[str, str]) -> Dict[str, Any]:
-    """Fetch the multi-account view from a live ops backend.
+def _normalize_live_reply(
+    selector: Dict[str, str], reply: Any
+) -> Dict[str, Any]:
+    """Coerce a backend JSON reply into the stub's output payload shape.
 
-    Only reached when ``OPS_QUERY_LIVE=1``. The concrete backend (AWS
-    Organizations for account enumeration + a support / Trusted-Advisor-style
-    findings API + per-account CloudWatch) is wired later; until then this
-    raises an explicit error rather than silently returning fixtures, so opting
-    into live and getting nothing back is never mistaken for "no accounts".
+    Returns the payload *without* the ``ok`` / ``source`` envelope (the handler
+    adds ``source="live"``). For account/wildcard selectors that is
+    ``{"accounts": [...]}``; for a finding_type selector it is
+    ``{"finding_type": <type>, "findings": [...]}`` — identical in shape to what
+    the offline stub produces, so downstream reasoning cannot tell the transport
+    apart. A reply that is not a JSON object, or whose list field is not a list,
+    is a hard error (surfaced as ``upstream_error``) rather than a silent empty
+    result.
+    """
+    if not isinstance(reply, dict):
+        raise ValueError(
+            f"backend returned {type(reply).__name__}, expected a JSON object"
+        )
+    if "finding_type" in selector:
+        findings = reply.get("findings")
+        if not isinstance(findings, list):
+            raise ValueError(
+                "backend reply missing a 'findings' list for a finding_type query"
+            )
+        return {"finding_type": selector["finding_type"], "findings": findings}
+    accounts = reply.get("accounts")
+    if not isinstance(accounts, list):
+        raise ValueError(
+            "backend reply missing an 'accounts' list for an account/wildcard query"
+        )
+    return {"accounts": accounts}
+
+
+def _fetch_live(selector: Dict[str, str]) -> Dict[str, Any]:
+    """Fetch the multi-account view from a live ops backend over HTTP.
+
+    Only reached when ``OPS_QUERY_LIVE=1``. This is a REAL, dependency-free
+    client: it POSTs the validated ``selector`` as JSON to ``OPS_QUERY_URL`` and
+    parses the JSON reply into the same payload shape the offline stub returns
+    (the handler tags it ``source="live"``). An optional bearer token from
+    ``OPS_QUERY_TOKEN`` is sent as an ``Authorization`` header — both the URL and
+    the token are read from the environment ONLY and are never logged or echoed.
+
+    Raises (all surfaced by the handler as ``upstream_error``, never a silent
+    fixture fallback):
+
+    - ``RuntimeError`` if ``OPS_QUERY_URL`` is unset (no backend to query), on a
+      non-2xx HTTP status, or on any transport failure (timeout, DNS,
+      connection refused).
+    - ``ValueError`` if the reply body is not valid JSON or not the expected
+      shape.
     """
     url = os.environ.get("OPS_QUERY_URL")
     if not url:
@@ -175,11 +228,50 @@ def _fetch_live(selector: Dict[str, str]) -> Dict[str, Any]:
             "OPS_QUERY_LIVE=1 but OPS_QUERY_URL is not set; no backend to query. "
             "Unset OPS_QUERY_LIVE to use the offline fixture inventory."
         )
-    raise NotImplementedError(
-        "live multi-account ops backend not wired yet; configure a concrete "
-        f"client for {url!r} (AWS Organizations / support API / CloudWatch) "
-        "before setting OPS_QUERY_LIVE=1"
+
+    body = json.dumps(selector).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    token = os.environ.get("OPS_QUERY_TOKEN")
+    if token:
+        # Bearer credential from env only. Never logged/echoed anywhere.
+        headers["Authorization"] = f"Bearer {token}"
+
+    request = urllib.request.Request(
+        url, data=body, headers=headers, method="POST"
     )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=_LIVE_TIMEOUT_SECONDS
+        ) as response:
+            status = getattr(response, "status", response.getcode())
+            if not (200 <= int(status) < 300):
+                raise RuntimeError(
+                    f"ops backend returned HTTP {status} (expected 2xx)"
+                )
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        # Non-2xx that urllib raises (e.g. 500). Do NOT include the response
+        # body (may echo request context); the status alone is diagnostic.
+        raise RuntimeError(
+            f"ops backend returned HTTP {exc.code} (expected 2xx)"
+        ) from exc
+    except urllib.error.URLError as exc:
+        # Timeout, DNS failure, connection refused, etc.
+        raise RuntimeError(
+            f"ops backend request failed: {exc.reason}"
+        ) from exc
+
+    try:
+        reply = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            f"ops backend returned a non-JSON / malformed body: {exc}"
+        ) from exc
+
+    return _normalize_live_reply(selector, reply)
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:

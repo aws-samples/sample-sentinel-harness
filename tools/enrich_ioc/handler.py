@@ -33,11 +33,15 @@ What is real vs. stubbed
   *synthetic* (from ``mockdata.world``), but nothing is fabricated at call time.
   An indicator NOT in the mock set returns ``known: false`` / ``verdict:
   "unknown"`` — never a crash, never a fabricated score.
-- The LIVE path is a documented, guarded stub: with ``ENRICH_IOC_LIVE=1`` it
-  raises an explicit ``upstream_error`` until a concrete reputation backend
-  (VirusTotal / GreyNoise / internal TIP) is wired in later. It never silently
-  falls back to the mock data, so opting into live and getting nothing back is
-  never mistaken for "clean".
+- The LIVE path is a real, dependency-free client: with ``ENRICH_IOC_LIVE=1``
+  it POSTs the validated indicators as JSON to ``ENRICH_IOC_URL`` (with an
+  optional ``Bearer`` token from ``ENRICH_IOC_TOKEN``) using only stdlib
+  ``urllib.request`` — no third-party deps — then normalizes the JSON reply
+  into the SAME output contract as the stub (``source="live"``). Any failure —
+  missing URL, connection error, timeout, non-2xx status, or malformed JSON —
+  is returned as ``{ok: False, error: "upstream_error", message}``. It NEVER
+  silently falls back to the mock data, so opting into live and getting nothing
+  back is never mistaken for "clean".
 
 Egress & secrets posture
 ------------------------
@@ -85,9 +89,12 @@ Output contract (on validation failure)
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
+import urllib.error
+import urllib.request
 from typing import Any, Dict, List
 
 # This tool reads the shared single-source-of-truth world in ``mockdata.world``.
@@ -108,6 +115,13 @@ from mockdata.world import load_world  # noqa: E402  (import after path bootstra
 _MAX_INDICATOR_LEN = 256
 # A batch is bounded so one call cannot enumerate an unbounded list.
 _MAX_BATCH = 256
+
+# Live backend HTTP timeout (seconds). Bounded so a hung/slow upstream surfaces
+# as an ``upstream_error`` rather than blocking the caller indefinitely.
+_LIVE_TIMEOUT_S = 10
+# Cap the live response body we will read/parse so a hostile or broken backend
+# cannot force us to buffer an unbounded reply.
+_MAX_LIVE_BODY_BYTES = 4 * 1024 * 1024
 
 # SHA-256 is exactly 64 hex chars; that shape is unambiguous vs. IP/domain.
 _SHA256_RE = re.compile(r"\A[0-9a-fA-F]{64}\Z")
@@ -282,13 +296,95 @@ def _validate(event: Dict[str, Any]) -> List[str]:
     return normalized
 
 
-def _fetch_live(indicators: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Fetch reputation from a live threat-intel backend.
+def _normalize_live_record(indicator: str, raw: Any) -> Dict[str, Any]:
+    """Normalize ONE backend record into the tool's output contract.
 
-    Only reached when ``ENRICH_IOC_LIVE=1``. The concrete backend (VirusTotal /
-    GreyNoise / an internal TIP) is wired later; until then this raises an
-    explicit error rather than silently returning mock data, so opting into
-    live and getting nothing back is never mistaken for "clean".
+    The live backend is pluggable, so its raw per-indicator payload may be
+    loosely shaped. We coerce it into the SAME record shape the offline stub
+    returns (type / known / threat_category / confidence / first_seen /
+    related_hosts / verdict) so downstream triage cannot tell the planes apart.
+
+    WHY defensive coercion (not blind trust): a backend field being absent or a
+    wrong JSON type must never crash the handler; missing signal degrades to an
+    explicit ``known: false`` / ``verdict: "unknown"`` — never a fabricated
+    score. A ``raw`` that is not an object is treated as "no record".
+    """
+    if not isinstance(raw, dict):
+        # Backend had nothing usable for this indicator: mirror a stub miss,
+        # still classifying the type from the (already-validated) shape.
+        return {
+            "type": _classify(indicator),
+            "known": False,
+            "threat_category": None,
+            "confidence": None,
+            "first_seen": None,
+            "related_hosts": [],
+            "verdict": "unknown",
+        }
+
+    # Type: trust the backend only if it names a known type; else derive from
+    # the indicator shape so the field is always one of ip/domain/sha256.
+    raw_type = raw.get("type")
+    ioc_type = raw_type if raw_type in ("ip", "domain", "sha256") else _classify(indicator)
+
+    threat_category = raw.get("threat_category")
+    if threat_category is None:
+        threat_category = raw.get("category")  # tolerate a common alias
+    confidence = raw.get("confidence")
+    first_seen = raw.get("first_seen")
+
+    # related_hosts: accept the contract name or the world-model alias; coerce
+    # to a list of strings, dropping anything non-string so a malformed entry
+    # cannot corrupt the pivot-to-asset list.
+    raw_hosts = raw.get("related_hosts")
+    if raw_hosts is None:
+        raw_hosts = raw.get("relates_to")
+    related_hosts = [h for h in raw_hosts if isinstance(h, str)] if isinstance(raw_hosts, list) else []
+
+    # known: honor an explicit boolean; otherwise infer from whether the
+    # backend actually returned a category signal.
+    raw_known = raw.get("known")
+    known = raw_known if isinstance(raw_known, bool) else (threat_category is not None)
+
+    # verdict: honor an explicit backend verdict if it is one of the allowed
+    # values; else derive it with the SAME policy the stub uses, or fall back to
+    # "unknown" when there is no category to judge.
+    verdict = raw.get("verdict")
+    if verdict not in ("malicious", "suspicious", "benign", "unknown"):
+        if isinstance(threat_category, str) and isinstance(confidence, str):
+            verdict = _derive_verdict(threat_category, confidence)
+        elif known and isinstance(threat_category, str):
+            # Category present but confidence missing: treat conservatively.
+            verdict = _derive_verdict(threat_category, "low")
+        else:
+            verdict = "unknown"
+
+    return {
+        "type": ioc_type,
+        "known": known,
+        "threat_category": threat_category,
+        "confidence": confidence,
+        "first_seen": first_seen,
+        "related_hosts": related_hosts,
+        "verdict": verdict,
+    }
+
+
+def _fetch_live(indicators: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Fetch reputation from a live threat-intel backend over stdlib HTTP.
+
+    Only reached when ``ENRICH_IOC_LIVE=1``. Builds a JSON ``POST`` from
+    ``ENRICH_IOC_URL`` (required) with an optional ``Bearer`` token from
+    ``ENRICH_IOC_TOKEN`` (env only — never hardcoded, logged, or echoed), sends
+    it with :mod:`urllib.request` (stdlib only — no third-party deps), and
+    normalizes the JSON reply into the SAME per-indicator contract the offline
+    stub returns.
+
+    Every failure mode is surfaced as an exception (the handler maps it to
+    ``{ok: False, error: "upstream_error", message}``) — a missing URL,
+    connection refused, DNS failure, timeout, non-2xx status, an over-large
+    body, or malformed JSON. It NEVER silently falls back to the mock world, so
+    opting into live and getting nothing back is never mistaken for "clean".
     """
     url = os.environ.get("ENRICH_IOC_URL")
     if not url:
@@ -296,13 +392,73 @@ def _fetch_live(indicators: List[str]) -> Dict[str, Dict[str, Any]]:
             "ENRICH_IOC_LIVE=1 but ENRICH_IOC_URL is not set; no backend to "
             "query. Unset ENRICH_IOC_LIVE to use the offline mock reputation."
         )
-    # The live client is intentionally not implemented here: connecting a real
-    # reputation plane is later work. Raising keeps the contract honest — we
-    # never fabricate a live verdict.
-    raise NotImplementedError(
-        "live IOC reputation backend not wired yet; configure a concrete client "
-        f"for {url!r} before setting ENRICH_IOC_LIVE=1"
+
+    payload = json.dumps({"indicators": indicators}).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    # Secret handling: the bearer token is read ONLY from the environment and
+    # placed solely into the outbound Authorization header. It is never logged,
+    # echoed into a response, or interpolated into any error message.
+    token = os.environ.get("ENRICH_IOC_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    request = urllib.request.Request(
+        url, data=payload, headers=headers, method="POST"
     )
+
+    try:
+        with urllib.request.urlopen(request, timeout=_LIVE_TIMEOUT_S) as response:
+            # urlopen raises HTTPError for non-2xx, so reaching here is 2xx.
+            body = response.read(_MAX_LIVE_BODY_BYTES + 1)
+    except urllib.error.HTTPError as exc:  # non-2xx status
+        raise RuntimeError(
+            f"IOC reputation backend returned HTTP {exc.code}"
+        ) from exc
+    except urllib.error.URLError as exc:  # connection refused, DNS, timeout
+        # ``reason`` may be an OSError (e.g. connection refused) or a message.
+        raise RuntimeError(
+            f"IOC reputation backend request failed: {exc.reason}"
+        ) from exc
+    except TimeoutError as exc:  # socket-level timeout, surfaced explicitly
+        raise RuntimeError(
+            "IOC reputation backend request timed out"
+        ) from exc
+
+    if len(body) > _MAX_LIVE_BODY_BYTES:
+        raise RuntimeError(
+            "IOC reputation backend response exceeded "
+            f"{_MAX_LIVE_BODY_BYTES} bytes"
+        )
+
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError(
+            f"IOC reputation backend returned malformed JSON: {exc}"
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise RuntimeError(
+            "IOC reputation backend returned a non-object JSON payload"
+        )
+    # Accept either an envelope ``{"results": {ind: rec}}`` or a flat
+    # ``{ind: rec}`` map. Anything else is a contract violation.
+    raw_results = parsed["results"] if "results" in parsed else parsed
+    if not isinstance(raw_results, dict):
+        raise RuntimeError(
+            "IOC reputation backend 'results' was not a JSON object"
+        )
+
+    # Normalize per requested indicator so the output key set is exactly what
+    # the caller asked for (a backend omission degrades to known:false/unknown,
+    # never a missing key or a crash).
+    return {
+        indicator: _normalize_live_record(indicator, raw_results.get(indicator))
+        for indicator in indicators
+    }
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:

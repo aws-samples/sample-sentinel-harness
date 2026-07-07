@@ -317,13 +317,29 @@ def test_live_without_backend_url_surfaces_upstream_error(monkeypatch):
     assert "SIEM_QUERY_URL is not set" in res["message"]
 
 
-def test_live_with_backend_url_surfaces_not_implemented(monkeypatch):
+def test_live_with_unreachable_backend_surfaces_upstream_error(monkeypatch):
+    """The live client is REAL (stdlib urllib); pointing it at a closed local
+    port (connection refused, ZERO external network) must surface an
+    upstream_error, never crash and never fall back to the mock fixtures.
+
+    Full request-shape / response-parsing / error-handling coverage against an
+    in-process mock http.server lives in tests/test_siem_query_live.py.
+    """
+    import socket
+
+    # Bind an ephemeral port, learn its number, then close it so a connect is
+    # guaranteed-refused — no real network egress leaves the loopback interface.
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    refused_port = s.getsockname()[1]
+    s.close()
+
     monkeypatch.setenv("SIEM_QUERY_LIVE", "1")
-    monkeypatch.setenv("SIEM_QUERY_URL", "https://siem.example.internal/api")
+    monkeypatch.setenv("SIEM_QUERY_URL", f"http://127.0.0.1:{refused_port}/api")
     res = siem_handler.handler({"host": "web-01"}, None)
     assert res["ok"] is False and res["error"] == "upstream_error"
-    assert "not wired yet" in res["message"]
-    assert "siem.example.internal" in res["message"]
+    # No silent fixture fallback: web-01 has events offline, but live failed.
+    assert "events" not in res or not res.get("events")
 
 
 def test_fetch_live_without_url_raises_runtime_error(monkeypatch):

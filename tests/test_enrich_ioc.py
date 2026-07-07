@@ -302,18 +302,40 @@ def test_live_without_backend_url_surfaces_upstream_error(monkeypatch):
     assert "ENRICH_IOC_URL is not set" in res["message"]
 
 
-def test_live_with_backend_url_surfaces_not_implemented(monkeypatch):
+def test_live_with_unreachable_backend_surfaces_upstream_error(monkeypatch):
+    """With a real client wired, an unreachable backend (connection refused on
+    a closed loopback port) is an ``upstream_error`` — never a crash and never
+    a silent fall-back to the mock world. ZERO external network: the target is
+    127.0.0.1 on a port nothing is listening on. The full live client is
+    exercised against an in-process mock server in tests/test_enrich_ioc_live.py.
+    """
+    import socket
+
+    # Grab an ephemeral port, then close it so the connect is refused.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    closed_port = probe.getsockname()[1]
+    probe.close()
+
     monkeypatch.setenv("ENRICH_IOC_LIVE", "1")
-    monkeypatch.setenv("ENRICH_IOC_URL", "https://tip.example.internal/api")
+    monkeypatch.setenv("ENRICH_IOC_URL", f"http://127.0.0.1:{closed_port}/api")
     res = enrich.handler({"indicator": C2_IP}, None)
     assert res["ok"] is False and res["error"] == "upstream_error"
-    assert "not wired yet" in res["message"]
-    assert "tip.example.internal" in res["message"]
 
 
-def test_fetch_live_raises_not_implemented_directly(monkeypatch):
-    monkeypatch.setenv("ENRICH_IOC_URL", "https://gn.example.internal")
-    with pytest.raises(NotImplementedError, match="not wired yet"):
+def test_fetch_live_unreachable_backend_raises_runtime(monkeypatch):
+    """Calling the real client directly against a refused loopback connection
+    raises ``RuntimeError`` (mapped to ``upstream_error`` by the handler) — not
+    a bare, unhandled socket exception. ZERO external network."""
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    closed_port = probe.getsockname()[1]
+    probe.close()
+
+    monkeypatch.setenv("ENRICH_IOC_URL", f"http://127.0.0.1:{closed_port}/api")
+    with pytest.raises(RuntimeError, match="request failed"):
         enrich._fetch_live([C2_IP])
 
 

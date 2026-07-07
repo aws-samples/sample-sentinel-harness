@@ -258,22 +258,27 @@ def test_live_without_backend_url_surfaces_upstream_error(monkeypatch):
     assert "ASSET_LOOKUP_URL is not set" in res["message"]
 
 
-def test_live_with_backend_url_surfaces_not_implemented(monkeypatch):
-    """With a backend URL configured the live client is still an M5 stub that
-    raises NotImplementedError (line 275) — surfaced as upstream_error, and the
-    URL is echoed for the operator, never a fabricated surface."""
+def test_live_with_unreachable_backend_surfaces_upstream_error(monkeypatch):
+    """With a backend URL configured the live client makes a REAL urllib call;
+    an unreachable backend (connection refused on a closed loopback port) is
+    surfaced as upstream_error, never a fabricated surface and never a silent
+    fixture fallback. ZERO external network: 127.0.0.1:1 is a closed local port.
+    Full request-shape / success-path / auth-header coverage lives in the
+    dedicated tests/test_asset_lookup_live.py mock-server suite."""
     monkeypatch.setenv("ASSET_LOOKUP_LIVE", "1")
-    monkeypatch.setenv("ASSET_LOOKUP_URL", "https://cmdb.example.internal/api")
+    monkeypatch.setenv("ASSET_LOOKUP_URL", "http://127.0.0.1:1/asset")
     res = asset_handler.handler({"query": "*"}, None)
     assert res["ok"] is False and res["error"] == "upstream_error"
-    assert "not wired yet" in res["message"]
-    assert "cmdb.example.internal" in res["message"]
+    # We do NOT fall back to the stub surface on a live failure.
+    assert "surface" not in res
 
 
-def test_fetch_live_raises_not_implemented_directly(monkeypatch):
-    """Directly exercise _fetch_live's NotImplementedError branch (line 275)."""
-    monkeypatch.setenv("ASSET_LOOKUP_URL", "https://scanner.example.internal")
-    with pytest.raises(NotImplementedError, match="live asset backend not wired"):
+def test_fetch_live_raises_on_unreachable_backend(monkeypatch):
+    """Directly exercise _fetch_live's transport-failure branch (URLError ->
+    RuntimeError). 127.0.0.1:1 is a closed local port: connection refused, no
+    external network."""
+    monkeypatch.setenv("ASSET_LOOKUP_URL", "http://127.0.0.1:1/asset")
+    with pytest.raises(RuntimeError, match="backend request failed"):
         asset_handler._fetch_live("*")
 
 
