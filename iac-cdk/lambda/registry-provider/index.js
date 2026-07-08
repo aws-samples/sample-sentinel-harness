@@ -41,8 +41,24 @@ const ACTIONS = {
 };
 
 function loadControl() {
-  // eslint-disable-next-line global-require, import/no-dynamic-require
-  const mod = require(CONTROL_CLIENT_PKG);
+  // The Node 20 Lambda runtime bundles only the STANDARD AWS SDK v3 clients;
+  // `@aws-sdk/client-bedrock-agentcore-control` is NOT among them, so it must be
+  // bundled into this asset (npm install into lambda/registry-provider, or switch
+  // the construct to NodejsFunction) before a real deploy. Surface that as a clear,
+  // actionable error instead of a raw MODULE_NOT_FOUND if it is missing.
+  let mod;
+  try {
+    // eslint-disable-next-line global-require, import/no-dynamic-require
+    mod = require(CONTROL_CLIENT_PKG);
+  } catch (err) {
+    throw new Error(
+      `${CONTROL_CLIENT_PKG} is not available in the Lambda bundle. The Node runtime `
+        + `does not ship this client; bundle it into lambda/registry-provider `
+        + `(npm i ${CONTROL_CLIENT_PKG}) or use aws-cdk-lib/aws-lambda-nodejs NodejsFunction `
+        + `before enabling sentinel:registryViaCustomResource on a live deploy. `
+        + `Underlying error: ${err && err.message}`
+    );
+  }
   const region = process.env.AWS_REGION; // injected by the Lambda runtime; never hardcoded
   const client = new mod.BedrockAgentCoreControlClient({ region });
   return { mod, client };

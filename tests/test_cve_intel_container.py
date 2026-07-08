@@ -207,6 +207,20 @@ def test_compose_model_id_is_env_driven():
     assert "${SENTINEL_SPECIALIST_MODEL" in env_text, (
         "model id must be driven from the host env (${SENTINEL_SPECIALIST_MODEL...})"
     )
+    # Regression guard (adversarial review 2026-07): the DEFAULT model id baked into
+    # the ${VAR:-default} fallback MUST carry a full version suffix (-YYYYMMDD-vN:M).
+    # A bare 'claude-haiku-4-5' is an invalid inference-profile id that reaches READY
+    # but raises ValidationException on the first live invoke (see
+    # sentinel_harness/core.py MODEL_HAIKU + test_agent_factory_scenario). Any Bedrock
+    # model id present must be version-pinned so `docker compose up` cannot ship a
+    # silently-broken default.
+    import re
+
+    for mid in re.findall(r"anthropic\.claude[a-z0-9.:\-]*", env_text):
+        assert re.search(r"-\d{8}-v\d+:\d+$", mid), (
+            f"specialist default model id {mid!r} is not version-pinned "
+            "(needs a -YYYYMMDD-vN:M suffix, cf. core.py MODEL_HAIKU)"
+        )
 
 
 def test_compose_exposes_a2a_port():

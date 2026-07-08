@@ -84,6 +84,9 @@ _MAX_QUERY_LEN = 64
 # Live backend HTTP settings. The endpoint and bearer token are read from the
 # environment ONLY (never hardcoded, logged, or echoed in responses).
 _LIVE_TIMEOUT_SECONDS = 10
+# Cap the backend reply we buffer, so a hostile/misconfigured backend cannot force
+# unbounded memory use within the timeout window (mirrors the sibling *_LIVE tools).
+_MAX_LIVE_BODY_BYTES = 4 * 1024 * 1024
 
 
 def _validate(event: Dict[str, Any]) -> Dict[str, str]:
@@ -251,7 +254,7 @@ def _fetch_live(selector: Dict[str, str]) -> Dict[str, Any]:
                 raise RuntimeError(
                     f"ops backend returned HTTP {status} (expected 2xx)"
                 )
-            raw = response.read()
+            raw = response.read(_MAX_LIVE_BODY_BYTES + 1)
     except urllib.error.HTTPError as exc:
         # Non-2xx that urllib raises (e.g. 500). Do NOT include the response
         # body (may echo request context); the status alone is diagnostic.
@@ -263,6 +266,11 @@ def _fetch_live(selector: Dict[str, str]) -> Dict[str, Any]:
         raise RuntimeError(
             f"ops backend request failed: {exc.reason}"
         ) from exc
+
+    if len(raw) > _MAX_LIVE_BODY_BYTES:
+        raise RuntimeError(
+            f"ops backend reply exceeds {_MAX_LIVE_BODY_BYTES} bytes; refusing to parse"
+        )
 
     try:
         reply = json.loads(raw.decode("utf-8"))

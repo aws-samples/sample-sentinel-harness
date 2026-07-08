@@ -314,7 +314,15 @@ def run_pure(cve_id: str = DEFAULT_CVE) -> Dict[str, Any]:
     # --- Step 4: assemble the deterministic CVETriage verdict. ---
     verdict = triage(cve_id, nvd_cve, epss_rec, surface)
     affected_hosts = verdict["affected_hosts"]
-    blast_radius_computed = verdict["blast_radius"]["affected_count"] >= 0
+    # Real invariant (not a tautology): the blast radius must actually agree with
+    # the affected-host set — affected_count == len(affected_hosts) AND every
+    # reachable host is a real, distinct neighbour of an affected host.
+    blast = verdict["blast_radius"]
+    reachable = blast.get("reachable_hosts") or []
+    blast_radius_computed = (
+        blast.get("affected_count") == len(affected_hosts)
+        and set(reachable).isdisjoint(set(affected_hosts))
+    )
     rec("triage", bool(affected_hosts), verdict)
 
     # --- Step 5: HITL gate — analyst sign-off REQUIRED before any action. ---

@@ -29,7 +29,7 @@ actually run a completion.
 
 Configuration (12-factor — no hardcoded account / ARN / model / key)
 --------------------------------------------------------------------
-    export SENTINEL_GATEWAY_MODEL="bedrock/global.anthropic.claude-haiku-4-5"
+    export SENTINEL_GATEWAY_MODEL="bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
     # provider credentials are read by LiteLLM from the standard env vars
     # (AWS_*, OPENAI_API_KEY, ...) — this module NEVER reads or logs them.
 
@@ -45,7 +45,7 @@ from typing import Any, Callable
 # The LiteLLM model id. Provider-prefixed so the gateway is provider-agnostic; read
 # from env (12-factor). Default is a small Bedrock model routed through LiteLLM.
 DEFAULT_MODEL_ID = os.environ.get(
-    "SENTINEL_GATEWAY_MODEL", "bedrock/global.anthropic.claude-haiku-4-5"
+    "SENTINEL_GATEWAY_MODEL", "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
 )
 
 # Dedicated audit logger. Callers can attach a handler / ship it to CloudWatch; we

@@ -42,7 +42,7 @@ specialist stack installed.
 
 Configuration (12-factor — no hardcoded account / ARN / model)
 --------------------------------------------------------------
-    export SENTINEL_SPECIALIST_MODEL="bedrock/global.anthropic.claude-haiku-4-5"
+    export SENTINEL_SPECIALIST_MODEL="bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
     export SENTINEL_GATEWAY_URL="https://<gateway-id>.gateway.bedrock-agentcore.<region>.amazonaws.com/mcp"
     export SENTINEL_A2A_HOST="0.0.0.0"      # optional, default 0.0.0.0
     export SENTINEL_A2A_PORT="9000"         # optional, default 9000
@@ -74,7 +74,7 @@ SPECIALIST_DESCRIPTION = (
 # specialist can run a cheaper/narrower model than the supervisor. Read from env
 # (12-factor); the default is a small Bedrock model routed through LiteLLM.
 DEFAULT_MODEL_ID = os.environ.get(
-    "SENTINEL_SPECIALIST_MODEL", "bedrock/global.anthropic.claude-haiku-4-5"
+    "SENTINEL_SPECIALIST_MODEL", "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
 )
 
 # The Gateway MCP endpoint this specialist pulls its tools from. Optional at

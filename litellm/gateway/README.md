@@ -47,7 +47,7 @@ handler (or a CloudWatch sink) in your container entrypoint to ship them.
 
 | Env var | Meaning | Default |
 |---|---|---|
-| `SENTINEL_GATEWAY_MODEL` | LiteLLM provider-prefixed model id | `bedrock/global.anthropic.claude-haiku-4-5` |
+| `SENTINEL_GATEWAY_MODEL` | LiteLLM provider-prefixed model id | `bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0` |
 
 Provider credentials (`AWS_*`, `OPENAI_API_KEY`, ...) are read by LiteLLM from the
 standard environment variables. **This package never reads, stores, or logs them.**
