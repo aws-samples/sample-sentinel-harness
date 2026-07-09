@@ -57,7 +57,9 @@ _IAC_CDK = _REPO_ROOT / "iac-cdk"
 # Repo root on path so `import sentinel_harness` resolves from a source checkout.
 sys.path.insert(0, str(_REPO_ROOT))
 
-# The 8 CDK stacks M4 promises (native AWS::BedrockAgentCore::* + supporting).
+# The CDK stacks the app synthesizes (native AWS::BedrockAgentCore::* + supporting).
+# The 8 M4 foundation stacks plus the specialist / long-running Runtime stack
+# (sentinel-runtime) wired in via bin/sentinel.ts.
 _EXPECTED_STACKS = {
     "sentinel-gateway",
     "sentinel-registry",
@@ -67,6 +69,7 @@ _EXPECTED_STACKS = {
     "sentinel-guardrail",
     "sentinel-observability",
     "sentinel-harness",
+    "sentinel-runtime",
 }
 
 # Live re-verification is opt-in. Absent this flag, live checks SKIP (they never
@@ -214,11 +217,13 @@ def _cdk_available() -> bool:
 
 @pytest.mark.skipif(not _cdk_available(), reason="iac-cdk/node_modules absent — CDK synth needs a local install")
 def test_cdk_app_synthesizes_all_eight_stacks(tmp_path):
-    """`cdk synth` (offline, no deploy) produces exactly the 8 M4 stacks.
+    """`cdk synth` (offline, no deploy) produces exactly the expected stack set.
 
-    We synth into a throwaway output dir so we never depend on / clobber the
-    committed cdk.out, then read the manifest to confirm all 8 CloudFormation
-    stacks are present. Offline: `cdk synth` does not call AWS.
+    That is the 8 M4 foundation stacks plus the specialist / long-running
+    sentinel-runtime stack (9 total). We synth into a throwaway output dir so we
+    never depend on / clobber the committed cdk.out, then read the manifest to
+    confirm all expected CloudFormation stacks are present. Offline: `cdk synth`
+    does not call AWS.
     """
     cdk_bin = _IAC_CDK / "node_modules" / ".bin" / "cdk"
     out_dir = tmp_path / "cdk.out"

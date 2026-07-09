@@ -39,8 +39,11 @@ REGION = os.environ.get("SENTINEL_REGION", "us-east-1")
 EXECUTION_ROLE_ARN = os.environ.get("SENTINEL_EXECUTION_ROLE_ARN")  # required at runtime
 
 _DATA_CONFIG = Config(read_timeout=180, connect_timeout=15, retries={"max_attempts": 2})
+# The control plane does short lifecycle calls; pin an explicit Config for symmetry
+# with _data (bounded connect/read + retries) instead of relying on boto defaults.
+_CONTROL_CONFIG = Config(read_timeout=60, connect_timeout=15, retries={"max_attempts": 3})
 
-_control = boto3.client("bedrock-agentcore-control", region_name=REGION)
+_control = boto3.client("bedrock-agentcore-control", region_name=REGION, config=_CONTROL_CONFIG)
 _data = boto3.client("bedrock-agentcore", region_name=REGION, config=_DATA_CONFIG)
 
 
@@ -59,7 +62,7 @@ def set_region(region: str) -> None:
         raise ValueError("region must be a non-empty string")
     REGION = region
     os.environ["SENTINEL_REGION"] = region
-    _control = boto3.client("bedrock-agentcore-control", region_name=region)
+    _control = boto3.client("bedrock-agentcore-control", region_name=region, config=_CONTROL_CONFIG)
     _data = boto3.client("bedrock-agentcore", region_name=region, config=_DATA_CONFIG)
     # Sibling modules bind `from .core import _control` at import time, so their
     # local name still points at the OLD client after we reassign ours. Rebind the

@@ -17,6 +17,8 @@
  *   sentinel:registryAutoApproval    false (default, governance) | true
  *   sentinel:registryViaCustomResource false (default, raw CfnResource) | true (Lambda CR fallback)
  *   sentinel:memoryExpiryDays        event retention window in days (default 90)
+ *   sentinel:runtimeContainerUri     ECR image for the specialist Runtime (placeholder if unset)
+ *   sentinel:runtimeExecutionRoleArn pre-existing Runtime execution-role ARN (else minted)
  */
 import { App, Environment, Tags } from "aws-cdk-lib";
 import { GatewayStack, GatewayAuthorizerType } from "../lib/gateway-stack";
@@ -27,6 +29,7 @@ import { IdentityStack } from "../lib/identity-stack";
 import { GuardrailStack } from "../lib/guardrail-stack";
 import { ObservabilityStack } from "../lib/observability-stack";
 import { HarnessStack } from "../lib/harness-stack";
+import { RuntimeStack } from "../lib/runtime-stack";
 
 const app = new App();
 
@@ -139,9 +142,21 @@ const harness = new HarnessStack(app, `${appName}-harness`, {
   description: "Sentinel demo Harness via the native AWS::BedrockAgentCore::Harness CFN type (no custom resource).",
 });
 
+// Specialist / long-running AgentCore Runtime (raw CfnResource; the CFN type is
+// not GA so it synths but fails on deploy until registered - see runtime-stack.ts).
+// containerUri/executionRoleArn come from context; a documented placeholder image
+// keeps whole-app `cdk synth` clean when they are unset.
+const runtime = new RuntimeStack(app, `${appName}-runtime`, {
+  env,
+  appName,
+  containerUri: ctx<string | undefined>("sentinel:runtimeContainerUri", undefined),
+  executionRoleArn: ctx<string | undefined>("sentinel:runtimeExecutionRoleArn", undefined),
+  description: "Sentinel specialist / long-running AgentCore Runtime (A2A/PUBLIC container tier).",
+});
+
 // Tag everything so cost/observability dashboards and the non-prod guardrail can
 // filter by project + environment. `environment` defaults to non-prod on purpose.
-for (const s of [gateway, registry, memory, network, identity, guardrail, observability, harness]) {
+for (const s of [gateway, registry, memory, network, identity, guardrail, observability, harness, runtime]) {
   Tags.of(s).add("project", "sentinel-harness");
   Tags.of(s).add("layer", "layer-3-foundation");
   Tags.of(s).add("environment", String(ctx("sentinel:environment", "non-prod")));

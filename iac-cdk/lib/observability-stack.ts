@@ -12,10 +12,15 @@
  *   2. A custom metric namespace "SentinelHarness" with a `TokensPerScenario`
  *      metric. Two emit paths are offered so callers can pick whichever is cheaper
  *      operationally:
- *        - direct PutMetricData from the harness (the `cloudwatch.Metric` below just
- *          *references* that namespace/metric for the dashboard + alarm), OR
- *        - a MetricFilter on the LogGroup that extracts a `tokens` field from a
- *          structured (JSON) log line - zero extra API calls, metric-from-logs.
+ *        - **(default) a MetricFilter on the LogGroup** that extracts a `tokens`
+ *          field from a structured (JSON) log line - zero extra API calls,
+ *          metric-from-logs, and it needs NO extra IAM. The `cloudwatch.Metric`
+ *          below references this namespace/metric for the dashboard + alarm.
+ *        - direct `PutMetricData` from the harness - only if you WIDEN the execution
+ *          role: the least-privilege policy in `iam.ts` scopes `PutMetricData` to the
+ *          `bedrock-agentcore` namespace (a `cloudwatch:namespace` condition), NOT
+ *          `SentinelHarness`, so a direct emit into `SentinelHarness` is denied until
+ *          the role is explicitly broadened. Prefer the MetricFilter path.
  *   3. A Dashboard (token trend graph + latest-value tile + a describing text
  *      panel) and a monthly cost `CfnBudget` (L1) that notifies an email at an 80%
  *      threshold.

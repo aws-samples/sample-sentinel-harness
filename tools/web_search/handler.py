@@ -128,10 +128,16 @@ def _search_live(query: str, max_results: int) -> List[Dict[str, str]]:
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    _MAX_RESPONSE_BYTES = 2_000_000
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 (fixed chokepoint)
-        # Guard against oversized responses even from the trusted endpoint.
-        raw = resp.read(2_000_000)
+        # Read cap+1 then reject over-limit rather than silently truncating —
+        # matches the reject pattern the other live-client tools use.
+        raw = resp.read(_MAX_RESPONSE_BYTES + 1)
+    if len(raw) > _MAX_RESPONSE_BYTES:
+        raise RuntimeError(
+            f"search backend reply exceeds {_MAX_RESPONSE_BYTES} bytes; refusing to parse"
+        )
     data = json.loads(raw.decode("utf-8"))
 
     # Normalize common search-provider shapes into text-only records. Adjust

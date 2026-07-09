@@ -29,7 +29,7 @@ This is real, not narration:
 - **Layer 3 foundation ships runnable, tested code.** The dual-gate tool/skill registry, PreToolUse sandbox hook, and Agent Factory (fleet provision, dry-run, cross-env tag-guard) are built and unit-tested.
 - **Native IaC, not hand-rolled resources.** The gateway / registry / memory / harness stacks use the native `AWS::BedrockAgentCore::*` CloudFormation types. Per the README status matrix, the **Gateway and Memory CFN types are registered**; the Registry type is not yet in CFN (see limitations).
 - **Config path works.** `pip install -e .` succeeds (`[tool.setuptools] packages = ["sentinel_harness", "intake"]`), the `sentinel` console script works, and `sentinel create <harness.yaml>` loads real config via `sentinel_harness/loader.py` (systemPrompt file read, `bedrockModelConfig` / `agentCoreGateway` / `managedMemoryConfiguration` mapping, `${ENV}` expansion, `@gateway/tool` allowedTools grammar).
-- **Scale.** 1445 offline tests pass (+5 skipped when optional deps absent) across 75 test files, with 22 evidence JSON artifacts, 15 scenarios, 14 tools, an `iac-cdk` project (8 stacks synth-green) and an `iac-terraform` mirror (`validate`-clean).
+- **Scale.** 1475 offline tests pass (+5 skipped when optional deps absent) across 76 test files, with 22 evidence JSON artifacts, 15 scenarios, 14 tools, an `iac-cdk` project (9 stacks synth-green) and an `iac-terraform` mirror (`validate`-clean).
 - **Clean anonymization.** No real account IDs (only the `000000000000` placeholder), no customer or company names, no secrets. The CI secret-and-name scan is self-non-matching and fails the build on any hit.
 
 ## 4. Live controls retained for demos (us-east-1)

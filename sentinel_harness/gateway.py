@@ -140,14 +140,16 @@ def cognito_jwt_authorizer(discovery_url, *, allowed_audience=None,
     rather than as a server-side ValidationException."""
     if not discovery_url:
         raise ValueError("cognito_jwt_authorizer requires a discovery_url (OIDC .well-known URL).")
-    if (allowed_audience is None) == (allowed_clients is None):
+    # Truthiness, not identity: an empty list ([]) is as much "unset" as None, so
+    # allowed_audience=[] must not slip through and emit an empty allowedAudience.
+    if bool(allowed_audience) == bool(allowed_clients):
         raise ValueError(
-            "cognito_jwt_authorizer: give exactly one of allowed_audience (human ID "
-            "tokens carry an aud claim) OR allowed_clients (M2M access tokens have NO "
-            "aud claim, so validate client_id instead) — not neither, not both."
+            "cognito_jwt_authorizer: give exactly one non-empty of allowed_audience "
+            "(human ID tokens carry an aud claim) OR allowed_clients (M2M access tokens "
+            "have NO aud claim, so validate client_id instead) — not neither, not both."
         )
     inner: dict = {"discoveryUrl": discovery_url}
-    if allowed_audience is not None:
+    if allowed_audience:
         if isinstance(allowed_audience, str):
             allowed_audience = [allowed_audience]
         inner["allowedAudience"] = list(allowed_audience)

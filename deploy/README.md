@@ -148,3 +148,33 @@ deploy/destroy.sh --yes    # CI: skip the prompt (account+region still printed)
 
 > If you deployed with `--with-endpoints`, `destroy.sh` removes the endpoints too
 > (they belong to `sentinel-network`) — so the ~$30/mo charge stops on teardown.
+
+## Full teardown (non-CDK live resources)
+
+`destroy.sh` covers only the **CDK stacks**, and `sentinel cleanup <prefix>` covers
+**harnesses**. A few resources created directly against the control plane during
+live validation are **not** owned by either and must be removed by hand. They are all
+near-zero cost (a Registry + records = free; an ECR repo = a few cents/month; an IAM
+role = free), so there is no urgency — but here is the complete list so nothing is
+orphaned. The concrete ids for a given run are recorded in the git-ignored
+`.live-resources.json` at the repo root.
+
+```bash
+# AgentCore Runtime (the ONLY one with standing compute cost — delete first)
+aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id <id>
+
+# AgentCore Registry + its records (records go with the registry)
+aws bedrock-agentcore-control delete-registry --registry-id <id>
+
+# ECR repo (force removes any images)
+aws ecr delete-repository --repository-name sentinel-cve-intel --force
+
+# IAM execution role (delete the inline policy, then the role)
+aws iam delete-role-policy --role-name sentinel-runtime-exec \
+  --policy-name sentinel-runtime-least-priv
+aws iam delete-role --role-name sentinel-runtime-exec
+```
+
+Run these against the **same non-prod account/region** you created them in (check
+`aws sts get-caller-identity` first). The Registry/records helpers are also available
+programmatically via `sentinel_harness.registry_live.delete_registry(...)`.

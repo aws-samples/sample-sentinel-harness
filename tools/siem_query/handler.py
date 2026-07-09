@@ -294,7 +294,14 @@ def _fetch_live(key: str, value: str) -> List[Dict[str, Any]]:
         # noqa: S310 — the endpoint is operator-configured via env, not attacker
         # controlled; timeout + bounded read keep a bad backend from wedging us.
         with urllib.request.urlopen(req, timeout=_LIVE_TIMEOUT_S) as resp:  # noqa: S310
-            raw = resp.read(_MAX_RESPONSE_BYTES)
+            # Read cap+1 then reject over-limit, rather than silently truncating —
+            # matches the ops_query/asset_lookup/enrich_ioc reject pattern so the
+            # whole tool family behaves identically on an oversized reply.
+            raw = resp.read(_MAX_RESPONSE_BYTES + 1)
+        if len(raw) > _MAX_RESPONSE_BYTES:
+            raise RuntimeError(
+                f"SIEM backend reply exceeds {_MAX_RESPONSE_BYTES} bytes; refusing to parse"
+            )
     except urllib.error.HTTPError as exc:  # non-2xx status line
         raise RuntimeError(
             f"SIEM backend returned HTTP {exc.code} for {url!r}"

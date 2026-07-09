@@ -12,7 +12,7 @@
   <img alt="license" src="https://img.shields.io/badge/license-MIT--0-30d158"/>
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-2997ff"/>
   <img alt="bedrock-agentcore" src="https://img.shields.io/badge/Amazon%20Bedrock-AgentCore%20Harness-ff9900"/>
-  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-1445%20passing-1D8102"/>
+  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-1475%20passing-1D8102"/>
   <img alt="status" src="https://img.shields.io/badge/live--validated-CVE%20%C2%B7%20multi--harness%20%C2%B7%20HITL%20%C2%B7%20Play%20Mode-8b5cf6"/>
 </p>
 
@@ -54,13 +54,14 @@ Honest build status per capability — mirrors the self-audit.
 | **L1 Strategy** | Multi-account ops automation (enumerate accounts → triage findings → ticket, HITL) | 🟠 **designed** (loadable harness.yaml over a fictional 4-account inventory; read-only `ops_query`, `OPS_QUERY_LIVE` seam) | `harnesses/ops-automation/`, `tools/ops_query/`, `mockdata/accounts.py` |
 | **L2 Simulation** | Adversary emulation, Play Mode (every step human-gated) + checkpoint/resume | 🟢 **live-validated** | `scenarios/scenario_play_mode.py`, `sentinel_harness/simulation.py` |
 | **L2 Simulation** | BAS detection-replay + blind-spot report (real Sigma matcher) | 🟢 **live-validated** (offline, deterministic; 4 techniques × 2 rules → 2 blind spots, coverage 0.5) | `tools/sigma_match/`, `longrunning/bas-runner/bas_cases.py`, `scenarios/scenario_bas_replay.py` |
-| **L2 Simulation** | Attack-path reasoning + threat-hunt planning | 🟢 **built + tested** (real `build_attack_paths` / `build_hunt_plan`; A2A serving = skeleton) | `specialists/attack-mapper/`, `specialists/threat-hunt/`, `tools/asset_lookup/` |
+| **L2 Simulation** | Attack-path reasoning + threat-hunt planning | 🟢 **built + tested** (real `build_attack_paths` / `build_hunt_plan`; both siblings now at cve-intel parity — two-stage docker build, non-root, + a mocked-model zero-network A2A message/send contract test) | `specialists/attack-mapper/`, `specialists/threat-hunt/`, `tools/asset_lookup/` |
 | **L2 Simulation** | Sample detonation (one-shot microVM, long-running tier) | 🟢 **built + tested** (full `QUEUED→…→DESTROYED` lifecycle state machine + `detonate_sample` orchestrator + scenario; HONEST SIMULATED no-op — no real VM/malware/network; sample-by-reference, sandbox-refused bad action, HITL-gated, always-destroyed-after-use — `evidence/detonation_result.json`) | `longrunning/detonation/`, `scenarios/scenario_detonation.py` |
 | **L3 Foundation** | Tool/skill registry (dual-gate governance) + PreToolUse sandbox hook | 🟢 **built + tested** | `sentinel_harness/registry.py`, `sentinel_harness/sandbox_hooks.py` |
 | **L3 Foundation** | Agent Factory (fleet provision, dry-run, cross-env tag-guard) | 🟢 **built + tested** | `sentinel_harness/factory.py` |
 | **L3 Foundation** | LiteLLM A2A specialist Runtime (container) | 🟢 **built + tested** (real multi-stage `Dockerfile` with pinned deps + non-root `docker build` succeeds; in-process A2A server↔client contract test with a **mocked** model + socket-connect guard proves zero-network round-trip + clean errors on malformed input) | `specialists/cve-intel/` (`Dockerfile`, `compose.yaml`, `local_a2a.py`) |
 | **L3 Foundation** | AgentCore Registry control-plane governance (create Registry + records; DRAFT→PENDING_APPROVAL dual-gate) | 🟢 **live-verified** (a real Registry + an `AGENT_SKILLS` record were created on a non-prod dev account and moved `DRAFT` → `PENDING_APPROVAL` via `submit_for_approval`; `autoApproval=false` = the on-account realization of the offline dual-gate. `registry_live.py` wraps the confirmed-real `bedrock-agentcore-control` Registry ops; the governance walk is proven offline in `evidence/registry_governance_result.json`) | `sentinel_harness/registry_live.py`, `scenarios/scenario_registry_governance.py` |
 | **L3 Foundation** | Gateway/Registry/Memory CDK stack | 🟡 **synth-validated** (Gateway/Memory CFN types registered; the Registry type has a feature-flagged Lambda-backed custom-resource *path* — `-c sentinel:registryViaCustomResource=true`, tsc + both-state synth clean. The Lambda's Registry action names are now **confirmed** real against the GA model, but the `@aws-sdk/client-bedrock-agentcore-control` client is **not** in the Node20 bundled set / `package.json`, so it must be bundled before a live `cdk deploy` — no live CDK deploy has run) | `iac-cdk/lib/registry-stack.ts`, `iac-cdk/lib/registry-cr.ts` |
+| **L3 Foundation** | Runtime CDK stack (specialist / long-running Runtime) | 🟡 **synth-validated** (raw `AWS::BedrockAgentCore::Runtime` CfnResource — PUBLIC net + A2A protocol + arn/id outputs; tsc + `cdk synth` clean, mirrors the registry-stack honesty pattern. The CFN type is not GA so it synths but fails on deploy until registered; the control-plane `CreateAgentRuntime` itself is separately **live-validated** — see the live-A2A row) | `iac-cdk/lib/runtime-stack.ts` |
 | **L3 Foundation** | Guardrail — masks secrets/PII in tool responses | 🟢 **live-deployed + validated** (`GUARDRAIL_INTERVENED` masked a fake AWS key + token) | `iac-cdk/lib/guardrail-stack.ts`, `evidence/m4_guardrail_result.json` |
 | **L3 Foundation** | Cognito identity for Gateway CUSTOM_JWT (human + M2M) | 🟢 **live-deployed** (OIDC discovery reachable, RS256; authorizer contract verified) | `iac-cdk/lib/identity-stack.ts`, `gateway.cognito_jwt_authorizer` |
 | **L3 Foundation** | Observability — CW dashboard + TokensPerScenario + Budgets | 🟢 **live-deployed** | `iac-cdk/lib/observability-stack.ts` |
@@ -72,7 +73,7 @@ Honest build status per capability — mirrors the self-audit.
 | **Tools** | `nvd_lookup` / `epss_kev` / `attack_lookup` / `web_search` | 🟡 **reference stubs** (offline-safe, contract-tested) | `tools/`, `tests/test_tool_handlers.py` |
 | **Tools** | `siem_query` / `asset_lookup` / `enrich_ioc` / `ops_query` — backend-pluggable | 🟢 **built + tested** (offline mock default; `*_LIVE`=1 switches to a real stdlib-HTTP client — env-driven URL + bearer, timeouts, all failures→`upstream_error` with no silent fallback — proven end-to-end against an in-process 127.0.0.1 mock server, zero external network) | `tools/{siem_query,asset_lookup,enrich_ioc,ops_query}/`, `tests/test_*_live.py` |
 
-🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **1445 offline tests pass** (+5 skipped when optional deps absent).
+🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **1475 offline tests pass** (+5 skipped when optional deps absent).
 
 ## 🚀 Quickstart
 
@@ -81,7 +82,7 @@ git clone https://github.com/neosun100/sentinel-harness && cd sentinel-harness
 pip install -e .          # Python 3.10+ ; installs the `sentinel` CLI
 
 # offline tests need no AWS
-SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/test pytest tests/ -q   # 1445 passing
+SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/test pytest tests/ -q   # 1475 passing
 
 # configure for live runs (12-factor — nothing hardcoded)
 export AWS_PROFILE=<your-non-prod-profile>          # never production
@@ -121,7 +122,7 @@ Each scenario is runnable end-to-end and writes a result JSON to [`evidence/`](e
 
 ## 🧩 Extending
 
-- **New scenario** → add `scenarios/scenario_<name>.py` using `sentinel_harness.core` (see existing three for the pattern); write evidence to `evidence/`; leave teardown to `sentinel cleanup`.
+- **New scenario** → add `scenarios/scenario_<name>.py` using `sentinel_harness.core` (see the existing scenarios for the pattern); write evidence to `evidence/`; leave teardown to `sentinel cleanup`.
 - **New tool** → drop a handler under `tools/<name>/` (keep deterministic tools LLM-free, like `sigma_yara_lint`) and wire it into an AgentCore Gateway as an MCP target.
 - **New skill** → add `skills/<name>/SKILL.md` (AgentSkills.io format: YAML frontmatter + body); attach via `create_harness(skills=[...])`.
 - **New harness** → follow `harnesses/<name>/` (a `system_prompt.md` + a `harness.yaml`); the YAML loader is shipped, so `sentinel create harnesses/<name>/harness.yaml` (or `loader.load_harness_config`) creates it directly — or construct via `core.create_harness(...)` in a scenario.
@@ -161,7 +162,7 @@ sentinel-harness/
 ├── iac-cdk/              L3 CDK stacks (8; guardrail/identity/obs live) 🟢
 ├── iac-terraform/        deployable Terraform mirror (validate-clean)  🟢
 ├── docs/                 ARCHITECTURE · BLUEPRINT · SETUP · HARNESSES · FIDELITY-REPORT
-├── tests/                offline unit + config tests (1445)     🟢
+├── tests/                offline unit + config tests (1475)     🟢
 └── .github/workflows/    CI incl. a customer-name / secret gate
 ```
 

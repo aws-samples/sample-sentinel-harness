@@ -5,6 +5,13 @@ Harness API on a **non-production dev account**. Account IDs have been scrubbed 
 `<ACCOUNT_ID>`. Each `*_result.json` is written by the matching script in
 `scenarios/`; each `*.log` is the raw run log. Proof, not claims.
 
+> **Scope of this file.** The sections below walk the **core Layer-1 scenarios** in
+> detail. The repo now ships **22 evidence artifacts** across 15 scenarios plus two
+> live on-account captures (`live_verify_result.json`, `live_a2a_runtime_result.json`).
+> For the full, current per-scenario ledger see the **Scenarios & evidence** table in
+> the [root README](../README.md#-scenarios--evidence); every `evidence/*_result.json`
+> here is written by the matching `scenarios/scenario_*.py`.
+
 ## Scenario 1 — CVE triage with a human-in-the-loop gate
 `scenarios/scenario_cve_triage.py` → `cve_triage_result.json`
 

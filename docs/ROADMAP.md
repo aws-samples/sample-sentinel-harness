@@ -45,13 +45,13 @@ live) · 🟡 skeleton / partial · 🔴 gap.
 | Dir | Contents | Status | Gap |
 |---|---|:--:|---|
 | `harnesses/` | `alert-triage` / `detection-eng` / `research-supervisor` | ✅ loader-consumed | missing meta / ops / self-improving harnesses |
-| `scenarios/` | 15 runnable scenarios incl. `cve_triage` / `detection_gen` / `hitl_resume` / `multi_harness` / `named_supervisor` / `play_mode` / `agent_factory_loop` / `self_improve_loop` / `bas_replay` / `egress_control` / `alert_triage_poc` / `feedback_loop` / `cve_asset_triage` / `detonation` / `registry_governance` (evidence present) | ✅ | self-iteration loop scenario DELIVERED (`agent_factory_loop` / `self_improve_loop`) |
+| `scenarios/` | 15 runnable scenarios incl. `cve_triage` / `detection_gen` / `hitl_resume` / `multi_harness` / `named_supervisor` / `play_mode` / `agent_factory_loop` / `self_improve_loop` / `bas_replay` / `egress_control` / `alert_triage_poc` / `feedback_loop` / `cve_asset_triage` / `detonation` / `registry_governance` (evidence present for all except the live-only `named_supervisor`, whose Gateway proof is `gateway_lifecycle_result.json`) | ✅ | self-iteration loop scenario DELIVERED (`agent_factory_loop` / `self_improve_loop`) |
 | `tools/` | 14 tools incl. `siem_query` / `asset_lookup` / `enrich_ioc` / `create_ticket` / `ops_query` / `sigma_match` / `sigma_yara_lint` / `harness_ops` / `run_evaluation` / `whitelist_optimizer` + reference stubs `attack_lookup` / `epss_kev` / `nvd_lookup` / `web_search` | 🟩 | data-plane tools DELIVERED (mock world + `*_LIVE` seams) |
 | `skills/` | 9 skills incl. `cve-triage-rubric` / `attack-path-reasoning` / `detection-writing-sop` / `ioc-vetting` / `cve-asset-triage` / `soc-ip-lookup` / `soc-triage` / `incident-ticketing` / `multi-account-ops` | 🟩 | add domain skills as your SecOps program needs them |
 | `specialists/` | `cve-intel` (docker-build + live-validated on AgentCore Runtime) + `attack-mapper` / `threat-hunt` (real graph/plan builders) | 🟩 | `adversarial-reviewer` still to add |
 | `longrunning/` | `bas-runner` (BAS case-gen + detection-replay) + `detonation` (full simulated microVM lifecycle + orchestrator) | 🟩 | both built + tested; detonation stays an honest SIMULATED no-op |
-| `iac-cdk/lib/` | 8 synth-green stacks — `gateway` / `registry` / `memory` / `network` / `identity` / `guardrail` / `observability` / `harness` (+ `iam`); `iac-terraform/` mirror is `terraform validate`-clean | ✅ | `guardrail` / `identity` / `observability` LIVE-deployed (us-east-1); the Registry custom-resource Lambda still needs `@aws-sdk/client-bedrock-agentcore-control` bundled before a live `cdk deploy` (the Registry control-plane API is separately live-verified via `registry_live.py`); AgentCore **Runtime is live-validated** — a real arm64 microVM served a live A2A call (HTTP 200, real Bedrock model) on a non-prod test account, then torn down (`evidence/live_a2a_runtime_result.json`); a declarative `runtime` CDK stack is still to add |
-| `tests/` | 75 files, **1445 offline passing** (+5 skipped) | ✅ | add tests with each new module |
+| `iac-cdk/lib/` | 9 synth-green stacks — `gateway` / `registry` / `memory` / `network` / `identity` / `guardrail` / `observability` / `harness` / `runtime` (+ `iam`); `iac-terraform/` mirror is `terraform validate`-clean | ✅ | `guardrail` / `identity` / `observability` LIVE-deployed (us-east-1); the Registry + `runtime` custom-resource/raw-CfnResource stacks synth clean but fail on deploy until their CFN types are GA (both control-plane APIs are separately live-verified — Registry via `registry_live.py`, `CreateAgentRuntime` via a real arm64 microVM that served a live A2A call, HTTP 200, real Bedrock model, on a non-prod test account, then torn down — `evidence/live_a2a_runtime_result.json`) |
+| `tests/` | 76 files, **1475 offline passing** (+5 skipped) | ✅ | add tests with each new module |
 | `evidence/` | 22 evidence sets | ✅ | add one per milestone |
 
 ### 0.3 Fit score (vs. a full three-layer SecOps agent program)
@@ -181,8 +181,8 @@ Each milestone gives: **goal / files / reused APIs / acceptance (live evidence) 
 Suggest one feature branch per milestone.
 
 ### M0 — Environment & baseline reproduction (half a day)
-**Goal:** on a fresh machine, get all 1445 offline tests green and reproduce ≥1 live scenario.
-- [ ] `uv sync` + `uv run pytest -q` → 1445 passing (+5 skipped) (offline).
+**Goal:** on a fresh machine, get all 1475 offline tests green and reproduce ≥1 live scenario.
+- [ ] `uv sync` + `uv run pytest -q` → 1475 passing (+5 skipped) (offline).
 - [ ] Configure `SENTINEL_EXECUTION_ROLE_ARN` / `SENTINEL_REGION` / `AWS_PROFILE` (non-prod) — see `docs/SETUP.md`.
 - [ ] Run `scenarios/scenario_cve_triage.py`; compare `evidence/cve_triage_result.json` shape.
 - [ ] Run `scenarios/scenario_hitl_resume.py`; reproduce pause→approve→resume.
@@ -419,7 +419,7 @@ hand-off reuses the live-capable M1/M2 engine (driven offline here, labeled a wi
       (`make deploy`, cost note, `make destroy`) + the no-lock-in export. — `docs/QUICKSTART.md`
 - [x] `tests/smoke/`: offline acceptance suite (default offline; `SENTINEL_SMOKE_LIVE=1` opt-in for live). — `tests/smoke/`
 
-**Acceptance:** `make test` → 1445 offline tests green; `make seed-registry` → dual-gate `ok`;
+**Acceptance:** `make test` → 1475 offline tests green; `make seed-registry` → dual-gate `ok`;
 `make create-harnesses` (DRY_RUN=1) → 8 harnesses validate offline with zero AWS; `sentinel export` → valid
 compilable Strands Python; `make smoke` → the offline acceptance suite green. A fresh non-prod account can then
 run `make deploy` (free-tier foundation) and the live scenarios; `make destroy` tears it all down.
@@ -462,7 +462,7 @@ if eval.score >= criteria:
 ---
 
 ## 6. Testing & acceptance charter
-- **offline**: every new module gets `tests/test_*.py` (mock AWS); keep `uv run pytest -q` green (now 1445, +5 skipped, only grows).
+- **offline**: every new module gets `tests/test_*.py` (mock AWS); keep `uv run pytest -q` green (now 1475, +5 skipped, only grows).
 - **config parity**: every new `harness.yaml` must pass `factory.provision_fleet(dry_run=True)` + `test_config_validation.py`.
 - **live evidence**: each milestone runs one real call, drops `evidence/<milestone>_result.json` + `.log`.
 - **governance**: each new tool keeps `registry.governance_check().ok == True`.
