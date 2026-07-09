@@ -5,7 +5,7 @@ QUICKSTART.md is the "get running in 5 minutes" promise a newcomer reads first,
 so its claims must stay true to the repo: the make targets it advertises have to
 be the canonical ones (and, once a Makefile exists as a sibling deliverable, must
 actually be defined there), the offline test count it quotes must match the real
-suite size (1255), and — this being a PUBLIC repo — it must never leak a customer
+suite size (1445), and — this being a PUBLIC repo — it must never leak a customer
 name or a real 12-digit AWS account id.
 
 These tests read files as text only. They run no make target, no deploy, no AWS
@@ -40,7 +40,7 @@ CANONICAL_TARGETS = [
 ]
 
 # The offline suite size the doc must quote accurately.
-EXPECTED_TEST_COUNT = "1255"
+EXPECTED_TEST_COUNT = "1445"
 
 # The one customer/company name that must never appear in this public repo. Built
 # from a char class so the literal string never sits in this source file (mirrors

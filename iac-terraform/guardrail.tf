@@ -1,10 +1,12 @@
 # guardrail.tf — Amazon Bedrock Guardrail for the sentinel-harness.
 #
-# Mirrors the M4 CDK guardrail: a sensitive-information policy that ANONYMIZEs a
-# couple of PII entity types plus two custom regexes that catch secret-shaped
-# strings (an AWS access-key pattern and a generic API-token pattern) in both
-# prompts and model responses. Paired with an aws_bedrock_guardrail_version so
-# the guardrail can be referenced by a pinned, immutable version.
+# Mirrors the M4 CDK guardrail: a sensitive-information policy that BLOCKs a live
+# AWS secret access key (it must never round-trip) and ANONYMIZEs ordinary contact
+# PII (EMAIL, NAME) so casework text still flows, plus two custom regexes that
+# catch secret-shaped strings (an AWS access-key-id pattern and a generic
+# 'sk-'/'ghp_'-style API-token pattern) in both prompts and model responses.
+# Paired with an aws_bedrock_guardrail_version so the guardrail can be referenced
+# by a pinned, immutable version.
 #
 # SECURITY NOTE: the regex PATTERNS below are assembled from character classes
 # so that NO literal/real credential ever appears in this file. A pattern such
@@ -20,12 +22,14 @@ locals {
   aws_key_body    = "[0-9A-Z]{16}" # 16 uppercase alphanumeric characters
   aws_key_pattern = "${local.aws_key_prefix}${local.aws_key_body}"
 
-  # Generic secret/token detector: an "sk-"-style prefix followed by >= 20
-  # base62 characters (covers many provider API tokens). The "sk-" literal is
-  # built from char-classes so no real token prefix+body pair is embedded.
-  token_prefix  = "[a-z]{2}-"        # e.g. sk-, pk-, rk-
-  token_body    = "[A-Za-z0-9]{20,}" # 20+ base62 chars
-  token_pattern = "${local.token_prefix}${local.token_body}"
+  # Generic long-lived API-token detector: an "sk-" / "ghp_"-style prefix
+  # followed by >= 20 body characters (covers many provider API tokens). The
+  # prefixes are assembled from fragments so no real token prefix+body pair is
+  # embedded here.
+  sk_prefix     = join("", ["s", "k-"])  # OpenAI-style secret key prefix
+  ghp_prefix    = join("", ["gh", "p_"]) # GitHub personal access token prefix
+  token_body    = "[A-Za-z0-9_]{20,}"    # 20+ chars (alnum + underscore)
+  token_pattern = "(?:${local.sk_prefix}|${local.ghp_prefix})${local.token_body}"
 }
 
 resource "aws_bedrock_guardrail" "sentinel" {
@@ -36,28 +40,34 @@ resource "aws_bedrock_guardrail" "sentinel" {
   blocked_outputs_messaging = var.guardrail_blocked_outputs_messaging
 
   sensitive_information_policy_config {
-    # --- PII entities (ANONYMIZE a couple of representative types) ---
+    # --- PII entities. A live secret access key must never round-trip, so BLOCK
+    # it; ordinary contact PII (EMAIL, NAME) is ANONYMIZEd so casework text flows. ---
+    pii_entities_config {
+      type   = "AWS_SECRET_KEY"
+      action = "BLOCK"
+    }
+
     pii_entities_config {
       type   = "EMAIL"
       action = "ANONYMIZE"
     }
 
     pii_entities_config {
-      type   = "AWS_ACCESS_KEY"
+      type   = "NAME"
       action = "ANONYMIZE"
     }
 
     # --- Custom regexes for secret-shaped strings ---
     regexes_config {
-      name        = "aws-access-key-pattern"
-      description = "Detects AWS access-key identifiers (AKIA/ASIA prefix + 16 uppercase alphanumerics). Pattern only; no real key stored."
+      name        = "aws-access-key-id"
+      description = "Masks AWS access key id shaped strings (A[KS]IA + 16 upper/digit chars) leaking through a tool response. Pattern only; no real key stored."
       pattern     = local.aws_key_pattern
       action      = "ANONYMIZE"
     }
 
     regexes_config {
-      name        = "generic-api-token-pattern"
-      description = "Detects generic 'sk-'-style API tokens (2-letter prefix + '-' + 20+ base62 chars). Pattern only; no real token stored."
+      name        = "generic-api-token"
+      description = "Masks generic long-lived API tokens (sk-… / ghp_… style prefixes + 20+ chars) leaking through a tool response. Pattern only; no real token stored."
       pattern     = local.token_pattern
       action      = "ANONYMIZE"
     }

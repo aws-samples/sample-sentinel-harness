@@ -6,9 +6,9 @@
 #
 # NOTE: build_hunt_plan (the deterministic hunt-plan core) has ZERO third-party
 # dependencies — it is pure stdlib and testable without anything below installed.
-bedrock-agentcore==0.1.5
-bedrock-agentcore-starter-toolkit==0.1.5
-strands-agents[a2a,litellm]==0.4.0
-mcp==1.9.0
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
+bedrock-agentcore==1.9.1
+bedrock-agentcore-starter-toolkit==0.3.10
+strands-agents[a2a,litellm]==1.9.1
+mcp==1.28.1
+fastapi==0.139.0
+uvicorn[standard]==0.50.2

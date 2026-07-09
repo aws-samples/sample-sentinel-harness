@@ -1,0 +1,83 @@
+{
+  "scenario": "live_a2a_runtime",
+  "steps": [
+    {
+      "step": "mode",
+      "ok": true,
+      "data": {
+        "mock": true,
+        "note": "MOCK RUN — fake AgentCore control+data clients; ZERO AWS/network/compute. Proves the CreateAgentRuntime(A2A,PUBLIC)->READY->InvokeAgentRuntime(message/send)->assert 200+jsonrpc->delete contract deterministically. The real one-off end-to-end capture is evidence/live_a2a_runtime_result.json."
+      }
+    },
+    {
+      "step": "create_agent_runtime",
+      "ok": true,
+      "data": {
+        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:000000000000:runtime/sentinel_cve_intel_a2a-0001fakeRUNTIME0",
+        "status": "CREATING",
+        "protocol": "A2A",
+        "networkMode": "PUBLIC",
+        "image": "000000000000.dkr.ecr.us-east-1.amazonaws.com/sentinel/cve-intel:offline-mock"
+      }
+    },
+    {
+      "step": "wait_ready",
+      "ok": true,
+      "data": {
+        "status": "READY",
+        "polls": 1
+      }
+    },
+    {
+      "step": "invoke_agent_runtime",
+      "ok": true,
+      "data": {
+        "http_status": 200,
+        "jsonrpc": "2.0",
+        "has_result": true,
+        "has_error": false,
+        "verdict_cve_id": "CVE-2021-44228",
+        "engine": "echo-mock"
+      }
+    },
+    {
+      "step": "teardown_delete_agent_runtime",
+      "ok": true,
+      "data": {
+        "deleted_runtime": "sentinel_cve_intel_a2a-0001fakeRUNTIME0"
+      }
+    },
+    {
+      "step": "verdict",
+      "ok": true,
+      "data": {
+        "create_and_ready": true,
+        "invoke_http_200": true,
+        "a2a_jsonrpc_ok": true,
+        "teardown_called": true,
+        "closed": true,
+        "note": "Runtime A2A lifecycle: CreateAgentRuntime(protocol=A2A, network=PUBLIC) from an ECR image -> poll to READY -> InvokeAgentRuntime(A2A message/send) -> assert HTTP 200 + JSON-RPC result -> ALWAYS DeleteAgentRuntime (teardown). MOCK RUN — fake AgentCore control+data clients; ZERO AWS/network/compute. Proves the CreateAgentRuntime(A2A,PUBLIC)->READY->InvokeAgentRuntime(message/send)->assert 200+jsonrpc->delete contract deterministically. The real one-off end-to-end capture is evidence/live_a2a_runtime_result.json."
+      }
+    }
+  ],
+  "mock": true,
+  "mock_note": "MOCK RUN — fake AgentCore control+data clients; ZERO AWS/network/compute. Proves the CreateAgentRuntime(A2A,PUBLIC)->READY->InvokeAgentRuntime(message/send)->assert 200+jsonrpc->delete contract deterministically. The real one-off end-to-end capture is evidence/live_a2a_runtime_result.json.",
+  "flags": {
+    "create_and_ready": true,
+    "invoke_http_200": true,
+    "a2a_jsonrpc_ok": true,
+    "teardown_called": true,
+    "closed": true
+  },
+  "teardown_called": true,
+  "invoke_http_status": 200,
+  "account": "000000000000",
+  "verdict": {
+    "create_and_ready": true,
+    "invoke_http_200": true,
+    "a2a_jsonrpc_ok": true,
+    "teardown_called": true,
+    "closed": true,
+    "note": "Runtime A2A lifecycle: CreateAgentRuntime(protocol=A2A, network=PUBLIC) from an ECR image -> poll to READY -> InvokeAgentRuntime(A2A message/send) -> assert HTTP 200 + JSON-RPC result -> ALWAYS DeleteAgentRuntime (teardown). MOCK RUN — fake AgentCore control+data clients; ZERO AWS/network/compute. Proves the CreateAgentRuntime(A2A,PUBLIC)->READY->InvokeAgentRuntime(message/send)->assert 200+jsonrpc->delete contract deterministically. The real one-off end-to-end capture is evidence/live_a2a_runtime_result.json."
+  }
+}

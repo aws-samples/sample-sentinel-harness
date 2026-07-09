@@ -29,14 +29,21 @@
 resource "aws_cognito_user_pool" "this" {
   name = "${var.name_prefix}-users"
 
-  # Dev-friendly password policy; harden for real deployments.
+  # Password policy mirrors the CDK IdentityStack: 12-char minimum, all four
+  # character classes required (lower/upper/digit/symbol), temp passwords valid 3 days.
   password_policy {
-    minimum_length                   = 8
+    minimum_length                   = 12
     require_lowercase                = true
     require_numbers                  = true
-    require_symbols                  = false
+    require_symbols                  = true
     require_uppercase                = true
-    temporary_password_validity_days = 7
+    temporary_password_validity_days = 3
+  }
+
+  # Self-signup OFF (admin-created users only) — this is a governance-adjacent dev
+  # IdP, not a public sign-up. Mirrors the CDK selfSignUpEnabled: false.
+  admin_create_user_config {
+    allow_admin_create_user_only = true
   }
 
   # Email as the auto-verified attribute for the human sign-up flow.

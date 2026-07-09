@@ -38,12 +38,38 @@ from botocore.config import Config
 REGION = os.environ.get("SENTINEL_REGION", "us-east-1")
 EXECUTION_ROLE_ARN = os.environ.get("SENTINEL_EXECUTION_ROLE_ARN")  # required at runtime
 
+_DATA_CONFIG = Config(read_timeout=180, connect_timeout=15, retries={"max_attempts": 2})
+
 _control = boto3.client("bedrock-agentcore-control", region_name=REGION)
-_data = boto3.client(
-    "bedrock-agentcore",
-    region_name=REGION,
-    config=Config(read_timeout=180, connect_timeout=15, retries={"max_attempts": 2}),
-)
+_data = boto3.client("bedrock-agentcore", region_name=REGION, config=_DATA_CONFIG)
+
+
+def set_region(region: str) -> None:
+    """Rebind the module-global boto3 clients to ``region`` at runtime.
+
+    The control/data clients are constructed at import time from ``SENTINEL_REGION``,
+    so simply setting the env var later has NO effect on already-built clients. The
+    CLI ``--region`` flag and any programmatic override must call this to actually
+    move subsequent calls to the new region (it also updates the env var so exported
+    code / subprocesses inherit it). Every helper here uses these module globals, so
+    one reassignment moves the whole library.
+    """
+    global REGION, _control, _data
+    if not region:
+        raise ValueError("region must be a non-empty string")
+    REGION = region
+    os.environ["SENTINEL_REGION"] = region
+    _control = boto3.client("bedrock-agentcore-control", region_name=region)
+    _data = boto3.client("bedrock-agentcore", region_name=region, config=_DATA_CONFIG)
+    # Sibling modules bind `from .core import _control` at import time, so their
+    # local name still points at the OLD client after we reassign ours. Rebind the
+    # borrowers explicitly (best-effort: they may not be imported yet) so a runtime
+    # region switch actually moves gateway/registry_live calls too.
+    import sys as _sys
+    for _mod_name in ("sentinel_harness.gateway", "sentinel_harness.registry_live"):
+        _mod = _sys.modules.get(_mod_name)
+        if _mod is not None and hasattr(_mod, "_control"):
+            _mod._control = _control
 
 # --- Model IDs: use the cross-region-inference *pattern*; do not pin a version you
 #     can't verify. Override via env if you want a specific pinned id. ---

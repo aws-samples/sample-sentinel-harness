@@ -127,8 +127,16 @@ def _fetch_live(cve_id: str) -> Dict[str, Any]:
     api_key = os.environ.get("NVD_API_KEY")  # optional; never hardcoded
     if api_key:
         req.add_header("apiKey", api_key)
+    # Bound the read so a hostile/oversized upstream cannot force unbounded memory
+    # buffering (mirrors the sibling *_LIVE tools).
+    _MAX_LIVE_BODY_BYTES = 4 * 1024 * 1024
     with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 (host is fixed NVD)
-        data = json.loads(resp.read().decode("utf-8"))
+        raw = resp.read(_MAX_LIVE_BODY_BYTES + 1)
+    if len(raw) > _MAX_LIVE_BODY_BYTES:
+        raise RuntimeError(
+            f"NVD reply exceeds {_MAX_LIVE_BODY_BYTES} bytes; refusing to parse"
+        )
+    data = json.loads(raw.decode("utf-8"))
     return _normalize_nvd(cve_id, data)
 
 

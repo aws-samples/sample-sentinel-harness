@@ -10,12 +10,12 @@
 git clone https://github.com/neosun100/sentinel-harness && cd sentinel-harness
 pip install -e .        # Python 3.10+ ; installs the `sentinel` CLI
 
-make test               # 1255 offline tests — deterministic, no AWS, seconds
+make test               # 1445 offline tests — deterministic, no AWS, seconds
 make demo               # the platform_demo guided tour (L1 → L4), all offline
 ls evidence/            # captured live-run results (account IDs scrubbed) — the proof
 ```
 
-- **`make test`** runs the full offline suite (**1255 tests**). Every AWS seam is monkeypatched with in-memory fakes; there is no network, no credential, and no wall-clock sleep.
+- **`make test`** runs the full offline suite (**1445 tests**). Every AWS seam is monkeypatched with in-memory fakes; there is no network, no credential, and no wall-clock sleep.
 - **`make demo`** runs [`demo/platform_demo.py`](../demo/platform_demo.py) — a single narrated tour that walks every layer, prints `BEAT 1 … BEAT 7`, and ends with a `capability → status → evidence` table. It makes zero AWS calls: live beats replay committed `evidence/*.json`, and the two L2 cores execute as pure Python.
 - **`evidence/`** holds the account-scrubbed JSON each live scenario dropped — the real proof behind the tour.
 
@@ -27,7 +27,7 @@ If you don't have `make`, the underlying commands are `pytest tests/ -q` and `py
 
 | Target | What it does |
 |---|---|
-| `make test` | Run the full offline test suite (1255 tests) — no AWS, deterministic. |
+| `make test` | Run the full offline test suite (1445 tests) — no AWS, deterministic. |
 | `make lint` | Run the linters (ruff) over the Python sources. |
 | `make synth` | `cdk synth` the eight `iac-cdk/` stacks offline (no deploy). |
 | `make deploy` | Deploy the free-tier L3 foundation via `deploy/deploy.sh` (confirms account+region first). |

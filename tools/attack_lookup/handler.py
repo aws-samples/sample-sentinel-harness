@@ -150,9 +150,18 @@ def _fetch_live(technique_id: str) -> Dict[str, Any]:
         "https://raw.githubusercontent.com/mitre/cti/master/"
         "enterprise-attack/enterprise-attack.json"
     )
+    # Bound the read so a hostile/oversized upstream cannot force unbounded memory
+    # buffering (mirrors the sibling *_LIVE tools). The real ATT&CK bundle is ~35MB,
+    # so cap generously at 64MB and refuse anything larger rather than OOM.
+    _MAX_LIVE_BODY_BYTES = 64 * 1024 * 1024
     req = urllib.request.Request(url, headers={"User-Agent": "sentinel-harness"})
     with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
-        bundle = json.loads(resp.read().decode("utf-8"))
+        raw = resp.read(_MAX_LIVE_BODY_BYTES + 1)
+    if len(raw) > _MAX_LIVE_BODY_BYTES:
+        raise RuntimeError(
+            f"ATT&CK bundle exceeds {_MAX_LIVE_BODY_BYTES} bytes; refusing to parse"
+        )
+    bundle = json.loads(raw.decode("utf-8"))
 
     for obj in bundle.get("objects", []):
         if obj.get("type") != "attack-pattern":

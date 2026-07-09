@@ -55,7 +55,10 @@ _DENY_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
 
 # Shell control operators that could chain a denied command onto an allowed one.
 # We reject them so validation cannot be bypassed by `ls && rm -rf /`.
-_CHAIN_OPERATORS = ("&&", "||", ";", "|", "`", "$(", ">", "<", "&")
+# Newline/CR are included: POSIX shells treat them as command separators, so
+# without them a denied verb smuggled onto a second line (`echo ok\nnmap ...`)
+# would slip past the leading-verb allowlist check (which only inspects tokens[0]).
+_CHAIN_OPERATORS = ("&&", "||", ";", "|", "`", "$(", ">", "<", "&", "\n", "\r")
 
 
 def validate_path(path: str, root: str | None = None) -> tuple[bool, str]:

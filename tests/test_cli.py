@@ -202,3 +202,24 @@ def test_region_override_sets_env(monkeypatch):
     monkeypatch.setattr(sh, "list_harnesses", lambda: [])
     cli.main(["--region", "eu-west-1", "list"])
     assert os.environ["SENTINEL_REGION"] == "eu-west-1"
+
+
+def test_region_override_rebinds_boto3_client(monkeypatch):
+    """--region must actually move the boto3 clients, not just set the env var.
+
+    Regression for a silent no-op: the clients are built at import from
+    SENTINEL_REGION, so setting the env var alone left calls on the old region.
+    """
+    monkeypatch.setattr(sh, "list_harnesses", lambda: [])
+    original = sh._control.meta.region_name
+    try:
+        cli.main(["--region", "eu-west-1", "list"])
+        assert sh._control.meta.region_name == "eu-west-1"
+        assert sh._data.meta.region_name == "eu-west-1"
+    finally:
+        sh.set_region(original)  # restore so later tests keep the default region
+
+
+def test_set_region_rejects_empty():
+    with pytest.raises(ValueError):
+        sh.set_region("")

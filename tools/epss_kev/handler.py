@@ -128,12 +128,21 @@ def _enrich_live(cve_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     import json
     import urllib.request
 
+    # Bound the read so a hostile/oversized upstream cannot force unbounded memory
+    # buffering (mirrors the sibling *_LIVE tools).
+    _MAX_LIVE_BODY_BYTES = 4 * 1024 * 1024
+
     def _get_json(url: str) -> Dict[str, Any]:
         req = urllib.request.Request(
             url, headers={"User-Agent": "sentinel-harness"}
         )
         with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
-            return json.loads(resp.read().decode("utf-8"))
+            raw = resp.read(_MAX_LIVE_BODY_BYTES + 1)
+        if len(raw) > _MAX_LIVE_BODY_BYTES:
+            raise RuntimeError(
+                f"backend reply exceeds {_MAX_LIVE_BODY_BYTES} bytes; refusing to parse"
+            )
+        return json.loads(raw.decode("utf-8"))
 
     # EPSS supports comma-separated batch queries.
     epss_url = (

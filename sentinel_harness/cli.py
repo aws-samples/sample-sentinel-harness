@@ -351,7 +351,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if getattr(args, "region", None):
-        os.environ["SENTINEL_REGION"] = args.region
+        # Rebind the boto3 clients (constructed at import from SENTINEL_REGION), not
+        # just the env var — otherwise --region would be a silent no-op for this run.
+        sh.set_region(args.region)
     try:
         return args.func(args)
     except KeyboardInterrupt:  # pragma: no cover

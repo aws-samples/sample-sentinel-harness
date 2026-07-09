@@ -65,6 +65,39 @@ jobs:
           AWS_SECRET_ACCESS_KEY: testing
         run: pytest -q tests
 
+  iac:
+    name: iac (cdk synth + stack tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: iac-cdk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install CDK app dependencies
+        run: npm ci
+
+      - name: Type-check (tsc --noEmit)
+        run: npx tsc --noEmit
+
+      - name: Synthesize CloudFormation (cdk synth)
+        run: npx cdk synth
+
+      - name: Run self-contained stack synth tests (ts-node)
+        # Each test is a standalone ts-node script that exits non-zero on the first
+        # failed assertion (see test/*.test.ts headers). No jest is wired in.
+        run: |
+          for t in test/*.test.ts; do
+            echo "=== running $t ==="
+            npx ts-node "$t"
+          done
+
   secret-and-name-scan:
     name: secret-and-name scan
     runs-on: ubuntu-latest
@@ -99,11 +132,16 @@ jobs:
             FAILED=1
           fi
 
-          # 2) Hardcoded 12-digit AWS account IDs inside an IAM/ARN context, e.g.
-          #    arn:aws:iam::123456789012:role/...  (the all-zeros placeholder used
-          #    in docs/tests is explicitly allowed).
-          ACCT_RE='(iam|sts|logs|s3|lambda|bedrock-agentcore)::[0-9]{12}:'
-          if GREP "$ACCT_RE" | grep -vE '::0{12}:'; then
+          # 2) Hardcoded 12-digit AWS account IDs inside an IAM/ARN/ECR context, e.g.
+          #    arn:aws:iam::123456789012:role/...  (global ARN),
+          #    arn:aws:bedrock-agentcore:us-east-1:123456789012:...  (REGIONAL ARN),
+          #    123456789012.dkr.ecr.us-east-1.amazonaws.com/...  (ECR image URI).
+          #    The all-zeros placeholder (000000000000) used in docs/tests, the
+          #    canonical AWS documentation example account (123456789012), and the
+          #    repeated-digit placeholder (555555555555) used in offline test
+          #    fixtures, are allowed (all are well-known non-real placeholders).
+          ACCT_RE='(iam|sts|logs|s3|lambda|bedrock-agentcore)::[0-9]{12}:|arn:aws[a-z-]*:[a-z0-9-]*:[a-z0-9-]*:[0-9]{12}:|[0-9]{12}\.dkr\.ecr\.'
+          if GREP "$ACCT_RE" | grep -vE ':0{12}:|0{12}\.dkr|123456789012|555555555555'; then
             echo "::error::Hardcoded 12-digit AWS account ID found. Use env vars / the 000000000000 placeholder instead."
             FAILED=1
           fi
