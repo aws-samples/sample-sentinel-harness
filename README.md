@@ -12,7 +12,7 @@
   <img alt="license" src="https://img.shields.io/badge/license-MIT--0-30d158"/>
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-2997ff"/>
   <img alt="bedrock-agentcore" src="https://img.shields.io/badge/Amazon%20Bedrock-AgentCore%20Harness-ff9900"/>
-  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-1475%20passing-1D8102"/>
+  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-1698%20passing-1D8102"/>
   <img alt="milestones" src="https://img.shields.io/badge/milestones-M0--M7%20delivered-1D8102"/>
   <img alt="live" src="https://img.shields.io/badge/live--validated-Registry%20%C2%B7%20AgentCore%20Runtime%20A2A-8b5cf6"/>
 </p>
@@ -91,7 +91,7 @@ Honest build status per capability — mirrors the self-audit.
 | **Tools** | `nvd_lookup` / `epss_kev` / `attack_lookup` / `web_search` | 🟡 **reference stubs** (offline-safe, contract-tested) | `tools/`, `tests/test_tool_handlers.py` |
 | **Tools** | `siem_query` / `asset_lookup` / `enrich_ioc` / `ops_query` — backend-pluggable | 🟢 **built + tested** (offline mock default; `*_LIVE`=1 switches to a real stdlib-HTTP client — env-driven URL + bearer, timeouts, all failures→`upstream_error` with no silent fallback — proven end-to-end against an in-process 127.0.0.1 mock server, zero external network) | `tools/{siem_query,asset_lookup,enrich_ioc,ops_query}/`, `tests/test_*_live.py` |
 
-🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **1475 offline tests pass** (+5 skipped when optional deps absent).
+🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **1698 offline tests pass** (+5 skipped when optional deps absent).
 
 ## 🚀 Quickstart
 
@@ -100,7 +100,7 @@ git clone https://github.com/neosun100/sentinel-harness && cd sentinel-harness
 pip install -e .          # Python 3.10+ ; installs the `sentinel` CLI
 
 # offline tests need no AWS
-SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/test pytest tests/ -q   # 1475 passing
+SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/test pytest tests/ -q   # 1698 passing
 
 # configure for live runs (12-factor — nothing hardcoded)
 export AWS_PROFILE=<your-non-prod-profile>          # never production
@@ -184,7 +184,7 @@ Borrowed patterns (see [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md)): supervisor→s
 | [`docs/SETUP.md`](docs/SETUP.md) | Least-privilege execution-role policy and live-run configuration |
 | [`docs/HARNESSES.md`](docs/HARNESSES.md) | The declarative `harness.yaml` configs and how the loader consumes them |
 | [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md) | Registry dual-gate, HITL, sandbox hooks, and tag-guard controls |
-| [`docs/TESTING.md`](docs/TESTING.md) | The 1475-test offline suite: layout, determinism, how to run |
+| [`docs/TESTING.md`](docs/TESTING.md) | The 1698-test offline suite: layout, determinism, how to run |
 | [`docs/FIDELITY-REPORT.md`](docs/FIDELITY-REPORT.md) | The self-audit — real vs. built vs. designed, with limits stated |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Delivered milestones (M0–M7) and what's next |
 | [`CHANGELOG.md`](CHANGELOG.md) | Versioned change history |
@@ -219,7 +219,7 @@ sentinel-harness/
 ├── iac-cdk/              L3 CDK stacks (9; guardrail/identity/obs/vpc live) 🟢
 ├── iac-terraform/        deployable Terraform mirror (validate-clean)  🟢
 ├── docs/                 QUICKSTART · ARCHITECTURE · BLUEPRINT · SETUP · HARNESSES · GOVERNANCE · TESTING · FIDELITY-REPORT · ROADMAP
-├── tests/                offline unit + config tests (1475)     🟢
+├── tests/                offline unit + config tests (1698)     🟢
 └── .github/workflows/    CI incl. a customer-name / secret gate
 ```
 

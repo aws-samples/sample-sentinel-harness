@@ -426,6 +426,61 @@ run `make deploy` (free-tier foundation) and the live scenarios; `make destroy` 
 
 ---
 
+## 4b. Post-1.0 hardening & depth (M8–M12) — from a strategic 6-lens review
+
+> Theme: **prove the claims the repo already makes.** The biggest gaps are enforcement, not
+> features — coverage/typing/lint quality, token-cost observability, managed Memory, and the
+> self-improvement loop are asserted but not gated, produced, or exercised. M8–M10 + the offline
+> parts of M11/M12 are fully doable now with zero external dependencies; the `[EXTERNAL]` items
+> need a non-prod account with `InvokeHarness`/`CreateAgentRuntime` quota (prior runs hit HTTP 403
+> throttling + an Isengard SCP) and incur real cost — their code + a gated scenario ship now, the
+> live run is pending budget/quota.
+
+### M8 — Enforce the quality claims in CI (offline) — ✅ DELIVERED
+Make the "provable core / ~90% coverage / type-hinted / lint-clean" story CI-gated, not asserted.
+- [x] Coverage measurement + `--fail-under=88` gate in the CI test job + `.coveragerc` (measured ~90%). — `ci.yml`, `.coveragerc`
+- [x] Ruff as a HARD gate (`ruff check .` required, no best-effort skip) + a lenient mypy job over the core modules. — `ci.yml`, `mypy.ini`
+- [x] Hypothesis property tests for the three deterministic cores: `sigma_match`, `whitelist_optimizer` (never suppresses a provided TP), blast-radius (determinism). — `tests/test_prop_*.py`
+- [x] `make ci` mirroring CI exactly; py3.13 added to the matrix; pytest-randomly; pre-commit hooks (ruff + the name/key scan). — `Makefile`, `.pre-commit-config.yaml`
+
+### M9 — Security-product credibility (offline) — ✅ DELIVERED
+Give the security reference the supply-chain + disclosure hygiene a security team audits first.
+- [x] `SECURITY.md` + GitHub Private Vulnerability Reporting (supported versions, SLA). — `SECURITY.md`
+- [x] Supply-chain in CI: pip-audit, Dependabot (pip + npm + actions), CodeQL (Python+TS), OpenSSF Scorecard, bandit. — `.github/dependabot.yml`, `.github/workflows/{codeql,scorecard,supply-chain}.yml`
+- [x] Hypothesis-fuzz `sandbox_hooks.validate_command/validate_path` (an allowed verdict never contains a chain op / denied verb / escaping path). — `tests/test_fuzz_sandbox_hooks.py`
+- [x] `docs/THREAT-MODEL.md` (STRIDE + agent surface) + `docs/SECRETS.md` (secrets-at-rest). — `docs/THREAT-MODEL.md`, `docs/SECRETS.md`
+- [x] SSRF/scheme allowlist + metadata-IP block on the live HTTP clients (`enrich_ioc`/`siem_query`/`nvd_lookup`); Actions pinned by SHA. — `tools/*/handler.py`, `tests/test_ssrf_guard.py`
+
+### M10 — Convert evaluators to adopters (mostly offline) — ✅ DELIVERED (offline parts)
+A 15-minute path from mock demo to a real stack; installable + discoverable; extensible without source-diving.
+- [x] `docs/INTEGRATIONS.md` — the "bring your own SIEM/model/ticketing" runbook consolidating the `*_LIVE` env seams. — `docs/INTEGRATIONS.md`
+- [x] Contributor cookbook — 4 worked recipes (add a tool / skill / harness / specialist). — `docs/COOKBOOK.md`
+- [x] `docs/TROUBLESHOOTING.md` + `docs/adr/` invariant trail + `docs/COMPARISON.md` + `docs/GLOSSARY.md` + `.devcontainer/`. — those files
+- [x] Fixed the 0.1.0/0.2.0 version drift (single-source `__version__` via importlib.metadata + fallback); aligned CONTRIBUTING to `uv`. — `pyproject.toml`, `sentinel_harness/__init__.py`, `CONTRIBUTING.md`
+- [ ] A rendered API-reference site (pdoc/mkdocs → GitHub Pages) + a docs-drift CI guard.  *(docs shipped; a generated site is still to add.)*
+- [ ] `[EXTERNAL]` PyPI Trusted Publishing (OIDC) + SLSA provenance + CycloneDX SBOM in release.yml; set repo homepage to the deck; seed good-first-issues.
+
+### M11 — Complete & deepen the on-platform proof — 🟩 offline parts DELIVERED
+Turn config-only platform seams into live end-to-end scenarios that justify "why AgentCore, not raw Bedrock."
+- [x] Emit the `SentinelHarness/TokensPerScenario` metric the CDK MetricFilter/dashboard/Budgets alarm key on (`_consume_stream` now surfaces usage; `observability.emit_token_metric*` writes the MetricFilter line). — `sentinel_harness/observability.py`, `core.py`
+- [x] Ship `specialists/adversarial-reviewer/` (agent_a2a + local_a2a + two-stage Dockerfile + contract test) — the independent reviewer the "generation ≠ evaluation" claim needs. — `specialists/adversarial-reviewer/`
+- [ ] `[EXTERNAL]` cross-session managed Memory recall scenario (session A records under `actorId=tenant-1`; session B recalls + changes the answer; a different actor does NOT — tenant isolation).
+- [ ] `[EXTERNAL]` live CUSTOM_JWT gateway invoke + Guardrail interceptor (mint a Cognito token, call a specialist through the JWT gateway, redact a planted secret).
+- [ ] `[EXTERNAL]` OTEL/GenAI session spans per invoke → unlock the managed Evaluate API path; a flagship parallel 3-specialist A2A scan over real Runtime via the registry.
+
+### M12 — Close the north-star loop, safely — 🟩 offline parts DELIVERED
+Chain the proven mechanisms into one autonomous run; harden so it can never promote a worse/unsafe agent.
+- [x] Regression guard — refuses to promote a revision scoring below the incumbent best. — `sentinel_harness/loop_safety.py::regression_guard`
+- [x] Multi-objective judge with a hard safety veto (any safety failure ⇒ `pass=false` regardless of aggregate). — `loop_safety.apply_safety_veto`
+- [x] Provenance ledger (hash-chained, append-only) + expanded eval datasets (hard negatives, ambiguous severity, safety traps) + drift-triggered regeneration on eval-score decay. — `sentinel_harness/provenance.py`, `eval/datasets/`, `feedback.detect_score_decay`
+- [ ] `[EXTERNAL]` fully autonomous closed loop — wire `harness_ops`/`run_evaluation` as live Gateway MCP targets so the loop calls them itself: a real traceback → `intake.normalize` → spec → autonomous build → score → retry → HITL promote → `evidence/closed_loop_result.json`; cost/latency-aware promotion.
+
+**Acceptance:** M8/M9/M10-offline + M11/M12 offline items land with the suite green under a coverage
+gate + hard lint + supply-chain scans; each `[EXTERNAL]` item ships buildable code + an offline-default
+(mock / opt-in `*_LIVE`) scenario that is one flag away from a real run, with the live run gated on account quota.
+
+---
+
 ## 5. Key specs (P0 detail; other milestones self-expand at this granularity)
 
 ### 5.1 `tools/harness_ops/handler.py` (M1 core, write first)

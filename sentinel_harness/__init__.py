@@ -35,7 +35,28 @@ from .simulation import (  # noqa: F401
 )
 from .feedback import (  # noqa: F401
     FeedbackEvent, TenantFactStore, record_disposition, detect_triggers,
-    managed_memory_writer, DISPOSITIONS,
+    managed_memory_writer, DISPOSITIONS, detect_score_decay,
+)
+from .observability import (  # noqa: F401
+    token_metric_line, emit_token_metric, emit_token_metric_from_result, put_metric,
+    METRIC_NAMESPACE, TOKENS_METRIC_NAME,
+)
+from .loop_safety import (  # noqa: F401
+    regression_guard, apply_safety_veto, dimension_verdict,
+    parse_dimension_scores, safety_failures, DEFAULT_THRESHOLD, SAFETY_DIMENSIONS,
+)
+from .provenance import (  # noqa: F401
+    record_run, load_ledger, verify_ledger, compute_record_hash,
+    LedgerEntry, ProvenanceError, DEFAULT_LEDGER_PATH,
 )
 
-__version__ = "0.1.0"
+# Version is single-sourced from the installed package metadata (pyproject.toml).
+# The literal fallback keeps `__version__` correct for source checkouts that were
+# never installed (e.g. editable-import from a bare clone); it MUST stay in sync
+# with pyproject.toml's version. A test could assert the two match.
+try:
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+    __version__ = _pkg_version("sentinel-harness")
+except PackageNotFoundError:  # not installed (bare source checkout)
+    __version__ = "0.2.0"
