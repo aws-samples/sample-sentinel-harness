@@ -20,7 +20,7 @@ SHELL := /bin/bash
 PYTEST := uv run --no-project --python 3.13 --with pytest --with boto3 --with pyyaml --with . python -m pytest
 
 .DEFAULT_GOAL := help
-.PHONY: help test lint synth deploy deploy-endpoints seed-registry create-harnesses \
+.PHONY: help ci test lint synth deploy deploy-endpoints seed-registry create-harnesses \
         smoke reset destroy demo clean
 
 help: ## List available targets (default).
@@ -30,8 +30,27 @@ help: ## List available targets (default).
 		| sort \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 	@echo ""
-	@echo "OFFLINE (no AWS): test lint synth seed-registry create-harnesses smoke demo clean"
+	@echo "OFFLINE (no AWS): ci test lint synth seed-registry create-harnesses smoke demo clean"
 	@echo "TOUCHES AWS (confirm prompt): deploy deploy-endpoints reset destroy"
+
+ci: ## Run the FULL CI gate locally, mirroring .github/workflows/ci.yml exactly.
+	# 1) Lint — REQUIRED, pinned to the same ruff CI + pre-commit run.
+	uv run --no-project --python 3.13 --with ruff==0.15.20 ruff check .
+	# 2) Coverage-gated tests (offline; branch coverage; fails under the 88 floor
+	#    that .coveragerc and ci.yml share). pytest-randomly prints the seed.
+	SENTINEL_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1 \
+	SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/ci-test-role \
+	AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing \
+	uv run --no-project --python 3.13 --with pytest --with pytest-randomly \
+		--with coverage --with hypothesis --with boto3 --with pyyaml --with . \
+		python -m coverage run -m pytest -q tests
+	uv run --no-project --python 3.13 --with coverage python -m coverage report --fail-under=88
+	# 3) IaC — tsc type-check + cdk synth (same as the `iac` CI job).
+	cd iac-cdk && npx tsc --noEmit && npx cdk synth >/dev/null
+	# 4) Public-repo hygiene — the single shared secret/name scan (invoked via
+	#    bash so it runs regardless of the script's executable bit).
+	bash deploy/scan_secrets.sh
+	@echo "make ci: all gates passed (lint · coverage>=88 · iac synth · secret-scan)."
 
 test: ## Run the offline test suite (hermetic, no AWS).
 	$(PYTEST) tests/ -q

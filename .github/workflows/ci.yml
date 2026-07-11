@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - name: Checkout
@@ -33,10 +33,15 @@ jobs:
           # Install the package itself so `import sentinel_harness` and the
           # `sentinel` console-script resolve (guards the flat-layout install blocker).
           pip install -e .
-          pip install pytest
-          # ruff is optional; install it so the lint step can run. Never fail the
-          # build just because ruff could not be installed.
-          pip install ruff || echo "ruff unavailable — lint step will be skipped"
+          # Test + quality deps, all pinned-enough to be reproducible:
+          #   pytest            — the suite runner.
+          #   pytest-randomly   — randomizes test order every run (prints the seed)
+          #                       so order-sensitivity / hidden inter-test state is caught.
+          #   coverage          — measures line+branch coverage for the hard gate below.
+          #   ruff              — REQUIRED lint (pinned to the version pre-commit + `make ci`
+          #                       run, so local and CI verdicts match exactly).
+          #   hypothesis        — property-based tests in tests/test_prop_*.py.
+          pip install pytest pytest-randomly coverage ruff==0.15.20 hypothesis
 
       - name: Smoke-test install (import + console script)
         env:
@@ -45,15 +50,11 @@ jobs:
           python -c "import sentinel_harness; print('version', sentinel_harness.__version__)"
           sentinel --help
 
-      - name: Lint (ruff, if available)
-        run: |
-          if command -v ruff >/dev/null 2>&1; then
-            ruff check .
-          else
-            echo "ruff not installed — skipping lint"
-          fi
+      - name: Lint (ruff — REQUIRED, fails the build)
+        # Hard gate: any lint error fails CI. No best-effort skip.
+        run: ruff check .
 
-      - name: Run tests (offline, no AWS calls)
+      - name: Run tests with coverage (offline, no AWS calls)
         env:
           # Dummy values so boto3 client construction and import are hermetic.
           # The suite makes ZERO AWS calls; these just keep imports from trying to
@@ -63,7 +64,47 @@ jobs:
           SENTINEL_EXECUTION_ROLE_ARN: arn:aws:iam::000000000000:role/ci-test-role
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing
-        run: pytest -q tests
+        # pytest-randomly prints the chosen seed on the first line so a failing
+        # order can be reproduced with `pytest -p randomly --randomly-seed=<N>`.
+        run: coverage run -m pytest -q tests
+
+      - name: Enforce coverage gate (fail under 88%)
+        # A fresh full-suite run measures ~90% (stable across pytest-randomly
+        # seeds). 88 is a floor set just below the real number — it MUST match
+        # .coveragerc's [report] fail_under and `make ci`.
+        run: coverage report --fail-under=88
+
+  mypy:
+    name: mypy (lenient type gate)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + mypy
+        run: |
+          python -m pip install --upgrade pip
+          # Install the package so its runtime deps (boto3/pyyaml) are importable
+          # for follow-imports; mypy itself reads mypy.ini for its lenient config.
+          pip install -e .
+          pip install mypy
+
+      - name: Type-check core control-plane modules
+        # Lenient today (see mypy.ini: ignore-missing-imports, no strict), so this
+        # job starts GREEN and can be ratcheted later by tightening mypy.ini.
+        # Scope is the stable control-plane surface only.
+        run: |
+          mypy \
+            sentinel_harness/core.py \
+            sentinel_harness/factory.py \
+            sentinel_harness/loader.py \
+            sentinel_harness/registry.py \
+            sentinel_harness/registry_live.py
 
   iac:
     name: iac (cdk synth + stack tests)
