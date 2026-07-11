@@ -78,6 +78,41 @@ tool invocation *is* captured deterministically when the model does emit one.
 | `approved_step_resumed` / `reject_halts_plan` | ✅ approve resumes the session; a rejection halts the plan |
 | `checkpoint_roundtrip` / `closed_loop` | ✅ plan state checkpointed to JSON and round-tripped; **no real system touched** (simulated no-ops) |
 
+## Live on-account captures (control/data plane, non-prod)
+
+These are direct API captures against live AgentCore planes, not scenario-script runs.
+
+### CUSTOM_JWT gateway enforcement — `live_custom_jwt_gateway_result.json`
+A real Cognito OIDC provider (M2M `client_credentials`, custom scope) + a live AgentCore
+Gateway with `authorizerType=CUSTOM_JWT` bound to the Cognito discovery URL. Enforcement is
+**proven, not asserted**:
+
+| Request | Result |
+|---|---|
+| valid RS256 JWT | ✅ **HTTP 200** — MCP `tools/list` + `tools/call` served |
+| no token | ✅ **HTTP 401** "Missing Bearer token" |
+| garbage token | ✅ **HTTP 401** "Invalid Bearer token" |
+
+**End-to-end (not just auth):** a real Lambda-backed MCP tool (`cve-severity-tool`,
+`GATEWAY_IAM_ROLE` credential provider) was attached as a gateway target and invoked
+*through* the JWT gateway — `tools/call{cvss:9.8}` → HTTP 200 → the Lambda ran server-side
+and returned `{"severity":"critical","source":"sentinel-gwtool-poc-lambda"}`. Full roadmap
+intent met: mint a Cognito token → call a real tool through the CUSTOM_JWT gateway.
+
+> **GA correction on interceptors.** Gateway `interceptorConfigurations` are **Lambda-based**
+> (`interceptor.lambda.arn`) with a separate `policyEngineConfiguration` (Bedrock guardrail
+> engine, `LOG_ONLY`/`ENFORCE`). There is **no native "Guardrail interceptor" primitive** on
+> `CreateGateway`; guardrail redaction runs inside a Lambda interceptor or the policy engine.
+> The deployed-Guardrail redaction itself (fake AWS secret BLOCKED, NAME/EMAIL ANONYMIZED) is
+> proven separately in `live_verify_result.json`.
+
+### Managed Evaluate LLM-as-a-judge — `live_managed_evaluator_result.json`
+A live SESSION-level, numerical (0.0/0.5/1.0), safety-aware CVE-triage `Evaluator` is **ACTIVE**
+(version-pinned Haiku judge; groundedness + safety as first-class scoring dimensions, mirroring
+`loop_safety.apply_safety_veto`). This proves the **control-plane** half of the OTEL→Evaluate
+path; wiring `CreateOnlineEvaluationConfig` to a live OTEL trace source (continuous scoring of
+emitted spans) needs the running span pipeline and is the honestly-noted remaining step.
+
 ## Honest limitations (as observed live)
 
 - **Long-term memory extraction is asynchronous (minutes-scale).** A cross-session

@@ -1,0 +1,62 @@
+{
+  "scenario": "live_custom_jwt_gateway",
+  "target": "AgentCore Gateway with CUSTOM_JWT authorizer (Cognito OIDC, M2M client_credentials)",
+  "account": "000000000000",
+  "region": "us-east-1",
+  "note_account": "real non-prod dev account id redacted to the 000000000000 placeholder per public-repo policy; created and exercised live on a non-prod Isengard dev account.",
+  "method": "Live create + invoke against real AWS control/data planes. Created a Cognito user pool + hosted domain + resource server (custom scope sentinel-gw/invoke) + a confidential machine (client_credentials) app client; created a real AgentCore Gateway (protocolType=MCP, authorizerType=CUSTOM_JWT) whose customJWTAuthorizer.discoveryUrl points at the Cognito OIDC .well-known document and allowedClients pins the machine client id; minted a real RS256 access token via the client_credentials grant; then POSTed a JSON-RPC tools/list to the live gateway MCP endpoint three ways to prove enforcement.",
+  "live_verified": true,
+  "resources": {
+    "cognito_user_pool": "us-east-1_<redacted>",
+    "cognito_machine_client_id": "<redacted>",
+    "cognito_client_secret": "managed server-side (GenerateSecret=true); value NEVER retrieved or printed",
+    "oidc_discovery_url": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_<redacted>/.well-known/openid-configuration",
+    "gateway_arn": "arn:aws:bedrock-agentcore:us-east-1:000000000000:gateway/sentinel-jwt-gw-poc-<redacted>",
+    "gateway_status": "READY",
+    "gateway_mcp_url": "https://sentinel-jwt-gw-poc-<redacted>.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+    "gateway_target": "cve-severity-tool (MCP Lambda target, GATEWAY_IAM_ROLE credential provider, status READY)",
+    "tool_lambda_arn": "arn:aws:lambda:us-east-1:000000000000:function:sentinel-gwtool-poc"
+  },
+  "token_minted": {
+    "grant": "client_credentials",
+    "alg": "RS256",
+    "issuer": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_<redacted>",
+    "scope": "sentinel-gw/invoke",
+    "token_use": "access"
+  },
+  "enforcement_matrix": {
+    "valid_jwt": {"http": 200, "meaning": "authorized: gateway validated the RS256 token against the OIDC JWKS and served the MCP request"},
+    "no_token":  {"http": 401, "error": "Missing Bearer token", "meaning": "rejected: unauthenticated request denied"},
+    "garbage_jwt": {"http": 401, "error": "Invalid Bearer token", "meaning": "rejected: malformed/unverifiable token denied"}
+  },
+  "end_to_end_tool_call": {
+    "note": "Beyond auth enforcement: a real Lambda-backed MCP tool was attached as a gateway target (credentialProviderType=GATEWAY_IAM_ROLE) and invoked THROUGH the JWT gateway.",
+    "tools_list_http": 200,
+    "tool_name": "cve-severity-tool___classify_cve_severity",
+    "tools_call_http": 200,
+    "tools_call_input": {"cvss": 9.8},
+    "tools_call_result": {"cvss": 9.8, "severity": "critical", "source": "sentinel-gwtool-poc-lambda"},
+    "meaning": "The Cognito-authenticated caller listed the tool and executed it end-to-end; the Lambda ran server-side (gateway role invoked it) and returned a correct severity classification. This is the full roadmap intent: mint a Cognito token -> call a real tool through the CUSTOM_JWT gateway."
+  },
+  "per_dimension": {
+    "custom_jwt_authorization": {
+      "passed": true,
+      "hard_constraint": true,
+      "summary": "A live AgentCore Gateway enforces CUSTOM_JWT: a real Cognito-issued RS256 token is accepted (HTTP 200), while a missing token (401 'Missing Bearer token') and a garbage token (401 'Invalid Bearer token') are rejected. Enforcement is real, not asserted."
+    },
+    "server_side_secret": {
+      "passed": true,
+      "hard_constraint": true,
+      "summary": "The confidential machine client's secret is managed server-side (GenerateSecret=true); its value was never retrieved or printed to console/logs, only used in-process to mint the token."
+    }
+  },
+  "caveats": [
+    "GA correction: AgentCore Gateway interceptorConfigurations are Lambda-based (interceptor.lambda.arn) with a separate policyEngineConfiguration (Bedrock guardrail policy engine, LOG_ONLY/ENFORCE); there is NO native 'Guardrail interceptor' primitive on CreateGateway. A guardrail is enforced either inside a Lambda interceptor (ApplyGuardrail) or via policyEngineConfiguration. This POC proves the CUSTOM_JWT authorization half live; the guardrail-redaction-on-a-gateway half is documented as the Lambda-interceptor/policy-engine path and is proven separately by the deployed Bedrock Guardrail evidence (live_verify_result.json: fake AWS secret BLOCKED, NAME/EMAIL ANONYMIZED via apply-guardrail).",
+    "The 200-vs-401 status split IS the authorization proof; the attached Lambda MCP target additionally proves an authenticated caller can execute a real tool end-to-end (tools/call -> Lambda -> correct severity), not merely list.",
+    "Cognito hosted-domain activation and IAM role propagation each required a short retry window before the token endpoint / CreateGateway succeeded — expected eventual-consistency, not a failure.",
+    "All identifiers scrubbed to <redacted>/000000000000 for the public repo; the run was on a non-prod dev account in us-east-1."
+  ],
+  "closed": true,
+  "teardown": "Gateway, Cognito app client, resource server, hosted domain, user pool, and the POC IAM role are torn down after evidence capture (POC-scoped, non-prod).",
+  "note": "Real on-account proof that sentinel-harness's CUSTOM_JWT gateway story is live and enforced: a genuine Cognito OIDC provider + M2M client_credentials token is accepted by a real AgentCore Gateway while unauthenticated and malformed requests are rejected with 401. The authorizer binds to the OIDC discovery URL and pins allowedClients; the machine-client secret stays server-side."
+}
