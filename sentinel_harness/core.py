@@ -247,9 +247,15 @@ def _consume_stream(stream) -> dict:
                 out += f"[STREAM-ERROR {msg}]"
                 if error is None:            # keep the FIRST error; surface it explicitly
                     error = msg
+    # Surface token usage as a first-class top-level field (additive; the GA metadata
+    # event carries usage={inputTokens,outputTokens,totalTokens}). This is what lets a
+    # scenario emit the SentinelHarness/TokensPerScenario signal without re-digging the
+    # metadata blob — see sentinel_harness.observability.emit_token_metric. None when a
+    # stream carried no usage metadata (e.g. an errored/empty stream).
+    usage = (meta or {}).get("usage")
     return {"text": out, "events": events, "stop_reason": stop,
             "tools_used": tools_used, "tool_use": tool_use if stop == "tool_use" else None,
-            "metadata": meta, "error": error}
+            "metadata": meta, "usage": usage, "error": error}
 
 
 def invoke(harness_arn: str, session_id: str, text: str, *, actor_id=None, **overrides) -> dict:

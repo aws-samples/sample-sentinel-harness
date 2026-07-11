@@ -59,10 +59,14 @@ __all__ = [
     "TenantFactStore",
     "record_disposition",
     "detect_triggers",
+    "detect_score_decay",
     "managed_memory_writer",
     "DISPOSITIONS",
     "FP_DISPOSITION",
     "TP_DISPOSITION",
+    "SCORE_DECAY_TRIGGER",
+    "REGENERATION_TASK_TYPE",
+    "REGENERATION_TARGET",
 ]
 
 # The three dispositions the M5 alert-triage POC emits. ``benign`` is a
@@ -76,6 +80,18 @@ DISPOSITIONS = (TP_DISPOSITION, FP_DISPOSITION, BENIGN_DISPOSITION)
 
 # A disposition is "noise" (feeds fp_rate) unless it is a confirmed true positive.
 _NOISE = (FP_DISPOSITION, BENIGN_DISPOSITION)
+
+# --- eval-score-decay trigger vocabulary (M12) ---------------------------
+# The trigger *type* recorded on a score-decay task, distinguishing WHY the
+# regeneration was requested (a decayed eval score) from the disposition-driven
+# only-FP regeneration in :func:`detect_triggers`. Both emit the SAME task
+# ``type`` / ``target`` so the M1/M2 loop consumes them identically.
+SCORE_DECAY_TRIGGER = "eval_score_decay"
+# The task shape mirrors the existing ``rule_regeneration`` trigger in
+# :func:`detect_triggers` (same ``type`` string, same self-improving-loop target)
+# so a decayed harness is handed off through the identical regeneration path.
+REGENERATION_TASK_TYPE = "rule_regeneration"
+REGENERATION_TARGET = "m1_m2_self_improving_loop"
 
 
 # --------------------------------------------------------------------------
@@ -427,3 +443,150 @@ def _pct(x: float) -> str:
     """Format a rate as a stable percentage string (deterministic, no rounding drift)."""
     # Round half-up to one decimal via a fixed epsilon so 0.5 -> "50.0%" exactly.
     return f"{math.floor(x * 1000 + 0.5) / 10:.1f}%"
+
+
+# --------------------------------------------------------------------------
+# Step 2b (M12) — drift-triggered regeneration from a decayed EVAL SCORE.
+# --------------------------------------------------------------------------
+def _validate_score(name: str, value: float) -> float:
+    """Coerce+range-check one eval score into the [0, 1] convention (offline)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be a real number in [0, 1], got {value!r}")
+    v = float(value)
+    if math.isnan(v) or not (0.0 <= v <= 1.0):
+        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+    return v
+
+
+def detect_score_decay(
+    harness_id: str,
+    *,
+    scores: Optional[List[float]] = None,
+    latest: Optional[float] = None,
+    baseline: Optional[float] = None,
+    decay_threshold: float = 0.1,
+    min_score: Optional[float] = None,
+    pass_bar: float = 0.7,
+) -> Optional[Dict[str, Any]]:
+    """Emit a regeneration task when a PROMOTED harness's eval score decays.
+
+    The disposition-driven :func:`detect_triggers` closes the loop on *alert
+    noise*; this closes it on *eval-quality drift*. A harness is promoted to
+    production at some baseline eval score (the M1/M2 ``score->revise->promote``
+    loop, mirrored offline in ``scenario_self_improve_loop``). If a later
+    re-score shows the score has decayed past a threshold — or fallen below an
+    absolute floor — a whitelist patch is irrelevant: the *detection itself*
+    must be regenerated. This function emits exactly that hand-off, using the
+    SAME ``rule_regeneration`` task shape (``type`` + ``target``) the existing
+    only-FP path emits, tagged with ``trigger="eval_score_decay"`` so a consumer
+    can tell WHY the regeneration was requested.
+
+    Score model
+    -----------
+    Eval scores follow the repo's convention: a float in ``[0, 1]`` with a
+    ``pass_bar`` (default ``0.7``, matching ``scenario_self_improve_loop``).
+    The baseline / latest score are resolved deterministically:
+
+    - ``baseline``: the explicit promoted-at score if given; else ``scores[0]``
+      (the oldest = the score the harness was promoted at).
+    - ``latest``: the explicit latest score if given; else ``scores[-1]`` (the
+      newest re-score).
+
+    Provide EITHER a ``scores`` history (oldest -> newest) OR an explicit
+    ``latest`` + ``baseline`` pair (or any mix — explicit values win).
+
+    Trigger policy (deterministic)
+    ------------------------------
+    ``decay = baseline - latest`` (rounded to 10 dp to kill float drift). A task
+    is emitted when EITHER:
+
+    - ``decay >= decay_threshold`` — the score dropped by at least the allowed
+      margin from its promoted baseline (inclusive boundary, mirroring
+      ``fp_rate >= fp_threshold``); OR
+    - ``min_score`` is set and ``latest < min_score`` — the score fell below an
+      absolute quality floor regardless of how gentle the slope was.
+
+    A stable / improved score (``decay`` below threshold and at/above any floor)
+    emits ``None``. Pure function of its arguments: no clock, no randomness, no
+    network, no AWS.
+
+    Returns
+    -------
+    ``None`` when healthy, or a task dict mirroring the ``rule_regeneration``
+    shape::
+
+        {"type": "rule_regeneration", "rule_name": ..., "harness_id": ...,
+         "trigger": "eval_score_decay", "baseline_score": 0.9,
+         "latest_score": 0.6, "decay": 0.3, "decay_threshold": 0.1,
+         "min_score": None, "below_floor": False, "sample_size": 3,
+         "reason": "...", "target": "m1_m2_self_improving_loop"}
+    """
+    if not harness_id:
+        raise ValueError("detect_score_decay requires a non-empty harness_id")
+    if not (0.0 < decay_threshold <= 1.0):
+        raise ValueError(f"decay_threshold must be in (0, 1], got {decay_threshold}")
+    if not (0.0 <= pass_bar <= 1.0):
+        raise ValueError(f"pass_bar must be in [0, 1], got {pass_bar}")
+
+    hist: List[float] = []
+    if scores is not None:
+        if not isinstance(scores, (list, tuple)):
+            raise TypeError("scores must be a list/tuple of numbers")
+        hist = [_validate_score("scores[i]", s) for s in scores]
+
+    # Resolve baseline: explicit wins, else the promoted-at (oldest) score.
+    if baseline is not None:
+        base = _validate_score("baseline", baseline)
+    elif hist:
+        base = hist[0]
+    else:
+        raise ValueError("provide `baseline` or a non-empty `scores` history")
+
+    # Resolve latest: explicit wins, else the newest re-score.
+    if latest is not None:
+        cur = _validate_score("latest", latest)
+    elif hist:
+        cur = hist[-1]
+    else:
+        raise ValueError("provide `latest` or a non-empty `scores` history")
+
+    floor = _validate_score("min_score", min_score) if min_score is not None else None
+
+    # Round to 10 dp so 0.9 - 0.6 compares as exactly 0.3 (deterministic boundary).
+    decay = round(base - cur, 10)
+    decayed_past_threshold = decay >= decay_threshold
+    below_floor = floor is not None and cur < floor
+    if not (decayed_past_threshold or below_floor):
+        return None  # stable / improved score -> no regeneration
+
+    # Deterministic, human-readable rationale naming the concrete cause(s).
+    causes: List[str] = []
+    if decayed_past_threshold:
+        causes.append(
+            f"decayed by {_pct(decay)} from its promoted baseline "
+            f"({base:.3f} -> {cur:.3f}, threshold {_pct(decay_threshold)})"
+        )
+    if below_floor:
+        causes.append(f"fell below the {floor:.3f} quality floor (latest {cur:.3f})")
+
+    return {
+        "type": REGENERATION_TASK_TYPE,
+        "rule_name": harness_id,
+        "harness_id": harness_id,
+        "trigger": SCORE_DECAY_TRIGGER,
+        "baseline_score": base,
+        "latest_score": cur,
+        "decay": decay,
+        "decay_threshold": decay_threshold,
+        "min_score": floor,
+        "below_floor": below_floor,
+        "pass_bar": pass_bar,
+        "sample_size": len(hist),
+        "reason": (
+            f"Promoted harness '{harness_id}' eval score " + " and ".join(causes)
+            + ". A whitelist patch cannot restore eval quality — hand off to the "
+            "M1/M2 self-improving loop to regenerate the detection "
+            "(offline-driven in this POC; live-capable)."
+        ),
+        "target": REGENERATION_TARGET,
+    }
