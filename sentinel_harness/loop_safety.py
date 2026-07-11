@@ -234,18 +234,19 @@ def dimension_verdict(value: Any, *, threshold: float = DEFAULT_THRESHOLD) -> Di
             s = float(score_raw)
             if not (math.isnan(s) or math.isinf(s)):
                 score = min(1.0, max(0.0, s))
+        m_passed: Optional[bool]
         if isinstance(passed_raw, bool):
-            passed = passed_raw
+            m_passed = passed_raw
         elif passed_raw is not None:
             # A non-bool pass flag (e.g. a "pass"/"fail" string) — reuse str logic.
-            passed = dimension_verdict(passed_raw, threshold=threshold)["passed"]
+            m_passed = dimension_verdict(passed_raw, threshold=threshold)["passed"]
         elif score is not None:
-            passed = score >= threshold
+            m_passed = score >= threshold
         else:
-            passed = None
-        if score is None and isinstance(passed, bool):
-            score = 1.0 if passed else 0.0
-        return {"score": score, "passed": passed}
+            m_passed = None
+        if score is None and isinstance(m_passed, bool):
+            score = 1.0 if m_passed else 0.0
+        return {"score": score, "passed": m_passed}
 
     return {"score": None, "passed": None}
 

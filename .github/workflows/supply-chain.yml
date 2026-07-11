@@ -42,18 +42,29 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install project (resolves the dependency tree from pyproject)
-        run: |
-          python -m pip install --upgrade pip
-          pip install .
-
       - name: Install pip-audit
-        run: pip install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
 
-      - name: Audit installed dependencies for known vulnerabilities
-        # Audits the live environment (the just-installed project + its deps).
-        # Non-zero exit on any known vulnerability => the job fails (blocking gate).
-        run: pip-audit --strict --progress-spinner=off
+      - name: Extract the project's own declared dependencies
+        # Audit sentinel-harness's OWN dependency tree, NOT the ambient CI venv:
+        # `pip-audit` over the whole environment fails on runner/tooling baseline
+        # packages (pip's bundled `wheel`, pip-audit's transitive `werkzeug`, …)
+        # that this project does not ship. We resolve the declared deps from
+        # pyproject.toml into a requirements file and audit exactly those.
+        run: |
+          python - <<'PY' > audit-requirements.txt
+          import tomllib
+          with open("pyproject.toml", "rb") as f:
+              data = tomllib.load(f)
+          for dep in data["project"]["dependencies"]:
+              print(dep)
+          PY
+          echo "----- project dependencies audited -----"; cat audit-requirements.txt
+
+      - name: Audit the project dependency tree for known vulnerabilities
+        # Blocking: a non-zero exit on any advisory in the project's real tree fails
+        # the build so a known-vulnerable dependency cannot silently ship.
+        run: pip-audit --strict --progress-spinner=off -r audit-requirements.txt
 
   bandit:
     name: bandit (advisory / non-blocking)
