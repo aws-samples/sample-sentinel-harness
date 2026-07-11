@@ -1,0 +1,90 @@
+name: supply-chain
+
+# Dependency vulnerability + Python security scanning.
+#
+#   pip-audit : audits the installed project dependency tree (resolved from
+#               pyproject.toml via `pip install .`) against the PyPI advisory
+#               and OSV databases. BLOCKING — a known-vulnerable dependency
+#               fails the build so it cannot silently ship. If a specific
+#               advisory needs a temporary waiver, add `--ignore-vuln GHSA-xxxx`
+#               with a dated comment rather than disabling the gate.
+#   bandit    : static security linter over the first-party source
+#               (sentinel_harness/). NON-BLOCKING (warn-only) — it is advisory
+#               and prone to false positives; findings are surfaced in the log
+#               and uploaded as an artifact for review without gating merges.
+#
+# Public repo: token-free. Runs with default read-only GITHUB_TOKEN.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    name: pip-audit (blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v5.0.0
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - name: Set up Python
+        # actions/setup-python v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Install project (resolves the dependency tree from pyproject)
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit installed dependencies for known vulnerabilities
+        # Audits the live environment (the just-installed project + its deps).
+        # Non-zero exit on any known vulnerability => the job fails (blocking gate).
+        run: pip-audit --strict --progress-spinner=off
+
+  bandit:
+    name: bandit (advisory / non-blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v5.0.0
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - name: Set up Python
+        # actions/setup-python v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Install bandit
+        run: pip install "bandit[toml]"
+
+      - name: Run bandit over first-party source (warn-only)
+        # `|| true` keeps this advisory: findings are printed but never gate a merge.
+        run: |
+          bandit -r sentinel_harness -f txt -o bandit-report.txt || true
+          echo "----- bandit report -----"
+          cat bandit-report.txt || true
+
+      - name: Upload bandit report
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.txt
+          retention-days: 5
+          if-no-files-found: ignore

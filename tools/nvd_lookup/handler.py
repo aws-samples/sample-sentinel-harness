@@ -119,10 +119,20 @@ def _fetch_live(cve_id: str) -> Dict[str, Any]:
     so the default offline path has zero third-party dependencies.
     """
     import json
+    import re
+    import urllib.parse
     import urllib.request
 
+    # SSRF/injection hardening: the base host is fixed (not operator-controlled),
+    # but defend in depth — the CVE id must be a well-formed CVE identifier so it
+    # cannot smuggle extra query params / path segments into the URL, and the URL
+    # must stay https to the NVD host. Raises -> upstream_error (no silent fallback).
+    if not re.fullmatch(r"CVE-\d{4}-\d{4,19}", cve_id or "", re.IGNORECASE):
+        raise RuntimeError(f"refusing to query a malformed CVE id: {cve_id!r}")
     base = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-    url = f"{base}?cveId={cve_id}"
+    url = f"{base}?cveId={urllib.parse.quote(cve_id, safe='')}"
+    if urllib.parse.urlsplit(url).scheme != "https":
+        raise RuntimeError("refusing to open a non-HTTPS NVD URL")
     req = urllib.request.Request(url, headers={"User-Agent": "sentinel-harness"})
     api_key = os.environ.get("NVD_API_KEY")  # optional; never hardcoded
     if api_key:

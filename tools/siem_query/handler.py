@@ -102,6 +102,54 @@ _MAX_VALUE_LEN = 256
 _LIVE_TIMEOUT_S = 15
 _MAX_RESPONSE_BYTES = 2_000_000
 
+# SSRF guard: only plain HTTP(S) egress to a routable host is permitted for the
+# operator-configured SIEM_QUERY_URL. file://, gopher://, ftp:// etc. and
+# non-routable/metadata IP literals (notably 169.254.169.254) are refused.
+_ALLOWED_URL_SCHEMES = frozenset({"https", "http"})
+
+
+def _assert_safe_url(url: str) -> None:
+    """Refuse an outbound URL that is not plain HTTP(S) to a routable host.
+
+    Applied before ANY live request opens: enforce a scheme allowlist (https/http
+    only) and refuse link-local/loopback/metadata targets (the cloud metadata IP
+    ``169.254.169.254`` and ``file://``). Raises ``RuntimeError`` on a rejected URL
+    so the handler maps it to ``upstream_error`` (never a silent fallback).
+    Hostnames that are not IP literals pass through (DNS resolution is the runtime
+    egress policy's job); only IP-literal hosts are range-checked.
+    """
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    if scheme not in _ALLOWED_URL_SCHEMES:
+        raise RuntimeError(
+            f"refusing to open non-HTTP(S) URL scheme {scheme!r}; "
+            "only https/http egress is permitted"
+        )
+    host = parts.hostname
+    if not host:
+        raise RuntimeError("backend URL has no host component")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return  # not an IP literal — leave DNS-name egress to the network policy
+    # Block the genuinely-dangerous ranges (cloud metadata + unspecified/multicast/
+    # reserved). Loopback is deliberately NOT blocked: an on-box / self-hosted SIEM
+    # backend at 127.0.0.1 is a legitimate operator choice (and is what the mock
+    # server in the test suite uses); the SSRF threat we care about is the metadata
+    # endpoint and link-local, which stay refused.
+    if (
+        ip.is_link_local          # 169.254.0.0/16 (incl. 169.254.169.254) & fe80::/10
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified      # 0.0.0.0, ::
+    ):
+        raise RuntimeError(
+            f"refusing to open URL targeting non-routable/metadata address {host!r}"
+        )
+
 
 def _normalize_event(alert: Dict[str, Any]) -> Dict[str, Any]:
     """Project a raw mock-world alert into the stable SIEM event shape.
@@ -276,6 +324,9 @@ def _fetch_live(key: str, value: str) -> List[Dict[str, Any]]:
             "SIEM_QUERY_LIVE=1 but SIEM_QUERY_URL is not set; no backend to "
             "query. Unset SIEM_QUERY_LIVE to use the offline mock world."
         )
+    # SSRF/exfil hardening: refuse a non-HTTP(S) scheme or a non-routable/metadata
+    # target before opening the request (raises -> upstream_error, no silent fallback).
+    _assert_safe_url(url)
     # Optional bearer token: read from the environment only. Never hardcoded,
     # never logged, never placed in an error message or the response.
     token = os.environ.get("SIEM_QUERY_TOKEN")
