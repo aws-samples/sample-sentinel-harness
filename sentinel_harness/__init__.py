@@ -11,7 +11,8 @@ from .exporter import export_harness_to_strands  # noqa: F401
 from .gateway import (  # noqa: F401
     create_gateway, wait_gateway_ready, create_gateway_target,
     lambda_mcp_target, openapi_http_target, mcp_server_target,
-    cognito_jwt_authorizer,
+    cognito_jwt_authorizer, lambda_interceptor, policy_engine_config,
+    INTERCEPTION_POINTS, POLICY_ENGINE_MODES,
     delete_gateway, list_gateways, cleanup_gateways,
 )
 from .factory import (  # noqa: F401

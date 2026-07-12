@@ -117,7 +117,7 @@ does (Section 7).
 
 ## 3. Test taxonomy
 
-The 88 files fall into seven groups. Counts below are file counts; the total suite
+The 89 files fall into seven groups. Counts below are file counts; the total suite
 is 1698 tests.
 
 ### a. Core / library unit tests

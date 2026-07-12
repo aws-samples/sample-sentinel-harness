@@ -356,3 +356,122 @@ def test_scenario_requires_gateway_arn(monkeypatch):
     monkeypatch.setattr(mod.sh, "create_harness", lambda *a, **k: pytest.fail("reached AWS"))
     with pytest.raises(SystemExit, match="SENTINEL_GATEWAY_ARN"):
         mod.build()
+
+
+# --------------------------------------------------------------------------- #
+# request/response hardening: Lambda interceptors + guardrail policy engine    #
+# --------------------------------------------------------------------------- #
+def test_lambda_interceptor_minimal_envelope():
+    e = gw.lambda_interceptor("arn:aws:lambda:us-east-1:000000000000:function:redact")
+    assert e == {
+        "interceptor": {"lambda": {"arn": "arn:aws:lambda:us-east-1:000000000000:function:redact"}},
+        "interceptionPoints": ["REQUEST"],
+    }
+    # No inputConfiguration unless headers/payloadFilter were requested.
+    assert "inputConfiguration" not in e
+
+
+def test_lambda_interceptor_points_and_input_config():
+    e = gw.lambda_interceptor(
+        "arn:aws:lambda:us-east-1:000000000000:function:redact",
+        interception_points=["request", "RESPONSE"],   # case-normalized
+        pass_request_headers=True,
+        payload_exclude=["$.secret", "$.token"],
+    )
+    assert e["interceptionPoints"] == ["REQUEST", "RESPONSE"]
+    assert e["inputConfiguration"]["passRequestHeaders"] is True
+    assert e["inputConfiguration"]["payloadFilter"] == {"exclude": ["$.secret", "$.token"]}
+
+
+def test_lambda_interceptor_payload_filter_defaults_headers_false():
+    # payloadFilter given but headers not -> passRequestHeaders defaults to False
+    # (the service requires it inside inputConfiguration).
+    e = gw.lambda_interceptor("arn:...:function:f", payload_exclude=["$.x"])
+    assert e["inputConfiguration"]["passRequestHeaders"] is False
+    assert e["inputConfiguration"]["payloadFilter"] == {"exclude": ["$.x"]}
+
+
+def test_lambda_interceptor_rejects_bad_point():
+    with pytest.raises(ValueError, match="interception point"):
+        gw.lambda_interceptor("arn:...:function:f", interception_points=["MIDDLE"])
+
+
+def test_lambda_interceptor_requires_arn():
+    with pytest.raises(ValueError, match="Lambda ARN"):
+        gw.lambda_interceptor("")
+
+
+def test_policy_engine_config_default_enforce():
+    c = gw.policy_engine_config("arn:aws:bedrock:us-east-1:000000000000:guardrail/g1")
+    assert c == {"arn": "arn:aws:bedrock:us-east-1:000000000000:guardrail/g1", "mode": "ENFORCE"}
+
+
+def test_policy_engine_config_log_only_case_normalized():
+    c = gw.policy_engine_config("arn:...:guardrail/g", mode="log_only")
+    assert c["mode"] == "LOG_ONLY"
+
+
+def test_policy_engine_config_rejects_bad_mode():
+    with pytest.raises(ValueError, match="mode"):
+        gw.policy_engine_config("arn:...:guardrail/g", mode="BLOCK")
+
+
+def test_policy_engine_config_requires_arn():
+    with pytest.raises(ValueError, match="guardrail ARN"):
+        gw.policy_engine_config("")
+
+
+def test_create_gateway_sends_interceptor_and_policy_engine(fake_control):
+    interceptor = gw.lambda_interceptor(
+        "arn:aws:lambda:us-east-1:000000000000:function:redact",
+        interception_points=["REQUEST", "RESPONSE"],
+        payload_exclude=["$.password"],
+    )
+    policy = gw.policy_engine_config(
+        "arn:aws:bedrock:us-east-1:000000000000:guardrail/g1", mode="ENFORCE"
+    )
+    gw.create_gateway(
+        "sentinel-hardened-gw",
+        interceptor_configurations=[interceptor],
+        policy_engine_configuration=policy,
+    )
+    (op, kw), = fake_control.calls
+    assert op == "create_gateway"
+    assert kw["interceptorConfigurations"] == [interceptor]
+    assert kw["policyEngineConfiguration"] == policy
+
+
+def test_create_gateway_wraps_single_interceptor_into_list(fake_control):
+    # A bare dict is accepted and wrapped into the one-element list the service wants.
+    interceptor = gw.lambda_interceptor("arn:...:function:f")
+    gw.create_gateway("gw-single", interceptor_configurations=interceptor)
+    (_, kw), = fake_control.calls
+    assert kw["interceptorConfigurations"] == [interceptor]
+
+
+def test_create_gateway_omits_hardening_when_absent(fake_control):
+    gw.create_gateway("gw-plain")
+    (_, kw), = fake_control.calls
+    assert "interceptorConfigurations" not in kw
+    assert "policyEngineConfiguration" not in kw
+
+
+def test_hardening_builders_match_service_schema():
+    """The builder envelopes must match the real CreateGateway service model, so a
+    shape drift is caught offline (mirrors the target-builder schema checks)."""
+    import boto3
+    shape = boto3.client(
+        "bedrock-agentcore-control", region_name="us-east-1"
+    ).meta.service_model.operation_model("CreateGateway").input_shape
+    # interceptorConfigurations[].{interceptor.lambda.arn, interceptionPoints, inputConfiguration}
+    ic = shape.members["interceptorConfigurations"].member
+    assert "interceptor" in ic.members and "interceptionPoints" in ic.members
+    lam = ic.members["interceptor"].members["lambda"]
+    assert "arn" in lam.members
+    inp = ic.members["inputConfiguration"]
+    assert "passRequestHeaders" in inp.members
+    assert "exclude" in inp.members["payloadFilter"].members
+    # policyEngineConfiguration.{arn, mode}
+    pe = shape.members["policyEngineConfiguration"]
+    assert "arn" in pe.members and "mode" in pe.members
+    assert set(pe.members["mode"].enum) == gw.POLICY_ENGINE_MODES

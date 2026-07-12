@@ -92,6 +92,12 @@ def _role() -> str:
 
 # ---------------------------------------------------------------- model configs
 def bedrock_model(model_id: str, **extra) -> dict:
+    """Build the ``model`` block for :func:`create_harness` from a Bedrock model id.
+
+    Wraps ``model_id`` (the ``MODEL_SONNET`` / ``MODEL_HAIKU`` / ``MODEL_OPUS`` ids
+    or a cross-region-inference id) into the ``{"bedrockModelConfig": {...}}``
+    envelope the service expects. Any ``**extra`` keys (e.g. inference params) merge
+    into ``bedrockModelConfig`` verbatim."""
     return {"bedrockModelConfig": {"modelId": model_id, **extra}}
 
 
@@ -195,6 +201,11 @@ def delete_harness_endpoint(harness_id, endpoint_name) -> dict:
 
 
 def wait_ready(harness_id: str, timeout: int = 360) -> dict:
+    """Poll ``GetHarness`` until the harness reaches ``READY``; return that response.
+
+    Harness creation is fire-and-forget, so callers must poll before invoking. Raises
+    ``RuntimeError`` on a terminal failure status (``CREATE_FAILED`` / ``FAILED`` /
+    ``UPDATE_FAILED``) and ``TimeoutError`` if ``timeout`` seconds elapse first."""
     t0 = time.time()
     while time.time() - t0 < timeout:
         h = _control.get_harness(harnessId=harness_id)["harness"]
@@ -358,6 +369,8 @@ def byo_memory(arn, retrieval_config=None) -> dict:
 
 # ---------------------------------------------------------------- teardown
 def delete_harness(harness_id, keep_memory=False):
+    """Delete a harness by id. By default its managed memory is cascade-deleted too;
+    pass ``keep_memory=True`` to retain the managed memory store across the delete."""
     kw = {"harnessId": harness_id}
     if keep_memory: kw["deleteManagedMemory"] = False
     return _control.delete_harness(**kw)
@@ -376,4 +389,7 @@ def cleanup(prefix: str):
 
 
 def list_harnesses():
+    """Return the account's harness summaries (the ``harnesses`` list from
+    ``ListHarnesses``), or ``[]`` if none. Each item carries ``harnessId`` /
+    ``harnessName`` / ``status`` / ``arn``."""
     return _control.list_harnesses().get("harnesses", [])

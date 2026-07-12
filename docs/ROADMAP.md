@@ -35,7 +35,7 @@ live) · 🟡 skeleton / partial · 🔴 gap.
 | `loader.py` | 224 | `harness.yaml` → `create_harness` kwargs | 🟩 | `load_harness_config(path)` (offline; `${ENV_VAR}` expansion, keeps `${arn:...}`, reads `systemPrompt` file, **injects inline HITL gates**); `create_from_config(path)`. Built-in gates: `request_publish_approval` / `request_containment_approval` / `request_human_review` |
 | `registry.py` | 264 | Tool/skill dual-gate governance (offline) | 🟩 | `ToolRegistry(factory_map)`; `.resolve(name)` (live only if registry-approved **and** code-mapped); `.governance_check()→GovernanceReport`; `load_registry()` |
 | `registry_live.py` | 217 | LIVE AgentCore Registry control plane (the on-account dual-gate) | ✅ | `create_registry(name, *, auto_approval=False, authorizer_type, ...)→registryArn`; `get_registry`/`delete_registry`; `create_skill_record`/`create_custom_record` (land in `DRAFT`); `list_records`; `submit_for_approval` (`DRAFT`→`PENDING_APPROVAL`); `RegistryLiveError`; `DESCRIPTOR_TYPES`. Over `core._control` (`bedrock-agentcore-control`); live-verified on a dev account, walked offline in `scenario_registry_governance.py` |
-| `gateway.py` | 240 | AgentCore Gateway helper (create→READY→delete live-validated) | 🟩 | create/wait/delete gateway + target builders. **CUSTOM_JWT auth now live-proven** (`evidence/live_custom_jwt_gateway_result.json`); Lambda-interceptor + `policyEngineConfiguration` (guardrail engine) wiring still to add |
+| `gateway.py` | 330 | AgentCore Gateway helper (create→READY→delete live-validated) | 🟩 | create/wait/delete gateway + target builders. **CUSTOM_JWT auth live-proven** (`evidence/live_custom_jwt_gateway_result.json`); **Lambda-interceptor + `policyEngineConfiguration` (guardrail engine) now wired** — `lambda_interceptor()` / `policy_engine_config()` builders + `create_gateway(interceptor_configurations=…, policy_engine_configuration=…)`, schema-drift-tested against the real `CreateGateway` model |
 | `simulation.py` | 392 | Play Mode (every offensive step HITL-gated) | ✅ | see `scenario_play_mode.py` |
 | `sandbox_hooks.py` | 127 | PreToolUse sandbox (path confinement / command allowlist / read-only cloud) | 🟩 | `validate_command` / `validate_path` |
 | `cli.py` | 303 | `sentinel create/...` CLI | 🟩 | `sentinel create <harness.yaml>` etc. |
@@ -48,10 +48,10 @@ live) · 🟡 skeleton / partial · 🔴 gap.
 | `scenarios/` | 15 runnable scenarios incl. `cve_triage` / `detection_gen` / `hitl_resume` / `multi_harness` / `named_supervisor` / `play_mode` / `agent_factory_loop` / `self_improve_loop` / `bas_replay` / `egress_control` / `alert_triage_poc` / `feedback_loop` / `cve_asset_triage` / `detonation` / `registry_governance` (evidence present for all except the live-only `named_supervisor`, whose Gateway proof is `gateway_lifecycle_result.json`) | ✅ | self-iteration loop scenario DELIVERED (`agent_factory_loop` / `self_improve_loop`) |
 | `tools/` | 14 tools incl. `siem_query` / `asset_lookup` / `enrich_ioc` / `create_ticket` / `ops_query` / `sigma_match` / `sigma_yara_lint` / `harness_ops` / `run_evaluation` / `whitelist_optimizer` + reference stubs `attack_lookup` / `epss_kev` / `nvd_lookup` / `web_search` | 🟩 | data-plane tools DELIVERED (mock world + `*_LIVE` seams) |
 | `skills/` | 9 skills incl. `cve-triage-rubric` / `attack-path-reasoning` / `detection-writing-sop` / `ioc-vetting` / `cve-asset-triage` / `soc-ip-lookup` / `soc-triage` / `incident-ticketing` / `multi-account-ops` | 🟩 | add domain skills as your SecOps program needs them |
-| `specialists/` | `cve-intel` (docker-build + live-validated on AgentCore Runtime) + `attack-mapper` / `threat-hunt` (real graph/plan builders) | 🟩 | `adversarial-reviewer` still to add |
+| `specialists/` | `cve-intel` (docker-build + live-validated on AgentCore Runtime) + `attack-mapper` / `threat-hunt` (real graph/plan builders) + `adversarial-reviewer` (agent_a2a + local_a2a + two-stage Dockerfile + contract test) | ✅ | all four specialists shipped |
 | `longrunning/` | `bas-runner` (BAS case-gen + detection-replay) + `detonation` (full simulated microVM lifecycle + orchestrator) | 🟩 | both built + tested; detonation stays an honest SIMULATED no-op |
 | `iac-cdk/lib/` | 9 synth-green stacks — `gateway` / `registry` / `memory` / `network` / `identity` / `guardrail` / `observability` / `harness` / `runtime` (+ `iam`); `iac-terraform/` mirror is `terraform validate`-clean | ✅ | `guardrail` / `identity` / `observability` LIVE-deployed (us-east-1); the Registry + `runtime` custom-resource/raw-CfnResource stacks synth clean but fail on deploy until their CFN types are GA (both control-plane APIs are separately live-verified — Registry via `registry_live.py`, `CreateAgentRuntime` via a real arm64 microVM that served a live A2A call, HTTP 200, real Bedrock model, on a non-prod test account, then torn down — `evidence/live_a2a_runtime_result.json`) |
-| `tests/` | 76 files, **1726 offline passing** (+6 skipped) | ✅ | add tests with each new module |
+| `tests/` | 89 files, **1742 offline passing** (+6 skipped) | ✅ | add tests with each new module |
 | `evidence/` | 30 evidence sets | ✅ | add one per milestone |
 
 ### 0.3 Fit score (vs. a full three-layer SecOps agent program)
@@ -181,8 +181,8 @@ Each milestone gives: **goal / files / reused APIs / acceptance (live evidence) 
 Suggest one feature branch per milestone.
 
 ### M0 — Environment & baseline reproduction (half a day)
-**Goal:** on a fresh machine, get all 1726 offline tests green and reproduce ≥1 live scenario.
-- [ ] `uv sync` + `uv run pytest -q` → 1726 passing (+6 skipped) (offline).
+**Goal:** on a fresh machine, get all 1742 offline tests green and reproduce ≥1 live scenario.
+- [ ] `uv sync` + `uv run pytest -q` → 1742 passing (+6 skipped) (offline).
 - [ ] Configure `SENTINEL_EXECUTION_ROLE_ARN` / `SENTINEL_REGION` / `AWS_PROFILE` (non-prod) — see `docs/SETUP.md`.
 - [ ] Run `scenarios/scenario_cve_triage.py`; compare `evidence/cve_triage_result.json` shape.
 - [ ] Run `scenarios/scenario_hitl_resume.py`; reproduce pause→approve→resume.
@@ -419,7 +419,7 @@ hand-off reuses the live-capable M1/M2 engine (driven offline here, labeled a wi
       (`make deploy`, cost note, `make destroy`) + the no-lock-in export. — `docs/QUICKSTART.md`
 - [x] `tests/smoke/`: offline acceptance suite (default offline; `SENTINEL_SMOKE_LIVE=1` opt-in for live). — `tests/smoke/`
 
-**Acceptance:** `make test` → 1726 offline tests green; `make seed-registry` → dual-gate `ok`;
+**Acceptance:** `make test` → 1742 offline tests green; `make seed-registry` → dual-gate `ok`;
 `make create-harnesses` (DRY_RUN=1) → 8 harnesses validate offline with zero AWS; `sentinel export` → valid
 compilable Strands Python; `make smoke` → the offline acceptance suite green. A fresh non-prod account can then
 run `make deploy` (free-tier foundation) and the live scenarios; `make destroy` tears it all down.
@@ -457,7 +457,7 @@ A 15-minute path from mock demo to a real stack; installable + discoverable; ext
 - [x] Contributor cookbook — 4 worked recipes (add a tool / skill / harness / specialist). — `docs/COOKBOOK.md`
 - [x] `docs/TROUBLESHOOTING.md` + `docs/adr/` invariant trail + `docs/COMPARISON.md` + `docs/GLOSSARY.md` + `.devcontainer/`. — those files
 - [x] Fixed the 0.1.0/0.2.0 version drift (single-source `__version__` via importlib.metadata + fallback); aligned CONTRIBUTING to `uv`. — `pyproject.toml`, `sentinel_harness/__init__.py`, `CONTRIBUTING.md`
-- [ ] A rendered API-reference site (pdoc/mkdocs → GitHub Pages) + a docs-drift CI guard.  *(docs shipped; a generated site is still to add.)*
+- [x] **Rendered API-reference site (pdoc → GitHub Pages) + a docs-drift CI guard.** `.github/workflows/docs.yml` renders `sentinel_harness` with pdoc (pure docstrings, no config) and publishes to GitHub Pages on push to `main` (PRs build without deploying, so a docstring/import break is caught pre-merge); `tests/test_docs_drift.py` fails the build if any public export lacks a docstring or the public surface regresses — it immediately caught 4 undocumented exports, now fixed.
 - [x] **SLSA provenance + CycloneDX SBOM + PyPI OIDC Trusted Publishing wired into `release.yml`** — the tagged-release build now generates a CycloneDX SBOM (verified locally: CycloneDX 1.6, 421 components) attached to the GitHub Release, records a keyless `actions/attest-build-provenance` attestation over `dist/*` (`gh attestation verify`-able), and a separate `pypi-publish` job uploads via `pypa/gh-action-pypi-publish` over OIDC (no stored token). *Remaining external one-time steps:* configure the PyPI **trusted publisher** for this repo+workflow, set the repo homepage to the deck, and seed good-first-issues.
 
 ### M11 — Complete & deepen the on-platform proof — 🟩 offline parts DELIVERED
@@ -517,7 +517,7 @@ if eval.score >= criteria:
 ---
 
 ## 6. Testing & acceptance charter
-- **offline**: every new module gets `tests/test_*.py` (mock AWS); keep `uv run pytest -q` green (now 1726, +6 skipped, only grows).
+- **offline**: every new module gets `tests/test_*.py` (mock AWS); keep `uv run pytest -q` green (now 1742, +6 skipped, only grows).
 - **config parity**: every new `harness.yaml` must pass `factory.provision_fleet(dry_run=True)` + `test_config_validation.py`.
 - **live evidence**: each milestone runs one real call, drops `evidence/<milestone>_result.json` + `.log`.
 - **governance**: each new tool keeps `registry.governance_check().ok == True`.

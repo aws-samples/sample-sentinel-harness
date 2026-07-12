@@ -1,6 +1,6 @@
 # sentinel-harness v0.2.0 — SecOps agents as configuration, now live on AgentCore Runtime
 
-`sentinel-harness` is a reference implementation of production security-operations agents built as **configuration** — model, prompt, tools, skills, memory, limits — on [Amazon Bedrock AgentCore Harness](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/harness.html); you declare the agent and AWS runs the loop. This release delivers milestones **M0–M7** end-to-end: the agent-builds-agents north-star loop runs, a specialist runs on **real AgentCore Runtime** with live end-to-end A2A against a real Bedrock model, the AgentCore **Registry** control-plane governance walk is live-verified, and a dual-track IaC foundation is live-deployed on a non-production dev account. The whole thing is anchored by **1726 offline tests** (+5 skipped when optional deps are absent) across 88 test files — deterministic, hermetic, zero AWS by default — with CI green at `ae3ab6a`.
+`sentinel-harness` is a reference implementation of production security-operations agents built as **configuration** — model, prompt, tools, skills, memory, limits — on [Amazon Bedrock AgentCore Harness](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/harness.html); you declare the agent and AWS runs the loop. This release delivers milestones **M0–M7** end-to-end: the agent-builds-agents north-star loop runs, a specialist runs on **real AgentCore Runtime** with live end-to-end A2A against a real Bedrock model, the AgentCore **Registry** control-plane governance walk is live-verified, and a dual-track IaC foundation is live-deployed on a non-production dev account. The whole thing is anchored by **1742 offline tests** (+5 skipped when optional deps are absent) across 90 test files — deterministic, hermetic, zero AWS by default — with CI green at `ae3ab6a`.
 
 ## Highlights
 
@@ -15,7 +15,7 @@
 
 | Metric | Count |
 |---|--:|
-| Offline tests passing (+5 skipped w/o optional deps) | 1726 |
+| Offline tests passing (+5 skipped w/o optional deps) | 1742 |
 | Test files | 76 |
 | Runnable scenarios | 16 |
 | Committed evidence JSON artifacts | 23 |
@@ -51,7 +51,7 @@ Stated plainly, consistent with the README status matrix (🟢/🟡/🟠) and `d
 ```bash
 git clone https://github.com/neosun100/sentinel-harness && cd sentinel-harness
 pip install -e .     # Python 3.10+ ; installs the `sentinel` CLI
-make test            # 1726 offline tests — deterministic, no AWS, seconds
+make test            # 1742 offline tests — deterministic, no AWS, seconds
 make demo            # narrated L1→L4 platform tour, fully offline
 ```
 

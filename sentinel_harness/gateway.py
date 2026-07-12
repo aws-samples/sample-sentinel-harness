@@ -69,7 +69,8 @@ def _validate_name(name: str) -> str:
 # ---------------------------------------------------------------- gateway lifecycle
 def create_gateway(name, *, authorizer_type="AWS_IAM", role_arn=None,
                    protocol="MCP", authorizer_config=None, description=None,
-                   search_type=None, **kw) -> dict:
+                   search_type=None, interceptor_configurations=None,
+                   policy_engine_configuration=None, **kw) -> dict:
     """Create an AgentCore Gateway (the policy-backed MCP tool surface).
 
     ``authorizer_type`` is ``AWS_IAM`` (SigV4 — machine callers, the default),
@@ -81,8 +82,20 @@ def create_gateway(name, *, authorizer_type="AWS_IAM", role_arn=None,
     ``role_arn`` defaults to the shared execution role (``SENTINEL_EXECUTION_ROLE_ARN``).
     ``protocol`` is ``MCP`` (the only value the service accepts today). Pass
     ``search_type="SEMANTIC"`` to enable SEMANTIC tool search in the MCP protocol
-    config. Returns the raw create response (carries ``gatewayId`` / ``gatewayArn``
-    / ``status`` — there is NO ``gateway`` wrapper key)."""
+    config.
+
+    Request/response hardening (both optional; sent only when given):
+
+    - ``interceptor_configurations`` — a list of Lambda interceptors (build each with
+      :func:`lambda_interceptor`). AgentCore Gateway interceptors are **Lambda-based**:
+      a guardrail/redaction step runs inside the Lambda (e.g. ``ApplyGuardrail`` on the
+      request/response payload). There is NO native "Guardrail interceptor" primitive.
+    - ``policy_engine_configuration`` — a Bedrock guardrail **policy engine** binding
+      (build with :func:`policy_engine_config`): a guardrail ARN + a ``LOG_ONLY`` or
+      ``ENFORCE`` mode applied by the service, no Lambda required.
+
+    Returns the raw create response (carries ``gatewayId`` / ``gatewayArn`` /
+    ``status`` — there is NO ``gateway`` wrapper key)."""
     _validate_name(name)
     if authorizer_type not in ("AWS_IAM", "CUSTOM_JWT", "NONE"):
         raise ValueError(
@@ -111,6 +124,14 @@ def create_gateway(name, *, authorizer_type="AWS_IAM", role_arn=None,
         )
     if search_type is not None:
         args["protocolConfiguration"] = {"mcp": {"searchType": search_type}}
+    if interceptor_configurations is not None:
+        # A single interceptor dict is accepted and wrapped into the one-element list
+        # the service expects; a list passes through verbatim.
+        if isinstance(interceptor_configurations, dict):
+            interceptor_configurations = [interceptor_configurations]
+        args["interceptorConfigurations"] = list(interceptor_configurations)
+    if policy_engine_configuration is not None:
+        args["policyEngineConfiguration"] = policy_engine_configuration
     args.update(kw)
     return _control.create_gateway(**args)
 
@@ -158,6 +179,82 @@ def cognito_jwt_authorizer(discovery_url, *, allowed_audience=None,
             allowed_clients = [allowed_clients]
         inner["allowedClients"] = list(allowed_clients)
     return {"customJWTAuthorizer": inner}
+
+
+# ---------------------------------------------------------- request/response hardening
+# Valid interception points a Lambda interceptor may hook. The service's own enum is
+# authoritative; we keep a local allowlist so a typo is caught here (a clear ValueError)
+# rather than as a server-side ValidationException.
+INTERCEPTION_POINTS = frozenset({"REQUEST", "RESPONSE"})
+# Guardrail policy-engine modes: observe-only vs actively block.
+POLICY_ENGINE_MODES = frozenset({"LOG_ONLY", "ENFORCE"})
+
+
+def lambda_interceptor(lambda_arn, *, interception_points=("REQUEST",),
+                       pass_request_headers=None, payload_exclude=None) -> dict:
+    """Build one ``interceptorConfigurations`` entry backed by a Lambda.
+
+    Slots into ``create_gateway(interceptor_configurations=[lambda_interceptor(...)])``.
+    AgentCore Gateway interceptors are Lambda-based: the Lambda receives the request
+    and/or response payload at the chosen ``interception_points`` and can inspect,
+    redact (e.g. ``ApplyGuardrail`` on the body), or reject it — this is where a
+    guardrail-redaction step lives (there is no native "Guardrail interceptor").
+
+    Envelope shape (matches ``CreateGateway.interceptorConfigurations[]``)::
+
+        {"interceptor": {"lambda": {"arn": <arn>}},
+         "interceptionPoints": ["REQUEST" | "RESPONSE", ...],
+         "inputConfiguration": {"passRequestHeaders": <bool>,
+                                "payloadFilter": {"exclude": [...]}}}
+
+    ``interception_points`` accepts a single string or an iterable; each must be one
+    of :data:`INTERCEPTION_POINTS`. ``inputConfiguration`` is emitted only when
+    ``pass_request_headers`` is set and/or ``payload_exclude`` is given (the service
+    requires ``passRequestHeaders`` inside ``inputConfiguration`` when that block is
+    present, so we default it to ``False`` if only ``payload_exclude`` was passed)."""
+    if not lambda_arn:
+        raise ValueError("lambda_interceptor requires a Lambda ARN.")
+    if isinstance(interception_points, str):
+        interception_points = [interception_points]
+    points = [str(p).upper() for p in interception_points]
+    if not points:
+        raise ValueError("lambda_interceptor requires at least one interception point.")
+    bad = [p for p in points if p not in INTERCEPTION_POINTS]
+    if bad:
+        raise ValueError(
+            f"invalid interception point(s) {bad}; allowed: {sorted(INTERCEPTION_POINTS)}"
+        )
+    entry: dict = {
+        "interceptor": {"lambda": {"arn": lambda_arn}},
+        "interceptionPoints": points,
+    }
+    if pass_request_headers is not None or payload_exclude is not None:
+        input_cfg: dict = {"passRequestHeaders": bool(pass_request_headers)}
+        if payload_exclude is not None:
+            input_cfg["payloadFilter"] = {"exclude": list(payload_exclude)}
+        entry["inputConfiguration"] = input_cfg
+    return entry
+
+
+def policy_engine_config(guardrail_arn, *, mode="ENFORCE") -> dict:
+    """Build a ``policyEngineConfiguration`` binding a Bedrock guardrail to the gateway.
+
+    Slots into ``create_gateway(policy_engine_configuration=policy_engine_config(...))``.
+    Unlike :func:`lambda_interceptor` this needs NO Lambda — the service applies the
+    guardrail at ``guardrail_arn`` directly, in one of :data:`POLICY_ENGINE_MODES`:
+
+    - ``LOG_ONLY`` — evaluate + record interventions without blocking (safe rollout).
+    - ``ENFORCE`` — actively block/redact per the guardrail policy (default).
+
+    Envelope shape: ``{"arn": <guardrail_arn>, "mode": "LOG_ONLY" | "ENFORCE"}``."""
+    if not guardrail_arn:
+        raise ValueError("policy_engine_config requires a guardrail ARN.")
+    mode = str(mode).upper()
+    if mode not in POLICY_ENGINE_MODES:
+        raise ValueError(
+            f"policy engine mode {mode!r} must be one of {sorted(POLICY_ENGINE_MODES)}."
+        )
+    return {"arn": guardrail_arn, "mode": mode}
 
 
 def wait_gateway_ready(gateway_id: str, timeout: int = 300) -> dict:
