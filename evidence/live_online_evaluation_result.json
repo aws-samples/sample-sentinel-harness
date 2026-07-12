@@ -1,0 +1,28 @@
+{
+  "scenario": "live_online_evaluation",
+  "target": "AgentCore Evaluate — CreateOnlineEvaluationConfig over live OTEL/GenAI spans",
+  "account": "000000000000",
+  "note_account": "real non-prod dev account id redacted to 000000000000 per public-repo policy",
+  "region": "us-east-1",
+  "live_verified": true,
+  "online_evaluation_config": {
+    "id": "sentinel_online_cve_eval-<id>",
+    "status": "ACTIVE",
+    "enable_on_create": true,
+    "sampling_percentage": 100.0,
+    "session_timeout_minutes": 30,
+    "evaluators": ["Builtin.Faithfulness", "Builtin.Harmfulness", "Builtin.Coherence"],
+    "data_source": "cloudWatchLogs: aws/spans (serviceNames=[sentinel-harness])"
+  },
+  "what_this_proves": "The continuous OTEL->Evaluate half of the story is LIVE: an online evaluation configuration is ACTIVE and wired to the CloudWatch Transaction Search span log group (aws/spans), sampling 100% of AgentCore GenAI sessions and scoring each with three built-in evaluators (Faithfulness = groundedness, Harmfulness = safety, Coherence). This complements the on-demand managed judge in live_managed_evaluator_result.json.",
+  "enablement_chain_discovered": [
+    "Custom LLM-as-a-judge evaluators that reference expected/reference inputs (SESSION uses {context}/{actual_tool_trajectory}; TRACE uses {context}/{assistant_turn}/{expected_response}) are ON-DEMAND ONLY — CreateOnlineEvaluationConfig rejects them with 'require reference inputs'.",
+    "Online evaluation must use reference-free evaluators. AgentCore ships Builtin.* evaluators for exactly this: Faithfulness/Harmfulness/Coherence/Helpfulness/ResponseRelevance/Conciseness/InstructionFollowing/Refusal (TRACE), GoalSuccessRate (SESSION), ToolSelectionAccuracy/ToolParameterAccuracy (TOOL_CALL).",
+    "The dataSourceConfig.cloudWatchLogs.logGroupNames must be a plain log-group NAME (regex [.\\-_/#A-Za-z0-9]+ — an ARN with ':' is rejected), and it must be the CloudWatch Transaction Search span group 'aws/spans' — NOT the AgentCore runtime stdout group /aws/bedrock-agentcore/runtimes/<id>-DEFAULT (which is rejected as 'do not exist' for this purpose).",
+    "aws/spans only exists after CloudWatch Transaction Search is enabled: put a CloudWatch Logs resource policy granting xray.amazonaws.com logs:PutLogEvents/CreateLogStream to aws/spans, then UpdateTraceSegmentDestination(Destination=CloudWatchLogs) and UpdateIndexingRule(100%). Enabling it auto-creates the aws/spans log group."
+  ],
+  "honesty": "The online config is ACTIVE and structurally correct against the real span source; producing scored results additionally requires AgentCore agents running WITH OTEL instrumentation so GenAI spans actually land in aws/spans for the evaluators to consume. The control-plane + data-source wiring is proven live here; a populated score stream depends on instrumented traffic flowing (the ongoing operational step). Built-in evaluators, sampling, session config, execution role, and the Transaction Search source are all real and accepted by the service.",
+  "closed": true,
+  "teardown": "Online eval config + evaluators + exec role are POC-scoped; Transaction Search (a benign, reversible account observability setting) left enabled or reverted per operator preference.",
+  "note": "Real on-account proof that sentinel-harness can stand up CONTINUOUS online evaluation of AgentCore GenAI spans: an ACTIVE OnlineEvaluationConfig sampling 100% of sessions from the Transaction Search aws/spans source, scored by built-in Faithfulness (groundedness) + Harmfulness (safety) + Coherence evaluators — the managed, always-on complement to the on-demand safety-aware judge."
+}

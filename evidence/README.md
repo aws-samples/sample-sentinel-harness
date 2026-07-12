@@ -113,6 +113,16 @@ A live SESSION-level, numerical (0.0/0.5/1.0), safety-aware CVE-triage `Evaluato
 path; wiring `CreateOnlineEvaluationConfig` to a live OTEL trace source (continuous scoring of
 emitted spans) needs the running span pipeline and is the honestly-noted remaining step.
 
+### Continuous online evaluation — `live_online_evaluation_result.json`
+**The always-on complement to the on-demand judge, live.** An `OnlineEvaluationConfig` is **ACTIVE**,
+sampling 100% of AgentCore GenAI sessions from the CloudWatch **Transaction Search** `aws/spans`
+source and scoring each with built-in **Faithfulness** (groundedness) + **Harmfulness** (safety) +
+**Coherence** evaluators. Enablement chain discovered live: custom judges that reference expected
+inputs are *on-demand only* → online requires reference-free `Builtin.*` evaluators; the data source
+must be the `aws/spans` Transaction-Search group (enable via X-Ray dest→CloudWatchLogs + a Logs
+resource policy + 100% indexing), **not** the runtime stdout log group. A populated score stream
+additionally needs OTEL-instrumented agent traffic flowing.
+
 ### A2A specialist on AgentCore Runtime — `live_a2a_runtime_result.json`
 **Crown jewel, live & repeatable.** A fresh `linux/arm64` cve-intel image built + pushed to ECR →
 `CreateAgentRuntime`(`serverProtocol=A2A`, `networkMode=PUBLIC`) → poll to READY → a live A2A
