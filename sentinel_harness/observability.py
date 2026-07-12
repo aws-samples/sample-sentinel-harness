@@ -135,3 +135,87 @@ def put_metric(tokens, *, scenario=None, region=None, client=None) -> dict:
             "Unit": "Count",
         }],
     )
+
+
+# --------------------------------------------------------------------------- #
+# Multi-signal emitters — same structured-log contract as the token metric,   #
+# so one CloudWatch MetricFilter per field turns each into a metric. All are   #
+# ZERO-AWS by default (they only write a JSON line via ``log``); the opt-in    #
+# direct PutMetricData stays gated behind SENTINEL_TOKEN_METRIC_LIVE.          #
+# --------------------------------------------------------------------------- #
+# The metric-bearing field name each emitted line carries (the MetricFilter's
+# ``$.<field>``). Kept here as the single source of truth for the CDK filters.
+METRIC_FIELDS = {
+    "tokens": "TokensPerScenario",
+    "latency_ms": "InvokeLatencyMs",
+    "tool_calls": "ToolCallsPerInvoke",
+    "errors": "InvokeErrors",
+    "hitl_gate": "HitlGateHits",
+    "eval_score": "EvalScore",
+}
+
+
+def metric_line(name: str, value, *, scenario=None, unit="Count", **dims) -> dict:
+    """Build a structured metric line: ``{"metric", <name>: value, "unit", ...dims}``.
+
+    ``name`` is the load-bearing numeric field a CloudWatch ``MetricFilter`` keys on
+    (``$.<name>``), mirroring the token line's ``$.tokens`` contract. ``scenario`` and
+    any ``dims`` are attached for human forensics / metric dimensions. Non-finite or
+    ``None`` values coerce to 0 so a partial/errored run still emits a well-formed
+    line rather than crashing."""
+    try:
+        v = float(value)
+        if v != v or v in (float("inf"), float("-inf")):  # NaN/inf -> 0
+            v = 0.0
+    except (TypeError, ValueError):
+        v = 0.0
+    line = {"metric": name, name: v, "unit": unit}
+    if scenario is not None:
+        line["scenario"] = scenario
+    line.update(dims)
+    line[name] = v  # dims must never clobber the metric-bearing field
+    return line
+
+
+def emit_metric(name: str, value, *, log=print, scenario=None, unit="Count", **dims) -> dict:
+    """Emit one structured metric line via ``log`` (default ``print``). Zero AWS.
+
+    The generic sibling of :func:`emit_token_metric` for any signal
+    (latency/tool-calls/errors/...). Returns the emitted dict for assertions."""
+    line = metric_line(name, value, scenario=scenario, unit=unit, **dims)
+    log(json.dumps(line, ensure_ascii=False))
+    return line
+
+
+def emit_invoke_latency(scenario: str, ms, *, log=print, **dims) -> dict:
+    """Emit invoke wall-clock latency in milliseconds (``$.latency_ms``)."""
+    return emit_metric("latency_ms", ms, log=log, scenario=scenario, unit="Milliseconds", **dims)
+
+
+def emit_tool_calls(scenario: str, n, *, log=print, **dims) -> dict:
+    """Emit the number of tool calls a single invoke made (``$.tool_calls``)."""
+    return emit_metric("tool_calls", n, log=log, scenario=scenario, **dims)
+
+
+def emit_error(scenario: str, kind: str, *, log=print, **dims) -> dict:
+    """Emit an error counter tagged by ``kind`` (throttle/validation/internal).
+
+    Always value 1 (a count of one error occurrence); the ``kind`` rides along as a
+    dimension so the dashboard can break errors down by class."""
+    return emit_metric("errors", 1, log=log, scenario=scenario, kind=kind, **dims)
+
+
+def emit_hitl_gate(scenario: str, tool_name: str, *, log=print, **dims) -> dict:
+    """Emit a human-in-the-loop gate hit (``$.hitl_gate``), tagged with the gate tool."""
+    return emit_metric("hitl_gate", 1, log=log, scenario=scenario, gate=tool_name, **dims)
+
+
+def emit_eval_score(scenario: str, dimension: str, score, passed, *, log=print, **dims) -> dict:
+    """Emit an evaluation score (``$.eval_score``) for one judged dimension.
+
+    ``dimension`` (e.g. safety/groundedness) and ``passed`` ride as dimensions so a
+    dashboard can trend per-dimension scores and pass-rate."""
+    return emit_metric(
+        "eval_score", score, log=log, scenario=scenario,
+        dimension=dimension, passed=bool(passed), **dims,
+    )

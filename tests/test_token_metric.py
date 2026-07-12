@@ -294,3 +294,97 @@ def test_put_metric_uses_injected_client_no_boto3():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# --------------------------------------------------------------------------- #
+# Multi-signal emitters (latency / tool-calls / errors / hitl / eval-score)    #
+# --------------------------------------------------------------------------- #
+def test_metric_line_carries_named_numeric_field():
+    line = obs.metric_line("latency_ms", 123.4, scenario="cve", unit="Milliseconds")
+    assert line["metric"] == "latency_ms"
+    assert line["latency_ms"] == 123.4
+    assert line["unit"] == "Milliseconds"
+    assert line["scenario"] == "cve"
+
+
+def test_metric_line_coerces_bad_value_to_zero():
+    assert obs.metric_line("x", None)["x"] == 0.0
+    assert obs.metric_line("x", float("nan"))["x"] == 0.0
+    assert obs.metric_line("x", "not-a-number")["x"] == 0.0
+
+
+def test_metric_line_dims_never_clobber_metric_field():
+    # a dim named the same as the metric must not overwrite the numeric value
+    line = obs.metric_line("tool_calls", 3, tool_calls="oops")
+    assert line["tool_calls"] == 3.0
+
+
+def test_emit_helpers_write_expected_fields():
+    out = []
+    obs.emit_invoke_latency("s", 50, log=out.append)
+    obs.emit_tool_calls("s", 2, log=out.append)
+    obs.emit_error("s", "throttle", log=out.append)
+    obs.emit_hitl_gate("s", "request_human_review", log=out.append)
+    obs.emit_eval_score("s", "safety", 0.9, True, log=out.append)
+    lines = [json.loads(x) for x in out]
+    assert lines[0]["latency_ms"] == 50.0 and lines[0]["unit"] == "Milliseconds"
+    assert lines[1]["tool_calls"] == 2.0
+    assert lines[2]["errors"] == 1.0 and lines[2]["kind"] == "throttle"
+    assert lines[3]["hitl_gate"] == 1.0 and lines[3]["gate"] == "request_human_review"
+    assert lines[4]["eval_score"] == 0.9 and lines[4]["dimension"] == "safety" and lines[4]["passed"] is True
+
+
+def test_metric_fields_map_matches_emitters():
+    # the METRIC_FIELDS registry must name every field the emitters produce
+    for f in ("tokens", "latency_ms", "tool_calls", "errors", "hitl_gate", "eval_score"):
+        assert f in obs.METRIC_FIELDS
+
+
+# --------------------------------------------------------------------------- #
+# core.invoke_and_meter — closes the "metric had no emitter" gap               #
+# --------------------------------------------------------------------------- #
+def test_invoke_and_meter_emits_all_signals(monkeypatch):
+    captured = []
+    fake_result = {
+        "text": "done", "tools_used": ["nvd_lookup", "epss_kev"],
+        "usage": {"inputTokens": 100, "outputTokens": 40}, "error": None,
+    }
+    monkeypatch.setattr(sh, "invoke", lambda *a, **k: fake_result)
+    out = sh.invoke_and_meter("arn:aws:...:harness/h", "sess-" + "x" * 30,
+                              "hi", scenario="cve", log=captured.append)
+    assert out is fake_result
+    lines = [json.loads(x) for x in captured]
+    # The token line uses the legacy shape (no "metric" key; keyed by $.tokens); the
+    # generalized emitters carry a "metric" tag. Assert both shapes are present.
+    tok = next(ln for ln in lines if "tokens" in ln and "metric" not in ln)
+    assert tok["tokens"] == 140          # 100 + 40
+    metrics = {ln["metric"] for ln in lines if "metric" in ln}
+    assert {"latency_ms", "tool_calls"} <= metrics
+    tc = next(ln for ln in lines if ln.get("metric") == "tool_calls")
+    assert tc["tool_calls"] == 2.0
+
+
+def test_invoke_and_meter_meters_then_reraises_on_throttle(monkeypatch):
+    captured = []
+
+    class _Throttle(Exception):
+        pass
+    _Throttle.__name__ = "ThrottlingException"
+
+    def _boom(*a, **k):
+        raise _Throttle("slow down")
+    monkeypatch.setattr(sh, "invoke", _boom)
+    with pytest.raises(_Throttle):
+        sh.invoke_and_meter("arn", "sess-" + "y" * 30, "hi", scenario="cve", log=captured.append)
+    lines = [json.loads(x) for x in captured]
+    err = next(ln for ln in lines if ln.get("metric") == "errors")
+    assert err["kind"] == "throttle"       # classified as a throttle, not internal
+
+
+def test_invoke_and_meter_emits_error_metric_on_structured_error(monkeypatch):
+    captured = []
+    monkeypatch.setattr(sh, "invoke", lambda *a, **k: {
+        "text": "", "tools_used": [], "usage": None, "error": "upstream_error"})
+    sh.invoke_and_meter("arn", "sess-" + "z" * 30, "hi", scenario="cve", log=captured.append)
+    lines = [json.loads(x) for x in captured]
+    assert any(ln.get("metric") == "errors" and ln["errors"] == 1.0 for ln in lines)

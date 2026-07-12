@@ -6,16 +6,73 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.3.0] — 2026-07-12
+
+Quality, live-proof, and observability release. Milestones **M8–M12** land (CI/security
+gates, on-platform depth, north-star safety), **all `[EXTERNAL]` live proofs** are
+captured on a non-production dev/test account, a unified logging + multi-signal
+observability layer ships, an adversarial repo audit's findings are cleared, and the
+supply-chain / API-docs / CI toolchain is hardened. Test suite: **1742 offline passing
+(+6 skipped) across 89 files, coverage 91%**; **30 evidence artifacts**.
+
 ### Added
-- **Client-facing explainer deck** — a dark, animated-SVG HTML presentation (26 slides, 16 inlined
-  animated SVGs) with a show view and a presenter view (per-slide speaker notes, timer, dual-window
-  sync), published to Cloudflare Pages: show <https://sentinel-harness-deck.pages.dev/> · presenter
-  <https://sentinel-harness-deck.pages.dev/presenter/>. Built entirely from this repo's public facts
-  (every figure aligns to `evidence/*.json`; honest about remaining limits). Linked from the README.
+- **Live `[EXTERNAL]` proofs** (real AWS, non-prod, scrubbed) — CUSTOM_JWT gateway
+  enforcement end-to-end (`live_custom_jwt_gateway_result.json`), managed Evaluate
+  on-demand judge (`live_managed_evaluator_result.json`) **and** continuous online
+  evaluation over CloudWatch Transaction Search `aws/spans`
+  (`live_online_evaluation_result.json`), A2A specialist on AgentCore Runtime
+  (`live_a2a_runtime_result.json`), the M12 end-to-end closed loop with `closed:true`
+  (`closed_loop_result.json`), and cross-session Memory SEMANTIC recall + multi-tenant
+  isolation (`live_memory_recall_result.json`, `live_memory_isolation_result.json`).
+- **Gateway request/response hardening** — `lambda_interceptor()` + `policy_engine_config()`
+  builders and `create_gateway(interceptor_configurations=…, policy_engine_configuration=…)`,
+  schema-drift-tested against the real `CreateGateway` model.
+- **Unified logging** — `sentinel_harness.logutil` (`get_logger` / `configure_logging`,
+  `SENTINEL_LOG_LEVEL` / `SENTINEL_LOG_JSON`, stderr default, Lambda-safe, idempotent).
+- **Multi-signal observability** — generalized `observability` emitters
+  (`emit_invoke_latency` / `emit_tool_calls` / `emit_error` / `emit_hitl_gate` /
+  `emit_eval_score`, `METRIC_FIELDS`) and `core.invoke_and_meter()` that emits the
+  token/latency/tool-call/error signals in one call (closing the previously-dead token
+  metric). New `docs/OBSERVABILITY.md`.
+- **API reference site** — pdoc → GitHub Pages (`.github/workflows/docs.yml`), live at
+  <https://neosun100.github.io/sentinel-harness/>, with a `docs-drift` test guarding
+  public-export docstrings.
+- **Supply-chain in `release.yml`** — CycloneDX SBOM + SLSA build-provenance attestation
+  + PyPI OIDC Trusted Publishing. New `docs/RELEASING.md`.
+- **`adversarial-reviewer` specialist** and expanded eval datasets (hard negatives,
+  ambiguous severity, safety traps); provenance ledger (`provenance.py`).
+- **Client-facing explainer deck** — a dark, animated-SVG HTML presentation (show +
+  presenter views) on Cloudflare Pages: <https://sentinel-harness-deck.pages.dev/>.
+- **Adopter docs** — `INTEGRATIONS`, `COOKBOOK`, `TROUBLESHOOTING`, `COMPARISON`,
+  `GLOSSARY`, `THREAT-MODEL`, `SECRETS`, ADR trail, `.devcontainer/`.
 
 ### Changed
-- README: the **Scenarios & evidence** table now lists all 16 runnable scenarios (was ~8); added an
-  **Explainer deck** section; the documentation map now includes `docs/RELEASE-v0.2.0.md`.
+- Three library-internal `print()` sites (harness/gateway cleanup, Play Mode) migrated
+  to the structured logger (stderr, level-gated) — scenario stdout is unchanged.
+- All GitHub Actions pinned to Node-24 SHAs (`actions/checkout` v7, `setup-python` v6.3)
+  across every workflow; cleared the Node-20 deprecation warnings.
+- `pyproject.toml` gains a `[project.optional-dependencies] test` extra
+  (`pip install -e '.[test]'`); README quickstart uses it.
+- Docs reconciled to real counts (1742 tests / 89 files / 30 evidence / 9 CDK stacks);
+  the fully-autonomous-loop claim softened to "end-to-end, runner-orchestrated".
+
+### Fixed
+- **SSRF (correctness/security)** — `enrich_ioc` defined an SSRF guard but never called
+  it (dead code); wired it in and removed its errant loopback block. Ported the guard to
+  `ops_query` / `asset_lookup` / `web_search` (previously none). Replaced a false-green
+  metadata test with a `urlopen`-spy that fails unless the guard fires first.
+- **`whitelist_optimizer` TP-safety bug** — the emitted Sigma `domain_suffix` clause used
+  a bare suffix that suppressed a true positive (`evilexample.com`) the tool certified
+  safe; now dot-anchored to match the guard, with a regression test.
+- **`make test`** now includes `--with hypothesis` (was drift vs `ci`; the quickstart
+  command aborted on `ModuleNotFoundError`).
+
+### Security
+- Public-repo hygiene: removed the internal system name from all tracked files
+  (public-safe phrasing); CI `secret-and-name` scan + `test_quickstart_doc` enforce no
+  customer name / real 12-digit account id.
 
 ## [0.2.0] — 2026-07-09
 
@@ -246,6 +303,7 @@ configuration on Amazon Bedrock AgentCore Harness.
 - Long-term (semantic) memory extraction is asynchronous (minutes-scale) — expected
   AgentCore behavior, documented in `SETUP.md` / `evidence/README.md`.
 
-[Unreleased]: https://github.com/neosun100/sentinel-harness/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/neosun100/sentinel-harness/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/neosun100/sentinel-harness/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/neosun100/sentinel-harness/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/neosun100/sentinel-harness/releases/tag/v0.1.0

@@ -44,6 +44,9 @@ import re
 import time
 
 from .core import _control, _role
+from .logutil import get_logger
+
+_log = get_logger(__name__)
 
 # Gateway names do NOT follow the harness name rule. The live CreateGateway API
 # enforces ([0-9a-zA-Z][-]?){1,48}: alphanumerics with optional single hyphens
@@ -381,5 +384,6 @@ def cleanup_gateways(prefix: str) -> list:
                 delete_gateway(g["gatewayId"])
                 deleted.append(g["name"])
             except Exception as e:  # noqa: BLE001 — best-effort teardown, keep going
-                print("skip", g.get("name"), str(e)[:60])
+                _log.warning("cleanup: skip gateway %s: %s", g.get("name"), e)
+                _log.debug("cleanup: skip gateway %s (full error)", g.get("name"), exc_info=True)
     return deleted

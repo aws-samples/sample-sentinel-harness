@@ -40,6 +40,8 @@ import tempfile
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Dict, List, Optional
 
+from .logutil import get_logger
+
 # ------------------------------------------------------------------ statuses
 PENDING = "pending"
 APPROVED = "approved"
@@ -210,7 +212,10 @@ class PlayModeRunner:
         self.plan_id = plan_id
         self.checkpoint_path = checkpoint_path
         self.decision_fn = decision_fn or auto_approve
-        self._log = logger or (lambda m: print(m))
+        # Default to the library logger (stderr, level-gated) rather than stdout so
+        # Play Mode's operational lines don't pollute a caller's stdout; a caller can
+        # still inject any ``logger`` callable (e.g. a scenario's print) to override.
+        self._log = logger or get_logger(f"{__name__}.playmode").info
 
         # Bind Layer-1 lazily so importing this module never requires AWS creds.
         if invoke_fn is None or resume_fn is None:

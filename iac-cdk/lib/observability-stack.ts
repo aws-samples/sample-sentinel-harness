@@ -45,6 +45,10 @@ import { Construct } from "constructs";
 export const METRIC_NAMESPACE = "SentinelHarness";
 /** The token-usage metric name (emitted per scenario run). */
 export const TOKENS_METRIC_NAME = "TokensPerScenario";
+/** Invoke wall-clock latency (ms) — emitted by core.invoke_and_meter ($.latency_ms). */
+export const LATENCY_METRIC_NAME = "InvokeLatencyMs";
+/** Invoke error counter — emitted on a throttle/failure ($.errors). */
+export const ERRORS_METRIC_NAME = "InvokeErrors";
 
 export interface ObservabilityStackProps extends StackProps {
   /** Logical app prefix (context `sentinel:appName`, default "sentinel"). */
@@ -127,6 +131,62 @@ export class ObservabilityStack extends Stack {
       defaultValue: 0,
     });
 
+    // --- 2c. Additional operational signals, emitted by core.invoke_and_meter as the
+    // same structured `$.<field>` log lines (see sentinel_harness/observability.py:
+    // METRIC_FIELDS). Each MetricFilter mirrors the proven token pattern. ---
+    new logs.MetricFilter(this, "LatencyMetricFilter", {
+      logGroup: this.scenarioLogGroup,
+      metricNamespace: METRIC_NAMESPACE,
+      metricName: LATENCY_METRIC_NAME,
+      filterPattern: logs.FilterPattern.exists("$.latency_ms"),
+      metricValue: "$.latency_ms",
+      defaultValue: 0,
+    });
+    new logs.MetricFilter(this, "ErrorsMetricFilter", {
+      logGroup: this.scenarioLogGroup,
+      metricNamespace: METRIC_NAMESPACE,
+      metricName: ERRORS_METRIC_NAME,
+      filterPattern: logs.FilterPattern.exists("$.errors"),
+      metricValue: "$.errors",
+      defaultValue: 0,
+    });
+
+    const latencyMetric = new cloudwatch.Metric({
+      namespace: METRIC_NAMESPACE,
+      metricName: LATENCY_METRIC_NAME,
+      statistic: "p90",
+      period: Duration.minutes(5),
+      label: "Invoke latency p90 (ms)",
+    });
+    const errorsMetric = new cloudwatch.Metric({
+      namespace: METRIC_NAMESPACE,
+      metricName: ERRORS_METRIC_NAME,
+      statistic: cloudwatch.Stats.SUM,
+      period: Duration.minutes(5),
+      label: "Invoke errors",
+    });
+
+    // --- 2d. Alarms on the golden signals: p90 latency and error volume. Both are
+    // TREAT_MISSING_DATA=NOT_BREACHING so an idle account (no invokes) stays green. ---
+    new cloudwatch.Alarm(this, "HighInvokeLatencyAlarm", {
+      alarmName: `${props.appName}-invoke-latency-p90`,
+      metric: latencyMetric,
+      threshold: 60_000, // 60s p90 over a 5-min window is a real latency regression
+      evaluationPeriods: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: "Invoke p90 latency exceeded 60s over two 5-min periods.",
+    });
+    new cloudwatch.Alarm(this, "InvokeErrorRateAlarm", {
+      alarmName: `${props.appName}-invoke-errors`,
+      metric: errorsMetric,
+      threshold: 5, // >5 metered invoke errors in a 5-min window
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: "More than 5 metered invoke errors in a 5-minute window.",
+    });
+
     // --- 3. Dashboard: trend + latest-value tile + a describing text panel. ---
     this.dashboard = new cloudwatch.Dashboard(this, "Dashboard", {
       dashboardName: `${props.appName}-observability`,
@@ -161,6 +221,24 @@ export class ObservabilityStack extends Stack {
         width: 6,
         height: 6,
         setPeriodToTimeRange: true,
+      }),
+    );
+
+    // Operational golden signals: invoke latency (p90) and error volume.
+    this.dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: "Invoke latency p90 (ms)",
+        left: [latencyMetric],
+        width: 12,
+        height: 6,
+        leftYAxis: { label: "ms", showUnits: false },
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Invoke errors",
+        left: [errorsMetric],
+        width: 12,
+        height: 6,
+        leftYAxis: { label: "errors", showUnits: false },
       }),
     );
 

@@ -307,7 +307,7 @@ def test_cleanup_gateways_deletes_only_prefix(monkeypatch):
     assert fc.deleted == ["g1", "g2"]
 
 
-def test_cleanup_gateways_best_effort_on_error(monkeypatch, capsys):
+def test_cleanup_gateways_best_effort_on_error(monkeypatch, caplog):
     fc = _FakeControl(gateways={"items": [
         {"gatewayId": "g1", "name": "sentinel-a"},
         {"gatewayId": "g2", "name": "sentinel-b"},
@@ -321,10 +321,14 @@ def test_cleanup_gateways_best_effort_on_error(monkeypatch, capsys):
 
     monkeypatch.setattr(gw, "_control", fc)
     monkeypatch.setattr(fc, "delete_gateway", boom)
-    deleted = gw.cleanup_gateways("sentinel-")
+    import logging
+    with caplog.at_level(logging.WARNING, logger="sentinel_harness.gateway"):
+        deleted = gw.cleanup_gateways("sentinel-")
     # g1 failed but teardown kept going and got g2.
     assert deleted == ["sentinel-b"]
-    assert "skip" in capsys.readouterr().out
+    # The skip is now a structured WARNING log (stderr, not stdout) — not a print.
+    assert any("skip gateway" in r.getMessage() and "sentinel-a" in r.getMessage()
+               for r in caplog.records)
 
 
 # --------------------------------------------------------------------------- #

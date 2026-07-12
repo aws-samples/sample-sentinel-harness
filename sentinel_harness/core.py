@@ -35,6 +35,10 @@ import os, json, time, uuid
 import boto3
 from botocore.config import Config
 
+from .logutil import get_logger
+
+_log = get_logger(__name__)
+
 REGION = os.environ.get("SENTINEL_REGION", "us-east-1")
 EXECUTION_ROLE_ARN = os.environ.get("SENTINEL_EXECUTION_ROLE_ARN")  # required at runtime
 
@@ -285,6 +289,58 @@ def invoke(harness_arn: str, session_id: str, text: str, *, actor_id=None, **ove
     return _consume_stream(_data.invoke_harness(**kw)["stream"])
 
 
+def invoke_and_meter(harness_arn: str, session_id: str, text: str, *,
+                     scenario: str, log=None, actor_id=None, **overrides) -> dict:
+    """:func:`invoke` + emit the token/latency/tool-call/error observability signals.
+
+    This is the single call site that closes the gap where the token metric existed
+    but had NO runtime emitter. It times the invoke, then emits (via the structured
+    ``observability`` log lines the CloudWatch MetricFilters parse):
+
+    - ``TokensPerScenario`` (input+output tokens),
+    - ``InvokeLatencyMs`` (wall-clock),
+    - ``ToolCallsPerInvoke`` (len of tools_used),
+    - ``InvokeErrors`` tagged ``kind`` on a botocore throttle / other failure.
+
+    ``log`` defaults to the ``sentinel_harness.telemetry`` logger's ``info`` (stderr,
+    level-gated) so metering is **silent on stdout** — scenarios keep printing their
+    own human output. Pass ``log=print`` (or a LogGroup sink) to route the metric
+    lines wherever the MetricFilter reads. Returns the same dict as :func:`invoke`;
+    on an invoke exception it emits an error metric and re-raises (never swallows)."""
+    from . import observability as _obs
+    from .logutil import get_logger
+
+    if log is None:
+        log = get_logger("sentinel_harness.telemetry").info
+
+    t0 = time.perf_counter()
+    try:
+        result = invoke(harness_arn, session_id, text, actor_id=actor_id, **overrides)
+    except Exception as exc:  # noqa: BLE001 — meter the failure, then re-raise
+        kind = "throttle" if _is_throttle(exc) else "internal"
+        _obs.emit_error(scenario, kind, log=log)
+        _obs.emit_invoke_latency(scenario, (time.perf_counter() - t0) * 1000.0, log=log)
+        raise
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    _obs.emit_token_metric_from_result(scenario, result, log=log)
+    _obs.emit_invoke_latency(scenario, elapsed_ms, log=log)
+    _obs.emit_tool_calls(scenario, len(result.get("tools_used") or []), log=log)
+    # A structured (non-raising) error surfaced by the stream also counts.
+    if result.get("error"):
+        _obs.emit_error(scenario, "internal", log=log)
+    return result
+
+
+def _is_throttle(exc: Exception) -> bool:
+    """True if ``exc`` looks like a botocore throttling/rate error (best-effort)."""
+    code = getattr(exc, "response", {}).get("Error", {}).get("Code", "") if hasattr(exc, "response") else ""
+    name = type(exc).__name__
+    return (
+        "Throttl" in code or "TooManyRequests" in code or code == "RequestLimitExceeded"
+        or "Throttl" in name or "TooManyRequests" in name
+    )
+
+
 def invoke_with_tool_result(harness_arn: str, session_id: str, tool_use: dict,
                             result, *, status="success", actor_id=None, **overrides) -> dict:
     """Resume a harness that paused on an inline_function (HITL gate), closing the loop.
@@ -384,7 +440,8 @@ def cleanup(prefix: str):
             try:
                 delete_harness(h["harnessId"]); deleted.append(h["harnessName"])
             except Exception as e:  # noqa: BLE001 — best-effort teardown
-                print("skip", h["harnessName"], str(e)[:60])
+                _log.warning("cleanup: skip harness %s: %s", h["harnessName"], e)
+                _log.debug("cleanup: skip harness %s (full error)", h["harnessName"], exc_info=True)
     return deleted
 
 

@@ -2,7 +2,7 @@
 name = "sentinel-harness"
 # Single source of truth for the version. sentinel_harness.__version__ reads this
 # at runtime via importlib.metadata; keep the __init__.py fallback literal in sync.
-version = "0.2.0"
+version = "0.3.0"
 description = "Production SecOps agents as configuration on Amazon Bedrock AgentCore Harness"
 readme = "README.md"
 requires-python = ">=3.10"
