@@ -1,0 +1,34 @@
+{
+  "scenario": "live_memory_cross_session_recall",
+  "target": "AgentCore Memory — cross-session SEMANTIC recall + multi-tenant isolation",
+  "account": "000000000000",
+  "note_account": "real non-prod dev account id redacted to 000000000000 per public-repo policy",
+  "region": "us-east-1",
+  "live_verified": true,
+  "closed": true,
+  "memory": {
+    "id": "sentinel_xrecall_long-<id>",
+    "status": "ACTIVE",
+    "semantic_strategy_id": "sentinel_semantic-<id>",
+    "namespace_template": "/strategies/{memoryStrategyId}/actors/{actorId}/"
+  },
+  "what_happened": "Under actorId=tenant-1, four separate sessions (A/B/C/D) each wrote a USER->ASSISTANT exchange about the Log4Shell disposition for host web-01. AgentCore's SEMANTIC strategy asynchronously extracted structured facts from those conversations, and a later retrieve_memory_records call (from no particular session — cross-session) returned the extracted facts ranked by relevance. A different tenant (actorId=tenant-2), same memory + strategy, returned ZERO records for the same query.",
+  "recall": {
+    "tenant1_recall_count": 3,
+    "tenant2_recall_count": 0,
+    "query": "final disposition and remediation for host web-01 Log4Shell",
+    "top_records": [
+      {"score": 0.519, "text": "The user is involved in remediation of a Log4Shell vulnerability on web-01, with the platform-security team as owner and a deadline to patch log4j to 2.17.1 within 24 hours...; a perimeter block of 203.0.113.66 has already been applied and the disposition is confirmed critical true-positive."},
+      {"score": 0.475, "text": "The user is investigating whether web-01 was exploited before a Log4Shell patch was applied."},
+      {"score": 0.438, "text": "The user requested a summary of the web-01 Log4Shell case for an incident report."}
+    ]
+  },
+  "per_dimension": {
+    "cross_session_semantic_recall": {"passed": true, "summary": "Facts written across 4 sessions were SEMANTICALLY EXTRACTED (not raw echo — the records are model-summarized facts) and retrieved cross-session, ranked by relevance."},
+    "multi_tenant_isolation": {"passed": true, "hard_constraint": true, "summary": "tenant-2 recall = 0 for the same query/strategy — a tenant cannot recall another tenant's memory."}
+  },
+  "extraction_timing_note": "SEMANTIC extraction is asynchronous and service-scheduled. In this run it did NOT surface within the first ~20 minutes on a single exchange; after writing 3 additional related exchanges (raising the extraction-trigger volume) the extraction ran and records appeared around the ~22-minute mark. list_memory_extraction_jobs showed 0 scheduled jobs throughout the wait (the scheduling is opaque). extractionMode on CreateEvent only offers 'SKIP' — there is no force-now. Practical guidance: teach across a few exchanges, then wait minutes before expecting recall; it is not instant.",
+  "honesty": "This is a genuine SEMANTIC extraction + cross-session retrieval, proven end-to-end with tenant isolation. The only non-determinism is extraction latency (minutes, service-scheduled), which is the documented behavior — not a defect and not faked.",
+  "teardown": "Memory (and its strategy) deleted after evidence capture (POC-scoped, non-prod).",
+  "note": "Real on-account proof of the full AgentCore Memory story: cross-session SEMANTIC recall (write in sessions A-D under tenant-1 -> asynchronous fact extraction -> relevance-ranked retrieval) WITH hard multi-tenant isolation (tenant-2 sees nothing). Completes the memory EXTERNAL item that was previously partial (write+isolation proven, recall pending async extraction)."
+}

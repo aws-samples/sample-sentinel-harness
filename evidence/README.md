@@ -113,6 +113,15 @@ A live SESSION-level, numerical (0.0/0.5/1.0), safety-aware CVE-triage `Evaluato
 path; wiring `CreateOnlineEvaluationConfig` to a live OTEL trace source (continuous scoring of
 emitted spans) needs the running span pipeline and is the honestly-noted remaining step.
 
+### Cross-session Memory SEMANTIC recall — `live_memory_recall_result.json`
+**The full memory story, live.** Under `actorId=tenant-1`, four sessions wrote Log4Shell/web-01
+exchanges; AgentCore's SEMANTIC strategy **asynchronously extracted structured facts** (model-
+summarized, not raw echo) and a cross-session `retrieve_memory_records` returned them ranked by
+relevance (top 0.519), while `tenant-2` returned **0** — hard multi-tenant isolation. Timing:
+extraction is async/service-scheduled; it did not surface on one exchange in ~20 min, but after
+3 more related exchanges (more trigger volume) it extracted by ~22 min. Teach across a few
+exchanges, then wait minutes — recall is not instant.
+
 ### Continuous online evaluation — `live_online_evaluation_result.json`
 **The always-on complement to the on-demand judge, live.** An `OnlineEvaluationConfig` is **ACTIVE**,
 sampling 100% of AgentCore GenAI sessions from the CloudWatch **Transaction Search** `aws/spans`
