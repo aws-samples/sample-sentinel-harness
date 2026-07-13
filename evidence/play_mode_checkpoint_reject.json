@@ -1,0 +1,46 @@
+{
+  "plan_id": "playmode_reject",
+  "session_id": "playmode-deb79098-74dd-4cb5-b491-b0e59bfb19e9-7fbb55a1",
+  "halted": true,
+  "halted_reason": "step 1 (T1190) rejected by auto",
+  "steps": [
+    {
+      "index": 0,
+      "phase": "recon",
+      "technique": "T1595",
+      "objective": "Emulate active scanning against the lab target (simulated).",
+      "status": "executed",
+      "tool_use_id": "tooluse_vs7MREv53G9CYc7MWmmziK",
+      "decision": {
+        "decision": "APPROVED",
+        "approver": "auto",
+        "note": "Auto-approved emulation of T1595 (recon)."
+      },
+      "execution_log": "[SIMULATED] would execute technique T1595 (recon): Emulate active scanning against the lab target (simulated). — no action taken."
+    },
+    {
+      "index": 1,
+      "phase": "initial-access",
+      "technique": "T1190",
+      "objective": "Emulate exploitation of a public-facing app in the lab (simulated).",
+      "status": "rejected",
+      "tool_use_id": "tooluse_jIHQss9Jit7bc4AjNMrUPz",
+      "decision": {
+        "decision": "REJECTED",
+        "approver": "auto",
+        "note": "Rejected emulation of T1190 (initial-access)."
+      },
+      "execution_log": null
+    },
+    {
+      "index": 2,
+      "phase": "execution",
+      "technique": "T1059",
+      "objective": "Emulate command/script interpreter execution (simulated).",
+      "status": "pending",
+      "tool_use_id": null,
+      "decision": null,
+      "execution_log": null
+    }
+  ]
+}

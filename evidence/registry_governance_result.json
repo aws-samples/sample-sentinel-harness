@@ -1,0 +1,78 @@
+{
+  "scenario": "registry_governance",
+  "steps": [
+    {
+      "step": "create_registry",
+      "ok": true,
+      "data": {
+        "registryArn": "arn:aws:bedrock-agentcore:us-east-1:<ACCOUNT_ID>:registry/reg-0001fake0000000000",
+        "auto_approval": false,
+        "note": "autoApproval=false => a record is DRAFT (not live) until approved."
+      }
+    },
+    {
+      "step": "create_skill_record",
+      "ok": true,
+      "data": {
+        "recordArn": "arn:aws:bedrock-agentcore:us-east-1:<ACCOUNT_ID>:registry/reg-0001fake0000000000/record/rec-0002fake0000000000",
+        "status": "DRAFT"
+      }
+    },
+    {
+      "step": "list_records_shows_draft",
+      "ok": true,
+      "data": {
+        "count": 1,
+        "record_id": "rec-0002fake0000000000",
+        "status": "DRAFT"
+      }
+    },
+    {
+      "step": "submit_for_approval",
+      "ok": true,
+      "data": {
+        "record_id": "rec-0002fake0000000000",
+        "status": "PENDING_APPROVAL",
+        "transition": "DRAFT -> PENDING_APPROVAL"
+      }
+    },
+    {
+      "step": "not_live_until_approved",
+      "ok": true,
+      "data": {
+        "final_status": "PENDING_APPROVAL",
+        "live_status_would_be": "APPROVED",
+        "note": "The record is PENDING_APPROVAL, NOT live. Only an explicit human approval (out of band) flips it to APPROVED/live."
+      }
+    },
+    {
+      "step": "verdict",
+      "ok": true,
+      "data": {
+        "registry_created": true,
+        "record_created_draft": true,
+        "submit_moved_to_pending_approval": true,
+        "not_live_until_approved": true,
+        "closed": true,
+        "final_status": "PENDING_APPROVAL",
+        "note": "OFFLINE governance proof: a live Registry created with autoApproval=false is the on-account dual-gate — a record is created in DRAFT, listed as DRAFT (exists but NOT live), and submit_for_approval moves it DRAFT -> PENDING_APPROVAL. It is NEVER live (APPROVED) until an explicit human approval flips it, mirroring the offline registry's 'approved-only is live' rule. The control client is a fake here (zero AWS); registry_live is live-verified against the GA bedrock-agentcore-control API. Run with --live to drive the real API (never done in tests)."
+      }
+    }
+  ],
+  "flags": {
+    "registry_created": true,
+    "record_created_draft": true,
+    "submit_moved_to_pending_approval": true,
+    "not_live_until_approved": true,
+    "closed": true
+  },
+  "verdict": {
+    "registry_created": true,
+    "record_created_draft": true,
+    "submit_moved_to_pending_approval": true,
+    "not_live_until_approved": true,
+    "closed": true,
+    "final_status": "PENDING_APPROVAL",
+    "note": "OFFLINE governance proof: a live Registry created with autoApproval=false is the on-account dual-gate — a record is created in DRAFT, listed as DRAFT (exists but NOT live), and submit_for_approval moves it DRAFT -> PENDING_APPROVAL. It is NEVER live (APPROVED) until an explicit human approval flips it, mirroring the offline registry's 'approved-only is live' rule. The control client is a fake here (zero AWS); registry_live is live-verified against the GA bedrock-agentcore-control API. Run with --live to drive the real API (never done in tests)."
+  }
+}

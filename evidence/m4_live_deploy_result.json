@@ -1,0 +1,34 @@
+{
+  "scenario": "m4_live_deploy",
+  "verdict": {
+    "guardrail": {
+      "deployed": true,
+      "action": "GUARDRAIL_INTERVENED",
+      "masked": [
+        "{aws-access-key-id}",
+        "{generic-api-token}"
+      ],
+      "region_note": "redeployed in us-east-1, GUARDRAIL_INTERVENED re-verified"
+    },
+    "identity": {
+      "deployed": true,
+      "user_pool_id": "us-east-1_<REDACTED>",
+      "oidc_discovery_reachable": true,
+      "signing_alg": "RS256",
+      "token_endpoint_present": true,
+      "authorizer_contract_ok": true,
+      "oidc_region": "us-east-1"
+    },
+    "observability": {
+      "deployed": true,
+      "dashboard": "sentinel-observability",
+      "metric_namespace": "SentinelHarness",
+      "budget": "sentinel-monthly-cost",
+      "log_group": "/sentinel/sentinel/scenarios"
+    },
+    "vpc_endpoints_cost_gated_off": true,
+    "closed": true,
+    "note": "M4 L3 foundation, LIVE + RETAINED for demos on the real non-prod dev account, REGION-UNIFIED to us-east-1 (earlier us-west-2 deploy — caused by a stray AWS_REGION env — was torn down; Cognito domain prefix root-fixed to an account+region-unique value to avoid the global collision). Three free-tier stacks retained: Guardrail (re-verified GUARDRAIL_INTERVENED masking a fake AWS key + sk- token), Cognito identity (us-east-1 OIDC discovery reachable, RS256, authorizer contract verified), CloudWatch dashboard + TokensPerScenario + monthly Budgets alarm. VPC PrivateLink endpoints (the only standing ~$30/mo cost) stay cost-gated OFF. All CDK stacks use the NATIVE AWS::BedrockAgentCore::{Gateway,Registry,Memory,Harness} CFN types — genuinely AgentCore-based, not generic-resource stand-ins. IDs/account scrubbed.",
+    "region": "us-east-1 (unified; us-west-2 torn down)"
+  }
+}

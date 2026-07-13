@@ -1,0 +1,30 @@
+<svg width="1180" height="280" viewBox="0 0 1180 280" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="sentinel-harness">
+  <defs>
+    <linearGradient id="shield" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffb445"/><stop offset="1" stop-color="#ff9900"/>
+    </linearGradient>
+    <linearGradient id="loop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#30d158"/><stop offset="1" stop-color="#00d0d6"/>
+    </linearGradient>
+    <radialGradient id="core" cx="0.5" cy="0.42" r="0.6">
+      <stop offset="0" stop-color="#ffe6b3"/><stop offset="1" stop-color="#ff9900"/>
+    </radialGradient>
+    <linearGradient id="txt" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff9900"/><stop offset="0.55" stop-color="#f5f5f7"/><stop offset="1" stop-color="#f5f5f7"/>
+    </linearGradient>
+  </defs>
+  <rect width="1180" height="280" fill="#0a0e16" rx="24"/>
+  <!-- mark (scaled from the icon), centered vertically -->
+  <g transform="translate(28,20) scale(0.47)">
+    <path d="M256 96 L392 148 V262 C392 342 330 396 256 424 C182 396 120 342 120 262 V148 Z"
+          fill="none" stroke="url(#shield)" stroke-width="16" stroke-linejoin="round"/>
+    <path d="M256 186 A84 84 0 1 1 190 218" fill="none" stroke="url(#loop)" stroke-width="16" stroke-linecap="round"/>
+    <path d="M190 218 l-16 -20 l26 -3 Z" fill="#00d0d6"/>
+    <circle cx="256" cy="270" r="34" fill="url(#core)"/>
+    <circle cx="256" cy="270" r="15" fill="#0a0e16"/>
+    <circle cx="262" cy="263" r="5" fill="#ffe6b3"/>
+  </g>
+  <!-- wordmark -->
+  <text x="270" y="150" font-family="'Segoe UI',Helvetica,Arial,sans-serif" font-size="76" font-weight="800" letter-spacing="-2" fill="url(#txt)">sentinel<tspan fill="#ff9900">-</tspan>harness</text>
+  <text x="272" y="200" font-family="'JetBrains Mono','SF Mono',monospace" font-size="24" letter-spacing="0.5" fill="#8b95a7">SecOps agents as config · Amazon Bedrock AgentCore Harness</text>
+</svg>

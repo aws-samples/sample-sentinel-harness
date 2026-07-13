@@ -1,0 +1,62 @@
+name: Scorecard supply-chain security
+
+# OpenSSF Scorecard: automated checks of this repo's supply-chain security posture
+# (branch protection, pinned dependencies, token permissions, dangerous workflow
+# patterns, etc.). Results are uploaded to GitHub code scanning and (optionally)
+# published to the public OpenSSF API so the repo can display a Scorecard badge.
+#
+# Token-free beyond the default GITHUB_TOKEN: `publish_results: true` uses OIDC
+# (id-token: write) — no PAT or repo secret is required.
+
+on:
+  # Weekly full run + on pushes to the default branch (branch-protection and
+  # other repo-level checks only make sense against main).
+  branch_protection_rule:
+  schedule:
+    - cron: "27 8 * * 2"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Minimal top-level permissions; the job elevates only what it needs.
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # upload SARIF results to code scanning
+      id-token: write          # OIDC token for publish_results (no secret needed)
+      contents: read
+
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Run OpenSSF Scorecard analysis
+        # ossf/scorecard-action v2.4.3
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publishes results to the public OpenSSF API to enable the badge.
+          # Uses OIDC (id-token: write above); requires no secrets.
+          publish_results: true
+
+      - name: Upload SARIF as workflow artifact
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload SARIF to code scanning
+        # github/codeql-action/upload-sarif v3.37.0
+        uses: github/codeql-action/upload-sarif@02c5e83432fe5497fd85b873b6c9f16a8578e1d9
+        with:
+          sarif_file: results.sarif

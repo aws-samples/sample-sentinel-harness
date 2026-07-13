@@ -1,0 +1,27 @@
+# Pre-commit hooks for sentinel-harness.
+# ============================================================================
+# Mirrors the CI quality gates locally so problems are caught before push:
+#   * ruff — lint + format check, pinned to the SAME version CI runs (0.15.20).
+#   * secret-and-name scan — the repo's public-hygiene gate (deploy/scan_secrets.sh),
+#     run as a thin local hook so it uses the single shared scan implementation.
+#
+# Install once:  uvx pre-commit install   (or:  pip install pre-commit && pre-commit install)
+# Run on all files:  uvx pre-commit run --all-files
+minimum_pre_commit_version: "3.5.0"
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      - id: ruff
+        name: ruff (lint)
+        args: [--config, pyproject.toml]
+
+  - repo: local
+    hooks:
+      - id: secret-and-name-scan
+        name: secret-and-name scan (public-repo hygiene)
+        entry: deploy/scan_secrets.sh
+        language: script
+        pass_filenames: false
+        always_run: true

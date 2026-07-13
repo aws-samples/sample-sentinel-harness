@@ -1,0 +1,98 @@
+{
+  "scenario": "cve_asset_triage",
+  "steps": [
+    {
+      "step": "nvd_lookup",
+      "ok": true,
+      "data": {
+        "cve_id": "CVE-2021-44228",
+        "severity": "CRITICAL",
+        "cvss": 10.0,
+        "source": "stub",
+        "error": null
+      }
+    },
+    {
+      "step": "epss_kev",
+      "ok": true,
+      "data": {
+        "cve_id": "CVE-2021-44228",
+        "epss": 0.975,
+        "in_kev": true,
+        "kev_due_date": "2021-12-24",
+        "source": "stub"
+      }
+    },
+    {
+      "step": "asset_lookup",
+      "ok": true,
+      "data": {
+        "query": "*",
+        "host_count": 4,
+        "source": "stub"
+      }
+    },
+    {
+      "step": "triage",
+      "ok": true,
+      "data": {
+        "cve_id": "CVE-2021-44228",
+        "severity": "CRITICAL",
+        "cvss": 10.0,
+        "exploited_in_wild": true,
+        "epss": 0.975,
+        "affected_hosts": [
+          "web-01"
+        ],
+        "blast_radius": {
+          "affected_count": 1,
+          "reachable_hosts": [
+            "app-01"
+          ],
+          "internet_exposed_hit": true
+        },
+        "recommended_action": "patch_now_exposed_and_exploited"
+      }
+    },
+    {
+      "step": "hitl_gate",
+      "ok": true,
+      "data": {
+        "recommended_action": "patch_now_exposed_and_exploited",
+        "analyst_sign_off_required": true,
+        "note": "MOCK POC: the deterministic core PROPOSES a remediation; a human analyst MUST approve via a request_human_review-style gate before any action is taken. No remediation is auto-applied by the AI."
+      }
+    },
+    {
+      "step": "verdict",
+      "ok": true,
+      "data": {
+        "cve_id": "CVE-2021-44228",
+        "has_cvss": true,
+        "in_kev": true,
+        "affected_hosts": [
+          "web-01"
+        ],
+        "blast_radius_computed": true,
+        "hitl_gate_required": true,
+        "recommended_action": "patch_now_exposed_and_exploited",
+        "closed": true,
+        "note": "MOCK POC: triaged CVE-2021-44228 AGAINST the mock asset surface end to end — nvd_lookup (severity/CVSS) -> epss_kev (EPSS + CISA KEV) -> asset_lookup (which of my hosts expose it) -> deterministic CVETriage join (blast radius) -> HITL gate (analyst sign-off required before any remediation). All data is clearly-labeled fiction (RFC 5737 IPs, example.test); CVE metadata is from the offline tool stubs. This proves the CVE-vs-asset join runs before any real vuln feed / CMDB is wired. Run with --live for a pointer to the real CVE-triage harness."
+      }
+    }
+  ],
+  "cve_id": "CVE-2021-44228",
+  "verdict": {
+    "cve_id": "CVE-2021-44228",
+    "has_cvss": true,
+    "in_kev": true,
+    "affected_hosts": [
+      "web-01"
+    ],
+    "blast_radius_computed": true,
+    "hitl_gate_required": true,
+    "recommended_action": "patch_now_exposed_and_exploited",
+    "closed": true,
+    "note": "MOCK POC: triaged CVE-2021-44228 AGAINST the mock asset surface end to end — nvd_lookup (severity/CVSS) -> epss_kev (EPSS + CISA KEV) -> asset_lookup (which of my hosts expose it) -> deterministic CVETriage join (blast radius) -> HITL gate (analyst sign-off required before any remediation). All data is clearly-labeled fiction (RFC 5737 IPs, example.test); CVE metadata is from the offline tool stubs. This proves the CVE-vs-asset join runs before any real vuln feed / CMDB is wired. Run with --live for a pointer to the real CVE-triage harness."
+  }
+}

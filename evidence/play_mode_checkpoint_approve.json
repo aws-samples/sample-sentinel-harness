@@ -1,0 +1,50 @@
+{
+  "plan_id": "playmode_approve",
+  "session_id": "playmode-273eec27-d3e1-42b0-b2f7-65cdee86a331-55074c52",
+  "halted": false,
+  "halted_reason": null,
+  "steps": [
+    {
+      "index": 0,
+      "phase": "recon",
+      "technique": "T1595",
+      "objective": "Emulate active scanning against the lab target (simulated).",
+      "status": "executed",
+      "tool_use_id": "tooluse_BqZ5qMc6e2sFmd3heWn2y0",
+      "decision": {
+        "decision": "APPROVED",
+        "approver": "auto",
+        "note": "Auto-approved emulation of T1595 (recon)."
+      },
+      "execution_log": "[SIMULATED] would execute technique T1595 (recon): Emulate active scanning against the lab target (simulated). — no action taken."
+    },
+    {
+      "index": 1,
+      "phase": "initial-access",
+      "technique": "T1190",
+      "objective": "Emulate exploitation of a public-facing app in the lab (simulated).",
+      "status": "executed",
+      "tool_use_id": "tooluse_zyQiE9UmCjjgnaeAARF0CV",
+      "decision": {
+        "decision": "APPROVED",
+        "approver": "auto",
+        "note": "Auto-approved emulation of T1190 (initial-access)."
+      },
+      "execution_log": "[SIMULATED] would execute technique T1190 (initial-access): Emulate exploitation of a public-facing app in the lab (simulated). — no action taken."
+    },
+    {
+      "index": 2,
+      "phase": "execution",
+      "technique": "T1059",
+      "objective": "Emulate command/script interpreter execution (simulated).",
+      "status": "executed",
+      "tool_use_id": "tooluse_fTLUAofXq6UEVfhPTnds6Y",
+      "decision": {
+        "decision": "APPROVED",
+        "approver": "auto",
+        "note": "Auto-approved emulation of T1059 (execution)."
+      },
+      "execution_log": "[SIMULATED] would execute technique T1059 (execution): Emulate command/script interpreter execution (simulated). — no action taken."
+    }
+  ]
+}

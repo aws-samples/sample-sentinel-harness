@@ -1,0 +1,11 @@
+{
+  "scenario": "endpoint_promotion",
+  "verdict": {
+    "create_harness_endpoint_succeeded": true,
+    "list_harness_versions_works": true,
+    "versions_count": 1,
+    "endpoint_arn_returned": true,
+    "closed": true,
+    "note": "M2 promote-to-production mechanism, live-validated on real AgentCore: a READY harness was promoted via CreateHarnessEndpoint to a named 'prod' endpoint (ARN returned), ListHarnessVersions returned version 1, and the endpoint + harness were cleaned up in the required order (endpoint READY -> delete endpoint -> delete harness; an endpoint in CREATING blocks deletion with ConflictException). Account id scrubbed."
+  }
+}

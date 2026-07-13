@@ -1,0 +1,21 @@
+{
+  "scenario": "gateway_lifecycle",
+  "verdict": {
+    "gateway_name": "sentinel-gwprobe-<TS>",
+    "authorizer_type": "AWS_IAM",
+    "protocol": "MCP",
+    "created": true,
+    "create_status": "CREATING",
+    "gateway_arn_scrubbed": "arn:aws:bedrock-agentcore:us-east-1:<ACCOUNT_ID>:gateway/sentinel-gwprobe-<TS>-<SUFFIX>",
+    "reached_ready": true,
+    "deleted": true,
+    "delete_http_status": 202,
+    "delete_status": "DELETING",
+    "deleted_confirmed_gone": true,
+    "leftover_after_cleanup": [],
+    "named_supervisor_import_safe_offline": true,
+    "closed": true,
+    "region": "us-east-1",
+    "note": "LIVE self-cleaning round-trip on the real Amazon Bedrock AgentCore GA Gateway control plane (bedrock-agentcore-control), driven through sentinel_harness.gateway. create_gateway(authorizer_type='AWS_IAM') -> the real GA CreateGateway op returned a gateway in CREATING; wait_gateway_ready polled the real GetGateway op until status READY; delete_gateway invoked the real DeleteGateway op (HTTP 202, DELETING); a follow-up ListGateways poll confirmed the gateway is fully gone (leftover=[]). This proves the genuine GA CreateGateway/GetGateway/DeleteGateway path end-to-end, not an offline mock. Gateway name is account+region-safe (no underscores, <=48 chars, matches the CreateGateway ([0-9a-zA-Z][-]?){1,48} rule). The probe left nothing behind and did not touch the retained demo controls (Guardrail / Cognito / CloudWatch). scenarios/scenario_named_supervisor.py was separately confirmed import-safe offline (import makes zero AWS calls; build/run/rec present). Account id scrubbed to <ACCOUNT_ID>; concrete timestamp/suffix scrubbed to <TS>/<SUFFIX>."
+  }
+}

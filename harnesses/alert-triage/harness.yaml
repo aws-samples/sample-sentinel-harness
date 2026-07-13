@@ -1,0 +1,66 @@
+# alert-triage — declarative harness config
+# ==========================================
+# Layer 1 (Strategy Iteration) · alert handling.
+#
+# High-volume per-alert triage: TP/FP verdict, multi-source enrichment, blast-radius
+# assessment, and a response recommendation. Containment is human-in-the-loop gated.
+# TP/FP verdicts are written to memory as the feedback loop into detection.
+# Generic SecOps content only — no org-specific data.
+#
+# Consumed by sentinel_harness.core.create_harness(). ${ENV} values are resolved by
+# the loader from environment variables (12-factor):
+#   SENTINEL_EXECUTION_ROLE_ARN, SENTINEL_REGION, AWS_PROFILE, SENTINEL_GATEWAY_ARN.
+
+harnessName: sentinel_alert_triage   # must match [a-zA-Z][a-zA-Z0-9_]{0,39} — no hyphens
+
+model:
+  bedrockModelConfig:
+    # Cheap + fast for high alert volume. Resolved from core.MODEL_HAIKU
+    # (env SENTINEL_MODEL_HAIKU). Cross-region-inference pattern id — OVERRIDABLE:
+    # set SENTINEL_MODEL_HAIKU to pin a version, or pass a per-invocation model
+    # override (e.g. Sonnet) for ambiguous alerts.
+    modelId: global.anthropic.claude-haiku-4-5-20251001-v1:0
+    maxTokens: 4096
+    temperature: 0.1
+
+systemPrompt: system_prompt.md   # loader reads this file and wraps it as [{text: ...}]
+
+tools:
+  # code_interpreter: deterministic event counts / ratios / time-window math.
+  - type: agentcore_code_interpreter
+    name: code_interpreter
+  # Gateway: SIEM query, asset lookup, IOC enrichment, ticketing, containment.
+  - type: agentcore_gateway
+    name: gateway
+    config:
+      agentCoreGateway:
+        gatewayArn: ${SENTINEL_GATEWAY_ARN}
+
+allowedTools:
+  # EXPLICIT allowlist — never ['*'].
+  - code_interpreter                  # deterministic counts / ratios
+  - "@gateway/siem_query"              # read-only SIEM query
+  - "@gateway/asset_lookup"            # asset inventory / blast-radius
+  - "@gateway/enrich_ioc"              # hash / domain / IP reputation
+  - "@gateway/create_ticket"           # ticketing write
+  - request_containment_approval      # inline_function HITL containment gate (see note)
+
+# NOTE on request_containment_approval:
+#   Human-in-the-loop inline_function gate, registered at create time via
+#   core.tool_inline("request_containment_approval", <desc>, <inputSchema>). Listed in
+#   allowedTools; the loader injects the matching inline tool definition into `tools`
+#   so any containment action (isolate host / disable account / block indicator)
+#   pauses for analyst sign-off. The raw contain_action is intentionally NOT exposed
+#   directly — the AI can only *request* containment, never execute it unattended.
+
+memory:
+  # SEMANTIC recall of prior TP/FP verdicts + SUMMARIZATION of the alert context.
+  # This is the feedback loop: FP whitelist decisions inform future detection tuning.
+  managedMemoryConfiguration:
+    strategies:
+      - SEMANTIC
+      - SUMMARIZATION
+    eventExpiryDuration: 90
+
+maxIterations: 12      # enrichment + verdict + optional containment gate; kept tight
+timeoutSeconds: 180    # high-volume path — short ceiling

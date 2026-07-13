@@ -1,0 +1,8 @@
+# bas-runner Runtime image dependencies (pinned loosely; pin exact for a release).
+# bedrock_agentcore provides the long-running Runtime app + async-task heartbeat.
+bedrock-agentcore>=0.1.0
+boto3>=1.34.0
+# The Play-Mode / sandbox-hook logic this runner reuses lives in sentinel-harness.
+# In the image, install it from the repo (built wheel or `pip install -e .` of the
+# repo root); listed here so the intent is explicit.
+# sentinel-harness

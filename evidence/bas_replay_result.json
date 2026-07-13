@@ -1,0 +1,114 @@
+{
+  "scenario": "bas_replay_blind_spots",
+  "steps": [
+    {
+      "step": "techniques",
+      "data": {
+        "set": [
+          "T1059.001",
+          "T1046",
+          "T1003.001",
+          "T1547.001"
+        ]
+      }
+    },
+    {
+      "step": "rules",
+      "data": {
+        "count": 2,
+        "covers": [
+          "T1059.001",
+          "T1046"
+        ]
+      }
+    },
+    {
+      "step": "replay_technique",
+      "data": {
+        "technique": "T1059.001",
+        "name": "PowerShell",
+        "detected": true,
+        "firing_rules": [
+          "PowerShell Encoded Command Execution"
+        ]
+      }
+    },
+    {
+      "step": "replay_technique",
+      "data": {
+        "technique": "T1046",
+        "name": "Network Service Discovery",
+        "detected": true,
+        "firing_rules": [
+          "Network Service Discovery via nmap"
+        ]
+      }
+    },
+    {
+      "step": "replay_technique",
+      "data": {
+        "technique": "T1003.001",
+        "name": "OS Credential Dumping: LSASS Memory",
+        "detected": false,
+        "firing_rules": []
+      }
+    },
+    {
+      "step": "replay_technique",
+      "data": {
+        "technique": "T1547.001",
+        "name": "Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder",
+        "detected": false,
+        "firing_rules": []
+      }
+    }
+  ],
+  "verdict": {
+    "techniques_tested": [
+      "T1059.001",
+      "T1046",
+      "T1003.001",
+      "T1547.001"
+    ],
+    "techniques_detected": [
+      "T1059.001",
+      "T1046"
+    ],
+    "blind_spots": [
+      "T1003.001",
+      "T1547.001"
+    ],
+    "coverage_ratio": 0.5,
+    "per_technique": [
+      {
+        "technique": "T1059.001",
+        "name": "PowerShell",
+        "detected": true,
+        "firing_rules": [
+          "PowerShell Encoded Command Execution"
+        ]
+      },
+      {
+        "technique": "T1046",
+        "name": "Network Service Discovery",
+        "detected": true,
+        "firing_rules": [
+          "Network Service Discovery via nmap"
+        ]
+      },
+      {
+        "technique": "T1003.001",
+        "name": "OS Credential Dumping: LSASS Memory",
+        "detected": false,
+        "firing_rules": []
+      },
+      {
+        "technique": "T1547.001",
+        "name": "Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder",
+        "detected": false,
+        "firing_rules": []
+      }
+    ],
+    "note": "REAL deterministic BAS replay (generate_cases + sigma_match matcher, offline, no LLM/network/AWS). BAS cases carry SIMULATED telemetry, never live attacks. 'blind_spots' are techniques for which no current rule fired — the detection-engineering backlog. coverage_ratio = detected / techniques_tested."
+  }
+}

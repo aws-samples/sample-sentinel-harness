@@ -1,0 +1,45 @@
+# llm-judge — declarative harness config
+# =======================================
+# M2 scoring gate (ROADMAP §4 layer ③, §5.3) · the LLM-as-a-judge harness.
+#
+# This is the SELF-BUILT LLM-judge harness the M2 loop scores against. The managed
+# Evaluate API scores live OTEL traces (CloudWatch Logs / sessionSpans) — that telemetry
+# pipeline is M4 infra, out of scope for M2 — so M2 uses the ROADMAP-sanctioned fallback:
+# an offline fixed dataset + this self-built judge. Its system prompt is "score this agent
+# answer against these criteria and return a structured JSON verdict". The deterministic
+# `run_evaluation` MCP tool invokes THIS harness and parses the {score, pass, reasons,
+# suggestions} verdict; this harness itself has NO tools — it is a pure critic.
+#
+# Consumed by sentinel_harness.core.create_harness() via loader.load_harness_config().
+# ${ENV} values are resolved by the loader from environment variables (12-factor):
+#   SENTINEL_EXECUTION_ROLE_ARN, SENTINEL_REGION, AWS_PROFILE.
+
+harnessName: sentinel_llm_judge   # must match [a-zA-Z][a-zA-Z0-9_]{0,39} — no hyphens
+
+model:
+  bedrockModelConfig:
+    # Sonnet: grounded scoring of one answer against fixed criteria is structured judgement,
+    # not deep research. Resolved from core.MODEL_SONNET (env SENTINEL_MODEL_SONNET).
+    # Cross-region-inference pattern id — OVERRIDABLE: set SENTINEL_MODEL_SONNET to pin.
+    modelId: global.anthropic.claude-sonnet-4-6
+    maxTokens: 4096
+    temperature: 0.1   # low — a verdict must be repeatable, not creative
+
+systemPrompt: system_prompt.md   # loader reads this file and wraps it as [{text: ...}]
+
+allowedTools: []
+  # EXPLICIT EMPTY list — a pure judge with NO tools. It must NOT browse, research, or
+  # invoke anything; it scores only the answer + criteria handed to it. This is the one
+  # case where an empty allowlist is correct: never '*', and here deliberately nothing.
+
+memory:
+  # SEMANTIC recall of prior scoring decisions + SUMMARIZATION of the running evaluation
+  # session, so the judge's calibration compounds across evaluations (experience compounding).
+  managedMemoryConfiguration:
+    strategies:
+      - SEMANTIC
+      - SUMMARIZATION
+    eventExpiryDuration: 90
+
+maxIterations: 4       # read task/answer/criteria → reason → emit one JSON verdict; no fan-out
+timeoutSeconds: 120    # a single scoring turn is fast; well under the harness sync ceiling

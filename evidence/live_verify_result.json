@@ -1,0 +1,61 @@
+{
+  "scenario": "live_verify",
+  "target": "sentinel-harness L3 foundation (deployed)",
+  "account": "000000000000",
+  "region": "us-east-1",
+  "note_account": "real dev account id redacted to the 000000000000 placeholder per public-repo policy; verification was run on a non-prod dev account.",
+  "method": "read-only on-account verification against live AWS APIs (sts/describe/list/get-template/get-guardrail + read-only OIDC/JWKS fetch + apply-guardrail evaluation with harmless fake data). No create/modify/delete/put/attach performed.",
+  "live_verified": true,
+  "stacks_all_complete": {
+    "sentinel-network": "UPDATE_COMPLETE",
+    "sentinel-identity": "CREATE_COMPLETE",
+    "sentinel-observability": "UPDATE_COMPLETE",
+    "sentinel-guardrail": "UPDATE_COMPLETE"
+  },
+  "hard_constraints": {
+    "no_public_ingress": {
+      "pass": true,
+      "proof": "The sentinel VPC (sentinel-vpc, 10.0.0.0/24, IsDefault=false) is a default-deny island: describe-internet-gateways (attachment.vpc-id filter) => [] (no IGW), no egress-only IGW, describe-nat-gateways => [] (no NAT); both route tables carry only <cidr>->local plus an intra-AWS S3 Gateway-endpoint route, NO 0.0.0.0/0 or ::/0 route; no security group has 0.0.0.0/0 or ::/0 ingress (default SG self-referencing only, endpoint SG tcp/443 from the VPC CIDR only); the single subnet has MapPublicIpOnLaunch=false and is tagged aws-cdk:subnet-type=Isolated. No internet path in or out."
+    },
+    "no_plaintext_secret": {
+      "pass": true,
+      "proof": "All CloudFormation Outputs across the 4 sentinel-* stacks contain only resource ids / ARNs / URLs — zero secret/password/token values. The Cognito confidential machine client has GenerateSecret=true and keeps its secret server-side (HasClientSecret=true), retrievable only via describe-user-pool-client and absent from every CFN output and template body; the human client correctly has no secret (public code flow). No sentinel Secrets Manager secret exists and there is NO RDS/database, so 'db password in Secrets Manager' is N/A. The secret VALUE was never retrieved or printed — secrets are managed server-side, not hardcoded."
+    }
+  },
+  "per_dimension": {
+    "network_isolation": {
+      "passed": true,
+      "hard_constraint": true,
+      "summary": "VPC proven default-deny island: no IGW/NAT/egress-only IGW, no 0.0.0.0/0 route, no public SG ingress, isolated subnet (no public IP on launch)."
+    },
+    "secrets_posture": {
+      "passed": true,
+      "hard_constraint": true,
+      "summary": "No plaintext secret in any CFN output or template; Cognito machine-client secret managed server-side (GenerateSecret=true); no sentinel Secrets Manager secret; no DB."
+    },
+    "guardrail": {
+      "passed": true,
+      "hard_constraint": true,
+      "summary": "Deployed Bedrock Guardrail (v1, status READY) actively intervenes: a fake AWS secret key was BLOCKED (whole output withheld, GUARDRAIL_INTERVENED), and NAME+EMAIL were ANONYMIZED to {NAME}/{EMAIL} in a live apply-guardrail (source=OUTPUT) test."
+    },
+    "cognito_identity": {
+      "passed": true,
+      "hard_constraint": false,
+      "summary": "User pool live; OIDC discovery + JWKS (RS256 RSA keys) reachable; two clients correctly split (a confidential machine client with client_credentials scope, a public human client with code+SRP)."
+    },
+    "observability": {
+      "passed": true,
+      "hard_constraint": false,
+      "summary": "CloudWatch dashboard (3 widgets), scenario log group (7d retention), monthly cost Budget (HEALTHY), and the TokensPerScenario metric filter (SentinelHarness namespace) all live and correctly wired."
+    }
+  },
+  "caveats": [
+    "Read-only throughout: no create/modify/delete/put/attach. The guardrail was exercised with apply-guardrail (source=OUTPUT) on harmless fake data; no live LLM/model invoke and no end-to-end runtime harness invoke was run in this pass, so no runtime token metric has flowed yet (dashboard/metric have no data points).",
+    "The guardrail sensitive-information policy covers AWS secret key (BLOCK) + NAME/EMAIL (ANONYMIZE) + two regexes (aws-access-key-id, generic-api-token); it does NOT cover SSN/PHONE/CREDIT_DEBIT_CARD, which pass through unmasked — expected given the config, not a failure of the tested constraints.",
+    "Egress note (not an ingress failure): the AWS-default security group still carries a 0.0.0.0/0 egress rule, but with no IGW/NAT it has no internet path; the purpose-built endpoint SG restricts egress to tcp/443 within the VPC CIDR.",
+    "The VPC/subnet Block-Public-Access InternetGatewayBlockMode=off; isolation rests on the absence of IGW/NAT and public-IP-on-launch, not on the BPA feature. Network ACLs were not separately enumerated (cannot create an internet path absent an IGW/NAT).",
+    "The Cognito confidential-client secret value was intentionally never retrieved/printed — only presence reported."
+  ],
+  "closed": true,
+  "note": "Real on-account, read-only live verification of the deployed sentinel-harness L3 foundation on a non-prod dev account (us-east-1). All three hard-constraint dimensions (network isolation, secrets posture, guardrail) passed with direct API proof, plus the two supporting dimensions (Cognito identity, observability); all 4 CloudFormation stacks are *_COMPLETE. No public network access exists (default-deny VPC island; no IGW/NAT/public ingress) and secrets are managed server-side, not stored in plaintext. The guardrail actively blocks fake AWS secrets and anonymizes NAME/EMAIL live. Application/scenario data is mock/POC; the liveness proven here is of the deployed infrastructure and the guardrail evaluation, not an end-to-end LLM harness run."
+}

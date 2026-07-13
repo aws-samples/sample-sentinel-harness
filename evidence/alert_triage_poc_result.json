@@ -1,0 +1,101 @@
+{
+  "scenario": "alert_triage_poc",
+  "steps": [
+    {
+      "step": "siem_query",
+      "ok": true,
+      "data": {
+        "count": 3,
+        "alert_ids": [
+          "alert-1002",
+          "alert-1004",
+          "alert-1005"
+        ]
+      }
+    },
+    {
+      "step": "pick_alert",
+      "ok": true,
+      "data": {
+        "alert_id": "alert-1001",
+        "rule_name": "Log4Shell JNDI Exploit Attempt",
+        "host": "web-01",
+        "src_ip": "203.0.113.66"
+      }
+    },
+    {
+      "step": "enrich_ioc",
+      "ok": true,
+      "data": {
+        "indicator": "203.0.113.66",
+        "verdict": "malicious",
+        "threat_category": "c2",
+        "related_hosts": [
+          "web-01"
+        ]
+      }
+    },
+    {
+      "step": "asset_lookup",
+      "ok": true,
+      "data": {
+        "host": "web-01",
+        "vulnerable": true
+      }
+    },
+    {
+      "step": "correlate",
+      "ok": true,
+      "data": {
+        "alert_id": "alert-1001",
+        "verdict": "true_positive",
+        "confidence": "high",
+        "blast_radius": {
+          "host": "web-01",
+          "vulnerable": true,
+          "cves": [
+            "CVE-2021-44228"
+          ],
+          "reachable_hosts": [
+            "app-01"
+          ]
+        },
+        "recommended_action": "contain_host_and_open_incident",
+        "signals": {
+          "ioc_malicious": true,
+          "asset_vulnerable": true,
+          "not_false_positive": true
+        }
+      }
+    },
+    {
+      "step": "create_ticket",
+      "ok": true,
+      "data": {
+        "ticket_id": "SEC-c9f28a6541e4"
+      }
+    },
+    {
+      "step": "verdict",
+      "ok": true,
+      "data": {
+        "siem_hit": true,
+        "ioc_malicious": true,
+        "asset_vulnerable": true,
+        "correlated_true_positive": true,
+        "ticket_created": true,
+        "closed": true,
+        "note": "MOCK POC: triaged the Log4Shell alert (alert-1001) end to end across all four mock data planes — SIEM -> IOC enrichment -> asset blast-radius -> deterministic correlation -> HITL-gated ticket. All data is clearly-labeled fiction (RFC 5737 IPs, example.com/.test). This proves the cross-linked data story triages before any real SIEM/asset/ticketing plane is wired. Run with --live for a pointer to the real alert-triage harness."
+      }
+    }
+  ],
+  "verdict": {
+    "siem_hit": true,
+    "ioc_malicious": true,
+    "asset_vulnerable": true,
+    "correlated_true_positive": true,
+    "ticket_created": true,
+    "closed": true,
+    "note": "MOCK POC: triaged the Log4Shell alert (alert-1001) end to end across all four mock data planes — SIEM -> IOC enrichment -> asset blast-radius -> deterministic correlation -> HITL-gated ticket. All data is clearly-labeled fiction (RFC 5737 IPs, example.com/.test). This proves the cross-linked data story triages before any real SIEM/asset/ticketing plane is wired. Run with --live for a pointer to the real alert-triage harness."
+  }
+}

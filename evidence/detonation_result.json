@@ -1,0 +1,124 @@
+{
+  "scenario": "detonation_run",
+  "steps": [
+    {
+      "step": "sample",
+      "data": {
+        "s3_uri": "s3://sentinel-quarantine-dropbox/samples/fictional-sample-0001.bin",
+        "by_reference": true
+      }
+    },
+    {
+      "step": "actions",
+      "data": {
+        "count": 4,
+        "includes_disallowed": true
+      }
+    },
+    {
+      "step": "hitl_gate",
+      "data": {
+        "awaiting": "AWAITING_APPROVAL",
+        "next": "DETONATING",
+        "decision": "APPROVE"
+      }
+    },
+    {
+      "step": "action",
+      "data": {
+        "index": 0,
+        "kind": "run",
+        "refused": false,
+        "executed": false,
+        "simulated": true,
+        "detail": {
+          "command": "ls /workspace"
+        }
+      }
+    },
+    {
+      "step": "action",
+      "data": {
+        "index": 1,
+        "kind": "read",
+        "refused": false,
+        "executed": false,
+        "simulated": true,
+        "detail": {
+          "path": "artifacts/behavior.log"
+        }
+      }
+    },
+    {
+      "step": "action",
+      "data": {
+        "index": 2,
+        "kind": "run",
+        "refused": true,
+        "executed": false,
+        "simulated": true,
+        "reason": "recursive/forced rm is blocked"
+      }
+    },
+    {
+      "step": "action",
+      "data": {
+        "index": 3,
+        "kind": "run",
+        "refused": false,
+        "executed": false,
+        "simulated": true,
+        "detail": {
+          "command": "grep -r suspicious /workspace"
+        }
+      }
+    },
+    {
+      "step": "report",
+      "data": {
+        "simulated": true,
+        "verdict": "malicious",
+        "iocs_observed": [
+          {
+            "type": "ipv4",
+            "value": "192.0.2.10",
+            "note": "RFC-5737 TEST-NET-1 documentation IP — fictional placeholder"
+          },
+          {
+            "type": "ipv4",
+            "value": "198.51.100.23",
+            "note": "RFC-5737 TEST-NET-2 documentation IP — fictional placeholder"
+          },
+          {
+            "type": "domain",
+            "value": "c2.malware-lab.example.test",
+            "note": "reserved example.test domain — fictional placeholder"
+          }
+        ],
+        "note": "[SIMULATED] behavioral report — NO sample byte was read or executed. All indicators are fictional RFC-5737 / example.test placeholders."
+      }
+    }
+  ],
+  "verdict": {
+    "sample_by_reference": true,
+    "sandbox_refused_bad_action": true,
+    "hitl_gate_required": true,
+    "destroyed_after_use": true,
+    "simulated": true,
+    "closed": true,
+    "states_visited": [
+      "ACQUIRING",
+      "ACQUIRED",
+      "STAGING",
+      "AWAITING_APPROVAL",
+      "DETONATING",
+      "COLLECTING",
+      "REPORTING",
+      "DESTROYING",
+      "DESTROYED"
+    ],
+    "verdict": "malicious",
+    "refused_reason": "recursive/forced rm is blocked",
+    "note": "REAL deterministic one-shot detonation orchestration (offline, no LLM/network/AWS): the sample entered only by s3:// reference, one disallowed action was REFUSED by sentinel_harness.sandbox_hooks and never executed, a human approval gated the DETONATING step, and the one-shot microVM was destroyed after use. SIMULATED no-op throughout: no real VM, no real execution; indicators are fictional RFC-5737 / example.test placeholders."
+  }
+}

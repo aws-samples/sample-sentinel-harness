@@ -1,0 +1,178 @@
+# Evidence — live validation
+
+These are **captured results from real runs** against the GA Amazon Bedrock AgentCore
+Harness API on a **non-production dev account**. Account IDs have been scrubbed to
+`<ACCOUNT_ID>`. Each `*_result.json` is written by the matching script in
+`scenarios/`; each `*.log` is the raw run log. Proof, not claims.
+
+> **Scope of this file.** The sections below walk the **core Layer-1 scenarios** in
+> detail. The repo now ships **22 evidence artifacts** across 15 scenarios plus two
+> live on-account captures (`live_verify_result.json`, `live_a2a_runtime_result.json`).
+> For the full, current per-scenario ledger see the **Scenarios & evidence** table in
+> the [root README](../README.md#-scenarios--evidence); every `evidence/*_result.json`
+> here is written by the matching `scenarios/scenario_*.py`.
+
+## Scenario 1 — CVE triage with a human-in-the-loop gate
+`scenarios/scenario_cve_triage.py` → `cve_triage_result.json`
+
+| Check | Result |
+|---|---|
+| `hit_human_review_gate` | ✅ `true` — the agent called `request_human_review` and stopped (`stopReason=tool_use`) before recommending anything |
+| `did_deterministic_calc` | ✅ `true` — used the code interpreter for the affected-asset math instead of guessing |
+
+One harness combines a code interpreter, an `inline_function` human gate, and managed
+memory — **zero orchestration code**. Security decisions are not made by the AI alone.
+
+## Scenario 2 — Multi-harness parallelism + supervisor
+`scenarios/scenario_multi_harness.py` → `multi_harness_result.json`
+
+| Check | Result |
+|---|---|
+| pattern | multi-harness parallel + supervisor synthesis |
+| **parallel speedup vs serial** | ✅ **~2.6×** (3 specialist harnesses run concurrently; a supervisor merges them) |
+
+This is the answer to "a harness is single-agent": parallelism comes from running
+**multiple** harnesses and synthesizing. (Speedup varies run to run with model latency.)
+
+## Scenario 3 — Detection generation with an independent adversarial reviewer
+`scenarios/scenario_detection_gen.py` → `detection_gen_result.json`
+
+| Check | Result |
+|---|---|
+| `generator_and_reviewer_are_separate_harnesses` | ✅ `true` — generator and reviewer are distinct harnesses (independent judgment, no self-approval bias) |
+| `reviewer_reached_independent_verdict` | ✅ `true` — verdict `revise`, backed by concrete objections: `/.ssh/known_hosts` read by legit SSH-cloning npm scripts, `/run/secrets/` k8s mounts, over-broad substring matches (`private_key`, `server.key`), and a real logic gap — `ParentImage`/`Image` are *process* fields but the rule's `logsource.category: file_event` makes them EDR-dependent/often absent |
+| `no_stray_shell_tool` | ✅ `true` — `allowedTools` scoped to only the gate kept the built-in `shell` off |
+| `publish_correctly_controlled` | ✅ `true` — the flawed rule was **withheld from publish**; the only path to production is the human `request_publish_approval` gate |
+
+Demonstrates generation ≠ evaluation end-to-end: an **independent** reviewer harness reached
+a substantively-correct `revise`, and the flawed rule is **stopped** before any publish. On
+an `approve` run the human publish gate fires instead — either path is safe.
+
+**Transport honesty (`verdict_via_structured_tool: false` this run).** The reviewer is given a
+structured `submit_review_verdict` tool (deterministic to parse) and the publisher a
+`request_publish_approval` gate. On this run the model chose to express both as *final prose*
+(the reviewer wrote its analysis; the publisher wrote a `<tool_call>…` block with
+`stop_reason=end_turn`) rather than emit a real `toolUse` invocation — a known model-behavior
+quirk that `allowedTools` scoping narrows but does **not** force. That is why the scenario
+defines success on the **substance** (an independent verdict was reached + the flawed rule was
+withheld + no stray shell), with a robust prose parser (`parse_verdict`) as the fallback and
+the structured-tool path as a best-effort fast-path. `core._consume_stream`'s structured-call
+reconstruction is unit-tested (`test_structured_verdict_reconstructed_from_stream`) so a real
+tool invocation *is* captured deterministically when the model does emit one.
+
+### HITL, full pause → approve → resume
+`scenarios/scenario_hitl_resume.py` → `hitl_resume_result.json`
+
+| Check | Result |
+|---|---|
+| `paused_on_gate` / `captured_tool_use` | ✅ harness paused on `request_containment_approval`; the call (toolUseId + input) was reconstructed |
+| `resumed_and_finished` | ✅ resumed the same session via the two-message `toolUse`→`toolResult` contract |
+| `closed_hitl_loop` | ✅ `true` — analyst approval flowed back and the agent delivered a human-sanctioned final action |
+
+### Play Mode adversary emulation (Layer 2)
+`scenarios/scenario_play_mode.py` → `play_mode_result.json`
+
+| Check | Result |
+|---|---|
+| `every_step_gated` | ✅ every offensive `exec_technique` step paused on a human gate |
+| `approved_step_resumed` / `reject_halts_plan` | ✅ approve resumes the session; a rejection halts the plan |
+| `checkpoint_roundtrip` / `closed_loop` | ✅ plan state checkpointed to JSON and round-tripped; **no real system touched** (simulated no-ops) |
+
+## Live on-account captures (control/data plane, non-prod)
+
+These are direct API captures against live AgentCore planes, not scenario-script runs.
+
+### CUSTOM_JWT gateway enforcement — `live_custom_jwt_gateway_result.json`
+A real Cognito OIDC provider (M2M `client_credentials`, custom scope) + a live AgentCore
+Gateway with `authorizerType=CUSTOM_JWT` bound to the Cognito discovery URL. Enforcement is
+**proven, not asserted**:
+
+| Request | Result |
+|---|---|
+| valid RS256 JWT | ✅ **HTTP 200** — MCP `tools/list` + `tools/call` served |
+| no token | ✅ **HTTP 401** "Missing Bearer token" |
+| garbage token | ✅ **HTTP 401** "Invalid Bearer token" |
+
+**End-to-end (not just auth):** a real Lambda-backed MCP tool (`cve-severity-tool`,
+`GATEWAY_IAM_ROLE` credential provider) was attached as a gateway target and invoked
+*through* the JWT gateway — `tools/call{cvss:9.8}` → HTTP 200 → the Lambda ran server-side
+and returned `{"severity":"critical","source":"sentinel-gwtool-poc-lambda"}`. Full roadmap
+intent met: mint a Cognito token → call a real tool through the CUSTOM_JWT gateway.
+
+> **GA correction on interceptors.** Gateway `interceptorConfigurations` are **Lambda-based**
+> (`interceptor.lambda.arn`) with a separate `policyEngineConfiguration` (Bedrock guardrail
+> engine, `LOG_ONLY`/`ENFORCE`). There is **no native "Guardrail interceptor" primitive** on
+> `CreateGateway`; guardrail redaction runs inside a Lambda interceptor or the policy engine.
+> The deployed-Guardrail redaction itself (fake AWS secret BLOCKED, NAME/EMAIL ANONYMIZED) is
+> proven separately in `live_verify_result.json`.
+
+### Managed Evaluate LLM-as-a-judge — `live_managed_evaluator_result.json`
+A live SESSION-level, numerical (0.0/0.5/1.0), safety-aware CVE-triage `Evaluator` is **ACTIVE**
+(version-pinned Haiku judge; groundedness + safety as first-class scoring dimensions, mirroring
+`loop_safety.apply_safety_veto`). This proves the **control-plane** half of the OTEL→Evaluate
+path; wiring `CreateOnlineEvaluationConfig` to a live OTEL trace source (continuous scoring of
+emitted spans) needs the running span pipeline and is the honestly-noted remaining step.
+
+### Cross-session Memory SEMANTIC recall — `live_memory_recall_result.json`
+**The full memory story, live.** Under `actorId=tenant-1`, four sessions wrote Log4Shell/web-01
+exchanges; AgentCore's SEMANTIC strategy **asynchronously extracted structured facts** (model-
+summarized, not raw echo) and a cross-session `retrieve_memory_records` returned them ranked by
+relevance (top 0.519), while `tenant-2` returned **0** — hard multi-tenant isolation. Timing:
+extraction is async/service-scheduled; it did not surface on one exchange in ~20 min, but after
+3 more related exchanges (more trigger volume) it extracted by ~22 min. Teach across a few
+exchanges, then wait minutes — recall is not instant.
+
+### Continuous online evaluation — `live_online_evaluation_result.json`
+**The always-on complement to the on-demand judge, live.** An `OnlineEvaluationConfig` is **ACTIVE**,
+sampling 100% of AgentCore GenAI sessions from the CloudWatch **Transaction Search** `aws/spans`
+source and scoring each with built-in **Faithfulness** (groundedness) + **Harmfulness** (safety) +
+**Coherence** evaluators. Enablement chain discovered live: custom judges that reference expected
+inputs are *on-demand only* → online requires reference-free `Builtin.*` evaluators; the data source
+must be the `aws/spans` Transaction-Search group (enable via X-Ray dest→CloudWatchLogs + a Logs
+resource policy + 100% indexing), **not** the runtime stdout log group. A populated score stream
+additionally needs OTEL-instrumented agent traffic flowing.
+
+### A2A specialist on AgentCore Runtime — `live_a2a_runtime_result.json`
+**Crown jewel, live & repeatable.** A fresh `linux/arm64` cve-intel image built + pushed to ECR →
+`CreateAgentRuntime`(`serverProtocol=A2A`, `networkMode=PUBLIC`) → poll to READY → a live A2A
+JSON-RPC `message/send` → **HTTP 200** with the specialist invoking its real tools
+(`nvd_lookup`/`epss_kev`/`attack_lookup`) against the version-pinned Bedrock Haiku model →
+`DeleteAgentRuntime` teardown (no billed microVM left). Run via the bypass-role invoke path.
+
+### Fully autonomous self-improvement loop — `closed_loop_result.json`
+**The M12 north star, `closed: true`.** A deliberately weak agent scored **0.0** by an INDEPENDENT
+judge harness → `update_harness` to a strong prompt → re-scored **1.0** → cleared the real
+`loop_safety.apply_safety_veto` **and** `regression_guard` → HITL-approve → `CreateHarnessEndpoint`
+(promoted) → reject-path withholds promotion → teardown. Every build/invoke/score/update/promote/delete
+is real.
+
+> **Root-cause correction on the invoke "gate":** the earlier `live_dataplane_gate_diagnosis.json`
+> conclusion ("service-side account gate") was **wrong**. `InvokeHarness` `AccessDenied` was the
+> **credential-vending session policy**; assuming a fresh in-account IAM role *directly*
+> (bypassing the vend layer) makes invoke work. A 10-minute discriminating test beat a 1M-token
+> inference sweep — verify, don't infer.
+
+> **Live WAF/defang finding:** a correct Log4Shell answer necessarily contains `${jndi[:]ldap[://]}`.
+> Sending that raw to the judge over `InvokeHarness` is blocked by an edge **WAF** (HTML 403, not IAM).
+> The fix is standard threat-intel **IOC defanging** of judge inputs — a real production tension worth
+> designing for in any WAF-fronted SecOps agent that echoes IOCs.
+
+## Honest limitations (as observed live)
+
+- **Long-term memory extraction is asynchronous (minutes-scale).** A cross-session
+  semantic recall issued seconds after a write can return empty. In demos: teach → wait
+  → recall. This is expected behavior, not a defect.
+- **A single harness is single-agent.** Multi-agent orchestration/graph/hooks are not
+  native; use multiple harnesses + a supervisor (shown here), or export to Strands code
+  and run on AgentCore Runtime.
+
+## Reproduce
+
+```bash
+export AWS_PROFILE=<non-prod>; export SENTINEL_REGION=us-east-1
+export SENTINEL_EXECUTION_ROLE_ARN="arn:aws:iam::<acct>:role/<role>"
+python scenarios/scenario_cve_triage.py
+python scenarios/scenario_multi_harness.py
+python scenarios/scenario_detection_gen.py
+sentinel cleanup sentinel_        # tear down
+```

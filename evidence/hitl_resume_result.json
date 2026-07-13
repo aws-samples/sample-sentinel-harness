@@ -1,0 +1,51 @@
+{
+  "scenario": "hitl_resume",
+  "steps": [
+    {
+      "step": "create",
+      "ok": true,
+      "data": {
+        "harnessId": "sentinel_hitl_triage-xjzKuswGDX"
+      }
+    },
+    {
+      "step": "ready",
+      "ok": true,
+      "data": {
+        "id": "sentinel_hitl_triage-xjzKuswGDX"
+      }
+    },
+    {
+      "step": "turn1_pause",
+      "ok": true,
+      "data": {
+        "stop_reason": "tool_use",
+        "tool_use": {
+          "toolUseId": "tooluse_VdqgoFhR9rHpi98Yoc5X6u",
+          "name": "request_containment_approval",
+          "input": {
+            "host": "WEB-07",
+            "action": "isolate",
+            "reason": "Two simultaneous high-severity TTPs confirmed on WEB-07: (1) active beaconing to a known-bad C2 IP — consistent with Cobalt Strike/implant callback (MITRE T1071/T1095); (2) credential-dumping behavior, likely targeting LSASS (MITRE T1003.001). The combination strongly indicates an active hands-on-keyboard intrusion with lateral movement risk. Immediate network isolation is recommended to prevent credential re-use, lateral spread, and further C2 tasking while forensic imaging is conducted."
+          }
+        },
+        "reply_head": "I'll investigate WEB-07 immediately by gathering evidence in parallel before making a containment decision.\n\n**Step 1 — Collect evidence concurrently**The triage shell is running in a sandboxed enviro"
+      }
+    },
+    {
+      "step": "turn2_resume",
+      "ok": true,
+      "data": {
+        "stop_reason": "end_turn",
+        "final": "**Containment approved by analyst-001 — WEB-07 is authorized for immediate network isolation.**\n\n---\n\n## 🔴 Triage Summary: WEB-07\n\n### Threat Assessment\n| Indicator | Detail | MITRE ATT&CK |\n|---|---|---|\n| C2 Beaconing | Periodic outbound traffic to known-bad IP | T1071 / T1095 |\n| Credential Dumping | LSASS access / credential extraction behavior | T1003.001 |\n| Combined Confidence | **Critical "
+      }
+    }
+  ],
+  "verdict": {
+    "paused_on_gate": true,
+    "captured_tool_use": true,
+    "resumed_and_finished": true,
+    "closed_hitl_loop": true,
+    "note": "Full pause→approve→resume: harness paused on request_containment_approval, analyst approved, session resumed via the two-message toolUse+toolResult contract, agent delivered a human-sanctioned final action."
+  }
+}

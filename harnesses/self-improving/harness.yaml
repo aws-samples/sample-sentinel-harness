@@ -1,0 +1,68 @@
+# self-improving — declarative harness config
+# ============================================
+# M2 self-iteration loop (ROADMAP §4 layer ③, §5.3) · "score → retry-with-reasoning → promote".
+#
+# The self-improving supervisor scores an agent-ops build via the deterministic `run_evaluation`
+# tool (which invokes the self-built llm-judge harness), attributes failures to prompt/tool/skill,
+# hands a revised spec back to agent-ops via `harness_ops` (full-replacement update), and — only
+# when the eval passes the bar AND a human approves via the request_promotion_approval gate —
+# promotes via `harness_ops` create_endpoint (CreateHarnessEndpoint). Generation, execution,
+# scoring, and promotion stay separated so the whole loop is auditable.
+#
+# Consumed by sentinel_harness.core.create_harness() via loader.load_harness_config().
+# ${ENV} values are resolved by the loader from environment variables (12-factor):
+#   SENTINEL_EXECUTION_ROLE_ARN, SENTINEL_REGION, AWS_PROFILE, SENTINEL_GATEWAY_ARN.
+
+harnessName: sentinel_self_improving   # must match [a-zA-Z][a-zA-Z0-9_]{0,39} — no hyphens
+
+model:
+  bedrockModelConfig:
+    # Sonnet: reading an eval verdict, attributing the failure, and driving a bounded
+    # revise/re-score loop is structured multi-step orchestration. Resolved from
+    # core.MODEL_SONNET (env SENTINEL_MODEL_SONNET). Cross-region-inference pattern id —
+    # OVERRIDABLE: set SENTINEL_MODEL_SONNET to pin a specific version.
+    modelId: global.anthropic.claude-sonnet-4-6
+    maxTokens: 8192
+    temperature: 0.1   # low — the self-improvement loop should be repeatable, not creative
+
+systemPrompt: system_prompt.md   # loader reads this file and wraps it as [{text: ...}]
+
+tools:
+  # Gateway: exposes the two deterministic MCP tools this loop drives — `run_evaluation`
+  # (score the harness-under-test via the llm-judge harness) and `harness_ops` (update the
+  # spec / create the promotion endpoint). The agent sends structured params; the handlers
+  # call sentinel_harness.core.*. See core.tool_gateway().
+  - type: agentcore_gateway
+    name: gateway
+    config:
+      agentCoreGateway:
+        gatewayArn: ${SENTINEL_GATEWAY_ARN}
+
+allowedTools:
+  # EXPLICIT allowlist — never ['*']. Exactly the three surfaces the loop needs:
+  - "@gateway/run_evaluation"        # score the harness-under-test (invokes the llm-judge harness)
+  - "@gateway/harness_ops"           # revise (update, full-replacement) + promote (create_endpoint)
+  - request_promotion_approval       # inline_function HITL gate — required before any promotion (see note)
+
+# NOTE on request_promotion_approval:
+#   This is a human-in-the-loop inline_function gate, registered at create time via
+#   core.tool_inline("request_promotion_approval", <desc>, <inputSchema>). It is listed in
+#   allowedTools here; the loader injects the matching inline tool definition into `tools`
+#   (from loader._INLINE_GATES) so the harness pauses for analyst sign-off before promoting.
+#   Kept out of the YAML `tools` block above because its input schema is defined in code, not
+#   config. Adding request_promotion_approval to loader._INLINE_GATES is a SHARED change to
+#   loader.py owned by the orchestrator — see shared_changes_needed; until then the loader
+#   raises on this unknown gate (the test xfails that one assertion).
+
+memory:
+  # SEMANTIC recall of which prompt/tool/skill revisions raised the score before +
+  # SUMMARIZATION of the running improvement session, so retry reasoning compounds
+  # across builds (ROADMAP §3: "write Memory throughout — experience compounding").
+  managedMemoryConfiguration:
+    strategies:
+      - SEMANTIC
+      - SUMMARIZATION
+    eventExpiryDuration: 90
+
+maxIterations: 20      # up to 3 score/attribute/revise/re-score rounds + the promotion gate
+timeoutSeconds: 300    # eval poll + rebuild + re-eval per round; long jobs go async

@@ -1,0 +1,64 @@
+{
+  "scenario": "multi_harness_parallel",
+  "steps": [
+    {
+      "step": "built",
+      "data": {
+        "specialists": [
+          "sentinel_spec_research",
+          "sentinel_spec_detection",
+          "sentinel_spec_triage"
+        ],
+        "supervisor": "sentinel_supervisor-4j6V6tRUyw"
+      }
+    },
+    {
+      "step": "specialist:sentinel_spec_research",
+      "data": {
+        "sec": 6.1,
+        "reply": "# ATT&CK Tactic/Technique Highlights\n\n**Supply Chain Compromise (T1195)** and **Compromised Software Supply Chain (T1195.002)**: Attackers inject malicious code"
+      }
+    },
+    {
+      "step": "specialist:sentinel_spec_detection",
+      "data": {
+        "sec": 9.0,
+        "reply": "**Detection Idea:**\n\nMonitor npm package downloads and behavioral analysis signals such as: packages from newly registered accounts with suspicious naming patte"
+      }
+    },
+    {
+      "step": "specialist:sentinel_spec_triage",
+      "data": {
+        "sec": 9.2,
+        "reply": "I'll gather some context to provide informed triage guidance on this threat.---\n\n**TP/FP Triage Guidance:**\n\n**True Positive indicators to escalate:** Detect if"
+      }
+    },
+    {
+      "step": "timing",
+      "data": {
+        "parallel_wall_sec": 9.2,
+        "sum_if_serial_sec": 24.3,
+        "speedup": "2.64x"
+      }
+    },
+    {
+      "step": "supervisor_synthesis",
+      "data": {
+        "reply": "---\n\n## 🔐 Strategy-Iteration Brief: Malicious npm Supply Chain — Fintech/Crypto Targeting\n**Generated:** `2026-07-02T11:44:08Z` | **ATT&CK:** T1195.002 · T1555 · T1012 · T1059\n\n---\n\n1. **[RESEARCH]** Core threat vector is **T1195.002** — attackers inject malicious code into legitimate npm packages targeting fintech/crypto at scale, with execution triggered automatically via **postinstall hooks** during `npm install` (T1059), providing a frictionless delivery mechanism that bypasses traditional endpoint defenses.\n\n2. **[DETECTION]** Prioritize behavioral monitoring on npm installations for: new"
+      }
+    }
+  ],
+  "built": {
+    "specialists": [
+      "sentinel_spec_research",
+      "sentinel_spec_detection",
+      "sentinel_spec_triage"
+    ],
+    "supervisor": "sentinel_supervisor-4j6V6tRUyw"
+  },
+  "verdict": {
+    "pattern": "multi-harness parallel + supervisor synthesis",
+    "parallel_speedup_vs_serial": "2.64x",
+    "note": "The single-agent limit of one harness is overcome by running multiple harnesses in parallel and synthesizing with a supervisor."
+  }
+}

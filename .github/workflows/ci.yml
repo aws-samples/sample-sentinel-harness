@@ -1,0 +1,208 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        # actions/setup-python v6.3.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package (editable) + test deps
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          # Install the package itself so `import sentinel_harness` and the
+          # `sentinel` console-script resolve (guards the flat-layout install blocker).
+          pip install -e .
+          # Test + quality deps, all pinned-enough to be reproducible:
+          #   pytest            — the suite runner.
+          #   pytest-randomly   — randomizes test order every run (prints the seed)
+          #                       so order-sensitivity / hidden inter-test state is caught.
+          #   coverage          — measures line+branch coverage for the hard gate below.
+          #   ruff              — REQUIRED lint (pinned to the version pre-commit + `make ci`
+          #                       run, so local and CI verdicts match exactly).
+          #   hypothesis        — property-based tests in tests/test_prop_*.py.
+          pip install pytest pytest-randomly coverage ruff==0.15.20 hypothesis
+
+      - name: Smoke-test install (import + console script)
+        env:
+          SENTINEL_EXECUTION_ROLE_ARN: arn:aws:iam::000000000000:role/ci-test-role
+        run: |
+          python -c "import sentinel_harness; print('version', sentinel_harness.__version__)"
+          sentinel --help
+
+      - name: Lint (ruff — REQUIRED, fails the build)
+        # Hard gate: any lint error fails CI. No best-effort skip.
+        run: ruff check .
+
+      - name: Run tests with coverage (offline, no AWS calls)
+        env:
+          # Dummy values so boto3 client construction and import are hermetic.
+          # The suite makes ZERO AWS calls; these just keep imports from trying to
+          # resolve a real region/profile/credentials.
+          SENTINEL_REGION: us-east-1
+          AWS_DEFAULT_REGION: us-east-1
+          SENTINEL_EXECUTION_ROLE_ARN: arn:aws:iam::000000000000:role/ci-test-role
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        # pytest-randomly prints the chosen seed on the first line so a failing
+        # order can be reproduced with `pytest -p randomly --randomly-seed=<N>`.
+        run: coverage run -m pytest -q tests
+
+      - name: Enforce coverage gate (fail under 88%)
+        # A fresh full-suite run measures ~90% (stable across pytest-randomly
+        # seeds). 88 is a floor set just below the real number — it MUST match
+        # .coveragerc's [report] fail_under and `make ci`.
+        run: coverage report --fail-under=88
+
+  mypy:
+    name: mypy (lenient type gate)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Python 3.12
+        # actions/setup-python v6.3.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+
+      - name: Install package + mypy
+        run: |
+          python -m pip install --upgrade pip
+          # Install the package so its runtime deps (boto3/pyyaml) are importable
+          # for follow-imports; mypy itself reads mypy.ini for its lenient config.
+          pip install -e .
+          pip install mypy
+
+      - name: Type-check core control-plane modules
+        # Lenient today (see mypy.ini: ignore-missing-imports, no strict), so this
+        # job starts GREEN and can be ratcheted later by tightening mypy.ini.
+        # Scope is the stable control-plane surface only.
+        run: |
+          mypy \
+            sentinel_harness/core.py \
+            sentinel_harness/factory.py \
+            sentinel_harness/loader.py \
+            sentinel_harness/registry.py \
+            sentinel_harness/registry_live.py
+
+  iac:
+    name: iac (cdk synth + stack tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: iac-cdk
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Node 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install CDK app dependencies
+        run: npm ci
+
+      - name: Type-check (tsc --noEmit)
+        run: npx tsc --noEmit
+
+      - name: Synthesize CloudFormation (cdk synth)
+        run: npx cdk synth
+
+      - name: Run self-contained stack synth tests (ts-node)
+        # Each test is a standalone ts-node script that exits non-zero on the first
+        # failed assertion (see test/*.test.ts headers). No jest is wired in.
+        run: |
+          for t in test/*.test.ts; do
+            echo "=== running $t ==="
+            npx ts-node "$t"
+          done
+
+  secret-and-name-scan:
+    name: secret-and-name scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      # This repo is PUBLIC open source. It must contain ZERO trace of any
+      # customer/company name, and NO hardcoded AWS account IDs or access keys.
+      # The scan fails the build if any of those leak in. Patterns are written so
+      # this workflow file does not match itself (character classes / no literal
+      # forbidden tokens appear as scannable strings).
+      - name: Scan for customer names and hardcoded AWS credentials
+        run: |
+          set -uo pipefail
+          # Search everything except the VCS dir and this workflow file itself.
+          GREP() { grep -rInE "$1" . \
+            --binary-files=without-match \
+            --exclude-dir=.git \
+            --exclude-dir=.github \
+            --exclude-dir=node_modules \
+            --exclude-dir=.venv \
+            --exclude-dir=__pycache__ ; }
+
+          FAILED=0
+
+          # 1) Customer / company names (case-insensitive). Built from a char
+          #    class so the literal name never appears in this file.
+          NAME_RE='[Aa][Vv][Ee][Nn][Ii][Rr]'
+          if GREP "$NAME_RE"; then
+            echo "::error::Customer/company name found in repository. This is a public repo — remove it."
+            FAILED=1
+          fi
+
+          # 2) Hardcoded 12-digit AWS account IDs inside an IAM/ARN/ECR context, e.g.
+          #    arn:aws:iam::123456789012:role/...  (global ARN),
+          #    arn:aws:bedrock-agentcore:us-east-1:123456789012:...  (REGIONAL ARN),
+          #    123456789012.dkr.ecr.us-east-1.amazonaws.com/...  (ECR image URI).
+          #    The all-zeros placeholder (000000000000) used in docs/tests, the
+          #    canonical AWS documentation example account (123456789012), and the
+          #    repeated-digit placeholder (555555555555) used in offline test
+          #    fixtures, are allowed (all are well-known non-real placeholders).
+          ACCT_RE='(iam|sts|logs|s3|lambda|bedrock-agentcore)::[0-9]{12}:|arn:aws[a-z-]*:[a-z0-9-]*:[a-z0-9-]*:[0-9]{12}:|[0-9]{12}\.dkr\.ecr\.'
+          if GREP "$ACCT_RE" | grep -vE ':0{12}:|0{12}\.dkr|123456789012|555555555555'; then
+            echo "::error::Hardcoded 12-digit AWS account ID found. Use env vars / the 000000000000 placeholder instead."
+            FAILED=1
+          fi
+
+          # 3) AWS access key IDs (AKIA / ASIA prefixes + 16 uppercase/digits).
+          #    Assembled from a char class so no real-looking key sits in this file.
+          KEY_RE='(A[KS]IA)[0-9A-Z]{16}'
+          if GREP "$KEY_RE"; then
+            echo "::error::Hardcoded AWS access key ID found. Never commit credentials."
+            FAILED=1
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "secret-and-name scan FAILED"
+            exit 1
+          fi
+          echo "secret-and-name scan passed — no customer names or hardcoded credentials found."

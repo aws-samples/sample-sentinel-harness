@@ -1,0 +1,32 @@
+{
+  "scenario": "live_dataplane_gate_diagnosis",
+  "target": "AgentCore data-plane invoke gating (InvokeHarness, CreateAgentRuntime/InvokeAgentRuntime)",
+  "account": "000000000000",
+  "region": "us-east-1",
+  "note_account": "real non-prod dev account id redacted to the 000000000000 placeholder per public-repo policy.",
+  "method": "Live probe: created a real Harness (Bedrock Haiku, no tools) via the control plane; it reached status=READY; then called InvokeHarness. Separately ran iam:SimulatePrincipalPolicy for the calling principal on the relevant actions.",
+  "live_verified": true,
+  "finding": "The AgentCore CONTROL plane is fully usable on this account (CreateMemory, CreateEvaluator, CreateGateway+CreateGatewayTarget, CreateHarness->READY, CreateHarnessEndpoint all succeed live), but the INVOKE data plane is gated at call time.",
+  "evidence": {
+    "create_harness": "SUCCESS — harness sentinel_loopprobe_<redacted> created and reached status=READY",
+    "invoke_harness": "AccessDeniedException: 'not authorized to perform: bedrock-agentcore:InvokeHarness on resource sentinel_loopprobe_<redacted>'",
+    "create_agent_runtime": "AccessDeniedException (same class; validated once successfully on an earlier date — see live_a2a_runtime_result.json)",
+    "iam_simulate": {
+      "bedrock-agentcore:InvokeHarness": "allowed",
+      "bedrock-agentcore:CreateHarness": "allowed",
+      "bedrock-agentcore:CreateAgentRuntime": "allowed"
+    },
+    "principal": "assumed-role/Admin (AdministratorAccess)"
+  },
+  "diagnosis": "IAM policy simulation returns 'allowed' for InvokeHarness / CreateAgentRuntime, yet the live calls are DENIED. The calling principal holds AdministratorAccess, so this is not an IAM permission gap. This is a SERVICE-SIDE account-level opt-in/allowlist gate on the invoke data plane that is invisible to iam:SimulatePrincipalPolicy — the same gate class previously observed on CreateAgentRuntime. It is not self-resolvable from the account; it requires a service-side allowlisting for this account.",
+  "impact_on_external_proofs": {
+    "custom_jwt_gateway": "NOT affected — proven live end-to-end (evidence/live_custom_jwt_gateway_result.json).",
+    "managed_evaluator": "NOT affected — created ACTIVE live (evidence/live_managed_evaluator_result.json).",
+    "cross_session_memory_recall": "Partially affected only by async timing, not by this gate: CreateMemory/CreateEvent/RetrieveMemoryRecords all succeed; write + multi-tenant isolation proven synchronously (tenant-1=1 event, tenant-2=0); SEMANTIC extraction is async and did not surface within the observed window (documented async-extraction limitation).",
+    "closed_loop_M12": "BLOCKED — the autonomous loop needs a live InvokeHarness agent turn to score/iterate; control-plane promote (CreateHarnessEndpoint) works, the invoke step is gated.",
+    "a2a_on_runtime_M11": "BLOCKED — needs CreateAgentRuntime/InvokeAgentRuntime; validated once on an earlier date, currently gated."
+  },
+  "honesty": "Reported exactly as observed. The invoke data plane could not be exercised on this account in this session; no invoke result is fabricated. The control-plane and gateway/evaluator/memory proofs stand on their own live evidence.",
+  "closed": true,
+  "note": "Root-cause diagnosis, not a workaround. AgentCore control-plane provisioning is fully live on this non-prod account; the invoke data plane (InvokeHarness / InvokeAgentRuntime) is blocked by a service-side account gate that IAM simulation does not reflect. The two invoke-dependent EXTERNAL proofs (M12 closed loop, M11 A2A-on-Runtime) are therefore honestly marked blocked; the three non-invoke EXTERNAL proofs (CUSTOM_JWT gateway, managed Evaluator, Memory write+isolation) are proven live."
+}

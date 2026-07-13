@@ -1,0 +1,14 @@
+# attack-mapper specialist Runtime — pinned deps.
+# The supervisor is a Bedrock-only Harness (no deps here); a specialist runs in
+# its own Runtime container and MAY use LiteLLM for provider-agnostic inference.
+# Pin exact versions: the AgentCore/A2A surface is still moving and the blueprint
+# explicitly warns to pin SDKs and expect API drift.
+#
+# NOTE: build_attack_paths() (the deterministic attack-path reasoner) needs NONE
+# of these — it is pure stdlib Python. These deps only serve the A2A wrapper.
+bedrock-agentcore==1.9.1
+bedrock-agentcore-starter-toolkit==0.3.10
+strands-agents[a2a,litellm]==1.9.1
+mcp==1.28.1
+fastapi==0.139.0
+uvicorn[standard]==0.50.2

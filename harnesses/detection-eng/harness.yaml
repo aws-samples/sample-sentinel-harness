@@ -1,0 +1,64 @@
+# detection-eng — declarative harness config
+# ===========================================
+# Layer 1 (Strategy Iteration) · detection engineering.
+#
+# Supervises the "generate rule -> adversarial cross-review -> lint -> human merge"
+# flow. Generation != evaluation: the reviewer specialist (reached via the Gateway)
+# independently attacks the rule; a code_interpreter runs deterministic lint math;
+# an inline_function publish gate keeps a human in the loop before anything ships.
+# Generic SecOps content only — no org-specific data.
+#
+# Consumed by sentinel_harness.core.create_harness(). ${ENV} values are resolved by
+# the loader from environment variables (12-factor):
+#   SENTINEL_EXECUTION_ROLE_ARN, SENTINEL_REGION, AWS_PROFILE, SENTINEL_GATEWAY_ARN.
+
+harnessName: sentinel_detection_eng   # must match [a-zA-Z][a-zA-Z0-9_]{0,39} — no hyphens
+
+model:
+  bedrockModelConfig:
+    # Strong reasoning for rule authoring + review synthesis. Resolved from
+    # core.MODEL_SONNET (env SENTINEL_MODEL_SONNET). Cross-region-inference pattern
+    # id — OVERRIDABLE: set SENTINEL_MODEL_SONNET to pin a specific version.
+    modelId: global.anthropic.claude-sonnet-4-6
+    maxTokens: 8192
+    temperature: 0.1   # low — detection rules should be deterministic, not creative
+
+systemPrompt: system_prompt.md   # loader reads this file and wraps it as [{text: ...}]
+
+tools:
+  # code_interpreter: deterministic Sigma/YARA lint + structural checks — no token
+  # guessing on rule syntax. See core.tool_code_interpreter().
+  - type: agentcore_code_interpreter
+    name: code_interpreter
+  # Gateway: reaches the adversarial-reviewer specialist and the deterministic
+  # sigma_yara_lint tool. See core.tool_gateway().
+  - type: agentcore_gateway
+    name: gateway
+    config:
+      agentCoreGateway:
+        gatewayArn: ${SENTINEL_GATEWAY_ARN}
+
+allowedTools:
+  # EXPLICIT allowlist — never ['*'].
+  - code_interpreter               # deterministic lint / structural validation
+  - "@gateway/invoke_specialist"    # delegate to the adversarial-reviewer specialist
+  - "@gateway/sigma_yara_lint"      # hosted deterministic rule linter
+  - request_publish_approval       # inline_function HITL publish gate (see note)
+
+# NOTE on request_publish_approval:
+#   This is a human-in-the-loop inline_function gate, registered at create time via
+#   core.tool_inline("request_publish_approval", <desc>, <inputSchema>). It is listed
+#   in allowedTools here; the loader injects the matching inline tool definition into
+#   `tools` so the harness pauses for analyst sign-off before publish. Kept out of the
+#   YAML `tools` block above because its input schema is defined in code, not config.
+
+memory:
+  # SEMANTIC recall of prior rules / FP decisions + SUMMARIZATION of the review loop.
+  managedMemoryConfiguration:
+    strategies:
+      - SEMANTIC
+      - SUMMARIZATION
+    eventExpiryDuration: 90
+
+maxIterations: 18      # generate + up to 2 review/revise rounds + lint + gate
+timeoutSeconds: 300

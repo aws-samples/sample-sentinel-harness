@@ -1,0 +1,40 @@
+[project]
+name = "sentinel-harness"
+# Single source of truth for the version. sentinel_harness.__version__ reads this
+# at runtime via importlib.metadata; keep the __init__.py fallback literal in sync.
+version = "0.3.0"
+description = "Production SecOps agents as configuration on Amazon Bedrock AgentCore Harness"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT-0" }
+dependencies = ["boto3>=1.40.0", "botocore>=1.43.0", "pyyaml>=6.0"]
+
+# Test/dev extras — the offline suite needs pytest + hypothesis (property tests)
+# and coverage; pytest-randomly surfaces cross-file import-order coupling. Install
+# with `pip install -e '.[test]'` (mirrors the Makefile/CI invocation).
+[project.optional-dependencies]
+test = ["pytest>=8.0", "hypothesis>=6.0", "pytest-randomly>=3.15", "coverage>=7.0"]
+
+[project.scripts]
+sentinel = "sentinel_harness.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["sentinel_harness", "intake"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+# The library and scenarios deliberately use a compact one-statement-per-line
+# style (`if x: y`, grouped imports) for readability of declarative config.
+# Ignore those stylistic codes so CI lint flags real problems, not house style.
+#   E401  multiple imports on one line
+#   E701  multiple statements on one line (colon)
+#   E702  multiple statements on one line (semicolon)
+#   E402  module import not at top of file (scenarios/tests do sys.path insert first)
+ignore = ["E401", "E701", "E702", "E402"]

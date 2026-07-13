@@ -1,0 +1,17 @@
+{
+  "scenario": "m4_guardrail_masking",
+  "verdict": {
+    "guardrail_deployed_live": true,
+    "guardrail_id": "<dev-guardrail-id-scrubbed>",
+    "region": "us-east-1",
+    "action": "GUARDRAIL_INTERVENED",
+    "aws_key_masked_to": "{aws-access-key-id}",
+    "api_token_masked_to": "{generic-api-token}",
+    "regex_matches": [
+      "aws-access-key-id",
+      "generic-api-token"
+    ],
+    "closed": true,
+    "note": "M4 defense-in-depth, LIVE on real AWS (us-east-1): a Bedrock Guardrail deployed via the M4 CDK guardrail-stack really intervened (GUARDRAIL_INTERVENED) on a tool-response containing a fake AWS access key and an sk- API token built at runtime, masking both to {aws-access-key-id}/{generic-api-token} via custom ANONYMIZED regex policies (bedrock-runtime apply_guardrail, source=OUTPUT). This is the 'every tool response passes a Guardrail' control proven end-to-end, not synth-only. The us-east-1 guardrail is a retained non-prod dev resource; guardrail id and account id scrubbed. The earlier us-west-2 guardrail was torn down."
+  }
+}

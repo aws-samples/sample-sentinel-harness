@@ -1,0 +1,92 @@
+{
+  "scenario": "play_mode",
+  "steps": [
+    {
+      "step": "create",
+      "ok": true,
+      "data": {
+        "harnessId": "sentinel_playmode_sim-9rHwkSgXpw"
+      }
+    },
+    {
+      "step": "ready",
+      "ok": true,
+      "data": {
+        "id": "sentinel_playmode_sim-9rHwkSgXpw"
+      }
+    },
+    {
+      "step": "run_approve",
+      "ok": true,
+      "data": {
+        "verdict": {
+          "every_step_gated": true,
+          "approved_step_resumed": true,
+          "reject_halts_plan": false,
+          "closed_loop": true,
+          "counts": {
+            "pending": 0,
+            "approved": 0,
+            "executed": 3,
+            "rejected": 0
+          },
+          "halted": false,
+          "halted_reason": null,
+          "gated_steps": 3,
+          "note": "Play Mode: each offensive exec_technique step paused on a human gate; approvals resumed the session (execution is a SIMULATED no-op), a rejection halted the plan. No real system was touched."
+        },
+        "counts": {
+          "pending": 0,
+          "approved": 0,
+          "executed": 3,
+          "rejected": 0
+        }
+      }
+    },
+    {
+      "step": "run_reject",
+      "ok": true,
+      "data": {
+        "verdict": {
+          "every_step_gated": true,
+          "approved_step_resumed": true,
+          "reject_halts_plan": true,
+          "closed_loop": true,
+          "counts": {
+            "pending": 1,
+            "approved": 0,
+            "executed": 1,
+            "rejected": 1
+          },
+          "halted": true,
+          "halted_reason": "step 1 (T1190) rejected by auto",
+          "gated_steps": 2,
+          "note": "Play Mode: each offensive exec_technique step paused on a human gate; approvals resumed the session (execution is a SIMULATED no-op), a rejection halted the plan. No real system was touched."
+        },
+        "counts": {
+          "pending": 1,
+          "approved": 0,
+          "executed": 1,
+          "rejected": 1
+        },
+        "halted_reason": "step 1 (T1190) rejected by auto"
+      }
+    },
+    {
+      "step": "checkpoint_roundtrip",
+      "ok": true,
+      "data": {
+        "path": "evidence/play_mode_checkpoint_approve.json",
+        "steps": 3
+      }
+    }
+  ],
+  "verdict": {
+    "every_step_gated": true,
+    "approved_step_resumed": true,
+    "reject_halts_plan": true,
+    "checkpoint_roundtrip": true,
+    "closed_loop": true,
+    "note": "Play Mode adversary emulation: every offensive exec_technique step paused on a human gate. Approvals resumed the same session via the two-message toolUse+toolResult contract and recorded a SIMULATED no-op execution; a rejection halted the plan. State checkpointed to JSON and round-tripped. No real system was touched."
+  }
+}

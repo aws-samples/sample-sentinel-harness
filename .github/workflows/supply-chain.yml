@@ -1,0 +1,101 @@
+name: supply-chain
+
+# Dependency vulnerability + Python security scanning.
+#
+#   pip-audit : audits the installed project dependency tree (resolved from
+#               pyproject.toml via `pip install .`) against the PyPI advisory
+#               and OSV databases. BLOCKING — a known-vulnerable dependency
+#               fails the build so it cannot silently ship. If a specific
+#               advisory needs a temporary waiver, add `--ignore-vuln GHSA-xxxx`
+#               with a dated comment rather than disabling the gate.
+#   bandit    : static security linter over the first-party source
+#               (sentinel_harness/). NON-BLOCKING (warn-only) — it is advisory
+#               and prone to false positives; findings are surfaced in the log
+#               and uploaded as an artifact for review without gating merges.
+#
+# Public repo: token-free. Runs with default read-only GITHUB_TOKEN.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    name: pip-audit (blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Python
+        # actions/setup-python v6.3.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+
+      - name: Extract the project's own declared dependencies
+        # Audit sentinel-harness's OWN dependency tree, NOT the ambient CI venv:
+        # `pip-audit` over the whole environment fails on runner/tooling baseline
+        # packages (pip's bundled `wheel`, pip-audit's transitive `werkzeug`, …)
+        # that this project does not ship. We resolve the declared deps from
+        # pyproject.toml into a requirements file and audit exactly those.
+        run: |
+          python - <<'PY' > audit-requirements.txt
+          import tomllib
+          with open("pyproject.toml", "rb") as f:
+              data = tomllib.load(f)
+          for dep in data["project"]["dependencies"]:
+              print(dep)
+          PY
+          echo "----- project dependencies audited -----"; cat audit-requirements.txt
+
+      - name: Audit the project dependency tree for known vulnerabilities
+        # Blocking: a non-zero exit on any advisory in the project's real tree fails
+        # the build so a known-vulnerable dependency cannot silently ship.
+        run: pip-audit --strict --progress-spinner=off -r audit-requirements.txt
+
+  bandit:
+    name: bandit (advisory / non-blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Python
+        # actions/setup-python v6.3.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+
+      - name: Install bandit
+        run: pip install "bandit[toml]"
+
+      - name: Run bandit over first-party source (warn-only)
+        # `|| true` keeps this advisory: findings are printed but never gate a merge.
+        run: |
+          bandit -r sentinel_harness -f txt -o bandit-report.txt || true
+          echo "----- bandit report -----"
+          cat bandit-report.txt || true
+
+      - name: Upload bandit report
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.txt
+          retention-days: 5
+          if-no-files-found: ignore

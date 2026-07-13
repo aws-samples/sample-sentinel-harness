@@ -1,0 +1,75 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="sentinel-harness logo">
+  <title>sentinel-harness</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#131c2b"/>
+      <stop offset="1" stop-color="#0a0e16"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffb445"/>
+      <stop offset="1" stop-color="#ff9900"/>
+    </linearGradient>
+    <linearGradient id="loop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#30d158"/>
+      <stop offset="1" stop-color="#00d0d6"/>
+    </linearGradient>
+    <radialGradient id="core" cx="0.5" cy="0.42" r="0.6">
+      <stop offset="0" stop-color="#ffe6b3"/>
+      <stop offset="1" stop-color="#ff9900"/>
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- rounded tile -->
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="url(#tile)" stroke="#1e2a3d" stroke-width="3"/>
+
+  <!-- orbit ring around the core: the managed agent loop (build → test → iterate → promote) -->
+  <g transform="translate(256 270)">
+    <circle r="118" fill="none" stroke="url(#loop)" stroke-opacity="0.28" stroke-width="3"
+            stroke-dasharray="9 16" stroke-linecap="round">
+      <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="24s" repeatCount="indefinite"/>
+    </circle>
+    <!-- a single agent traveling the loop -->
+    <circle r="7" fill="#00d0d6" filter="url(#glow)">
+      <animateMotion dur="7s" repeatCount="indefinite" rotate="auto"
+                     path="M0 -118 A118 118 0 1 1 -0.1 -118 Z"/>
+    </circle>
+  </g>
+
+  <!-- shield outline (protection) -->
+  <path d="M256 96 L392 148 V262 C392 342 330 396 256 424 C182 396 120 342 120 262 V148 Z"
+        fill="none" stroke="url(#shield)" stroke-width="14" stroke-linejoin="round"/>
+
+  <!-- agent loop inside the shield (the managed harness loop): ~300° arc + arrowhead -->
+  <g filter="url(#glow)">
+    <path d="M256 186 A84 84 0 1 1 190 218" fill="none" stroke="url(#loop)"
+          stroke-width="15" stroke-linecap="round"/>
+    <!-- explicit arrowhead at the arc's end, sized independently of stroke -->
+    <path d="M190 218 l-16 -20 l26 -3 Z" fill="#00d0d6"/>
+  </g>
+
+  <!-- central core / sentinel eye — breathing pulse = the always-watching harness -->
+  <g>
+    <circle cx="256" cy="270" r="44" fill="none" stroke="#ff9900" stroke-opacity="0.35" stroke-width="2.5">
+      <animate attributeName="r" values="42;52;42" dur="3.6s" repeatCount="indefinite"/>
+      <animate attributeName="stroke-opacity" values="0.5;0.08;0.5" dur="3.6s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="256" cy="270" r="34" fill="url(#core)"/>
+    <circle cx="256" cy="270" r="15" fill="#0a0e16"/>
+    <circle cx="262" cy="263" r="5" fill="#ffe6b3"/>
+  </g>
+
+  <!-- three orbit nodes = parallel harnesses / specialists, gently pulsing in sequence -->
+  <circle cx="256" cy="188" r="9" fill="#00d0d6">
+    <animate attributeName="fill-opacity" values="1;0.4;1" dur="3s" begin="0s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="326" cy="300" r="9" fill="#30d158">
+    <animate attributeName="fill-opacity" values="1;0.4;1" dur="3s" begin="1s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="186" cy="300" r="9" fill="#30d158">
+    <animate attributeName="fill-opacity" values="1;0.4;1" dur="3s" begin="2s" repeatCount="indefinite"/>
+  </circle>
+</svg>

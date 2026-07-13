@@ -1,0 +1,66 @@
+# ops-automation — declarative harness config
+# ============================================
+# Multi-account operations supervisor.
+#
+# Triages open operational findings across a fleet of accounts, opens tickets for
+# the real issues, and gates ANY change on a human. Read + ticket only; every
+# mutating action (remediation) must pause for analyst sign-off. Generic
+# multi-account ops content only — no org-specific data.
+#
+# Consumed by sentinel_harness.core.create_harness(). ${ENV} values are resolved by
+# the loader from environment variables (12-factor):
+#   SENTINEL_EXECUTION_ROLE_ARN, SENTINEL_REGION, AWS_PROFILE, SENTINEL_GATEWAY_ARN.
+
+harnessName: sentinel_ops_automation   # must match [a-zA-Z][a-zA-Z0-9_]{0,39} — no hyphens
+
+model:
+  bedrockModelConfig:
+    # Sonnet: multi-account triage reasons over a whole estate and must weigh
+    # severity vs. environment (prod vs. dev) before opening tickets — worth the
+    # stronger model over Haiku. Resolved from core.MODEL_SONNET
+    # (env SENTINEL_MODEL_SONNET). Cross-region-inference pattern id — OVERRIDABLE:
+    # set SENTINEL_MODEL_SONNET to pin a version, or pass a per-invocation model
+    # override (e.g. Haiku) for a high-volume, low-stakes sweep.
+    modelId: global.anthropic.claude-sonnet-4-6
+    maxTokens: 4096
+    temperature: 0.1
+
+systemPrompt: system_prompt.md   # loader reads this file and wraps it as [{text: ...}]
+
+tools:
+  # code_interpreter: deterministic finding counts / per-account rollups.
+  - type: agentcore_code_interpreter
+    name: code_interpreter
+  # Gateway: multi-account ops query (read-only) + ticketing (write) + HITL gate.
+  - type: agentcore_gateway
+    name: gateway
+    config:
+      agentCoreGateway:
+        gatewayArn: ${SENTINEL_GATEWAY_ARN}
+
+allowedTools:
+  # EXPLICIT allowlist — never ['*'].
+  - code_interpreter                    # deterministic per-account rollups
+  - "@gateway/ops_query"                 # read-only multi-account resource / findings query
+  - "@gateway/create_ticket"             # ticketing write for real issues
+  - request_containment_approval        # inline_function HITL gate for ANY change (see note)
+
+# NOTE on request_containment_approval:
+#   Human-in-the-loop inline_function gate, built into loader._INLINE_GATES and
+#   injected into `tools` at create time. Listed in allowedTools so ANY ops CHANGE
+#   (make a bucket private / detach an over-permissive policy / enforce MFA) pauses
+#   for analyst sign-off. This supervisor can READ (ops_query) and open TICKETS
+#   (create_ticket) unattended, but can only *request* a remediation change, never
+#   execute one — remediation tools are intentionally NOT exposed directly.
+
+memory:
+  # SEMANTIC recall of prior triage decisions per account/finding + SUMMARIZATION of
+  # the estate context, so repeat sweeps do not re-open a ticket already filed.
+  managedMemoryConfiguration:
+    strategies:
+      - SEMANTIC
+      - SUMMARIZATION
+    eventExpiryDuration: 90
+
+maxIterations: 16      # enumerate estate + triage findings + open tickets + gate changes
+timeoutSeconds: 300    # multi-account sweep — wider ceiling than per-alert triage

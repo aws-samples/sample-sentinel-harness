@@ -1,0 +1,137 @@
+# sentinel-harness · tool/skill registry (declarative allowlist)
+# ================================================================
+# This file is the SecOps-owned side of the Layer-3 dual-gate. A tool listed
+# here is only *live* if it is ALSO implemented in the code TOOL_FACTORY_MAP
+# (see sentinel_harness/registry.py::ToolRegistry). Editing this file lets a
+# security team approve/deprecate a capability WITHOUT shipping code; the
+# governance_check() surfaces any entry that lacks a code implementation.
+#
+# status: approved  -> eligible to be live (if a code factory also exists)
+#         pending   -> proposed / under review; never resolvable
+#         deprecated-> kept for audit history; never resolvable
+#
+# owner is a team alias/label only — no personal names, no account IDs.
+tools:
+  - name: sigma_yara_lint
+    owner: detection-engineering
+    status: approved
+    description: >-
+      Deterministic, LLM-free structural linter for Sigma and YARA detection
+      rules. Mandatory pre-publish gate; makes no network calls.
+
+  - name: nvd_lookup
+    owner: vuln-management
+    status: approved
+    description: >-
+      CVE metadata lookup (description, CVSS, references) from the NVD API.
+      Offline-stubbed by default; live egress is opt-in via NVD_LIVE.
+
+  - name: epss_kev
+    owner: vuln-management
+    status: approved
+    description: >-
+      Enriches a CVE with EPSS exploit-probability and CISA KEV known-exploited
+      status so triage prioritizes real-world risk, not CVSS alone.
+
+  - name: attack_lookup
+    owner: threat-intel
+    status: approved
+    description: >-
+      MITRE ATT&CK technique lookup (name, tactics, platforms, references)
+      from an embedded offline slice; live STIX pull is opt-in.
+
+  - name: web_search
+    owner: threat-intel
+    status: pending
+    description: >-
+      Egress-controlled, TEXT-ONLY open-web search (title/url/snippet). Pending
+      SecOps approval of the egress allowlist for its single search chokepoint.
+
+  - name: harness_ops
+    owner: platform
+    status: approved
+    description: >-
+      Deterministic harness-lifecycle control tool for the meta-agent engine:
+      create / update / invoke / wait_ready / list / delete / create_endpoint.
+      No LLM; validates structured params and delegates to sentinel_harness.core.*
+      Lets the agent-ops harness build and modify other harnesses without
+      hand-writing HTTP (M1 self-iteration engine).
+
+  - name: run_evaluation
+    owner: platform
+    status: approved
+    description: >-
+      Deterministic evaluation-scoring tool for the M2 self-improvement loop:
+      score_answer / parse_verdict. Invokes a self-built LLM-judge harness via
+      sentinel_harness.core.invoke and parses a structured JSON verdict
+      (score/pass/reasons/suggestions); no other LLM reasoning. Lets the
+      self-improving harness gate promotions on a caller-defined pass bar.
+
+  - name: sigma_match
+    owner: detection-engineering
+    status: approved
+    description: >-
+      Deterministic, LLM-free Sigma detection MATCHER (not a linter): evaluates a
+      Sigma rule against a log event and returns whether it fires, plus which
+      selections matched. Supports contains/startswith/endswith/re/all modifiers
+      and the 1-of/all-of/wildcard condition grammar via a safe boolean evaluator
+      (no eval). Powers the M3 BAS detection-replay blind-spot engine.
+
+  - name: asset_lookup
+    owner: platform
+    status: approved
+    description: >-
+      Exposure/asset-surface lookup: given an asset or subnet query, returns a
+      deterministic offline surface (hosts, exposed services/ports, known-vuln
+      flags, trust edges) for M3 attack-path reasoning. Offline stub by default;
+      a *_LIVE env opts into a real asset backend later (M5).
+
+  - name: siem_query
+    owner: detection-engineering
+    status: approved
+    description: >-
+      Read-only SIEM alert/event query over the fictional mockdata world: filter
+      events by host / ATT&CK technique / severity / alert_id / since (ISO time) /
+      wildcard, returning normalized deterministic events. Offline mock world by
+      default; SIEM_QUERY_LIVE opts into a real SIEM backend later. No writes.
+
+  - name: enrich_ioc
+    owner: threat-intel
+    status: approved
+    description: >-
+      IOC reputation/enrichment: given one indicator or a batch (ip/domain/sha256
+      auto-detected by shape), returns a deterministic offline verdict
+      (type/known/threat_category/confidence/first_seen/related_hosts/verdict) from
+      the mockdata world for alert triage. Offline stub by default; ENRICH_IOC_LIVE
+      opts into a real reputation backend later.
+
+  - name: create_ticket
+    owner: platform
+    status: approved
+    description: >-
+      Ticketing WRITE tool: given a triaged finding (title+severity+description,
+      optional assignee/related_alert_id/related_host), returns a deterministic
+      offline ticket record (content-hash SEC-<hex> id, status=open, echoed fields).
+      Side-effect-free mock by default; CREATE_TICKET_LIVE opts into a real
+      HITL-gated tracker POST later. Terminal step of the M5 alert-triage flow.
+
+  - name: whitelist_optimizer
+    owner: detection-engineering
+    status: approved
+    description: >-
+      Deterministic, LLM-free FP-to-whitelist synthesizer for the M6 feedback loop:
+      given a rule's false-positive events, extracts the common discriminating field
+      (CDN domain / process / CIDR) and emits a Sigma suppression clause that quiets
+      the noisy rule WITHOUT suppressing a provided true positive (over-fit guarded).
+      Makes no network calls; the terminal strategy-improvement step of the loop.
+
+  - name: ops_query
+    owner: platform
+    status: approved
+    description: >-
+      Read-only multi-account operations query over the fictional mockdata account
+      inventory: given an account id / wildcard / finding_type, returns a normalized
+      deterministic view (accounts + resource footprint, or estate-wide open findings)
+      for the M5 ops-automation supervisor to triage and open tickets on. Offline mock
+      by default; OPS_QUERY_LIVE opts into AWS Organizations / a support API / per-account
+      CloudWatch later (raises rather than silently falling back). No writes.

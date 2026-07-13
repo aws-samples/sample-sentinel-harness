@@ -1,0 +1,127 @@
+name: release
+
+# Cut a GitHub Release when a v* tag is pushed. Builds the sdist/wheel, generates a
+# CycloneDX SBOM, attaches a SLSA build-provenance attestation, publishes to PyPI via
+# OIDC Trusted Publishing (no long-lived token), and creates the GitHub Release with
+# the matching CHANGELOG section as notes plus the artifacts + SBOM attached.
+#
+# Supply-chain posture:
+#   - CycloneDX SBOM     : a machine-readable bill of materials for the built package,
+#                          attached to the release so consumers can audit dependencies.
+#   - SLSA provenance    : actions/attest-build-provenance signs the built artifacts
+#                          (keyless, Sigstore) so their origin (this repo/workflow/commit)
+#                          is cryptographically verifiable with `gh attestation verify`.
+#   - PyPI OIDC publish  : pypa/gh-action-pypi-publish exchanges a short-lived OIDC token
+#                          for the upload — NO API token stored in the repo. Requires a
+#                          PyPI "trusted publisher" configured for this repo+workflow.
+
+on:
+  push:
+    tags: ["v*"]
+
+# Least privilege at the top; each job narrows/adds exactly what it needs.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build + SBOM + provenance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create the GitHub Release + upload assets
+      id-token: write        # keyless signing for the provenance attestation
+      attestations: write    # record the SLSA build-provenance attestation
+    outputs:
+      version: ${{ steps.notes.outputs.version }}
+    steps:
+      # actions/checkout v7.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      # actions/setup-python v6.3.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Smoke-test the built package
+        run: |
+          python -m pip install dist/*.whl
+          SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/test sentinel --help
+          python -c "import sentinel_harness; print(sentinel_harness.__version__)"
+
+      - name: Generate CycloneDX SBOM
+        # A CycloneDX SBOM of the project's declared dependency tree (resolved from
+        # pyproject.toml). Attached to the release for downstream vuln/audit tooling.
+        run: |
+          python -m pip install cyclonedx-bom
+          cyclonedx-py environment --output-format JSON -o sbom.cyclonedx.json
+          echo "----- SBOM component count -----"
+          python -c "import json;print(len(json.load(open('sbom.cyclonedx.json')).get('components',[])),'components')"
+
+      - name: Attest SLSA build provenance for the artifacts
+        # Keyless (Sigstore) provenance over the built dists — verifiable later with
+        # `gh attestation verify dist/<file> --repo <owner>/<repo>`.
+        # actions/attest-build-provenance v4.1.1 (Node 24)
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: "dist/*"
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" {grab=1; next}
+            grab && /^## \[/ {exit}
+            grab {print}
+          ' CHANGELOG.md > release-notes.md
+          echo "Extracted $(wc -l < release-notes.md) lines for $VERSION"
+
+      - name: Create GitHub Release
+        # softprops/action-gh-release v3.0.1 (Node 24)
+        uses: softprops/action-gh-release@2bb465e97f322d3cb2a965294d483e0d26a67aa9
+        with:
+          body_path: release-notes.md
+          files: |
+            dist/*
+            sbom.cyclonedx.json
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Upload dist for the publish job
+        # actions/upload-artifact v7.0.1 (Node 24)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  pypi-publish:
+    name: PyPI Trusted Publishing (OIDC)
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish real releases to PyPI, never pre-releases (…-rc/-a/-b tags).
+    if: ${{ !contains(github.ref_name, '-') }}
+    environment:
+      name: pypi
+      url: https://pypi.org/project/sentinel-harness/
+    permissions:
+      id-token: write        # OIDC token exchanged for the PyPI upload — no stored token
+    steps:
+      - name: Download built dists
+        # actions/download-artifact v8.0.1 (Node 24)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish to PyPI (OIDC, tokenless)
+        # Requires a PyPI trusted publisher configured for this repo + this workflow.
+        # Until then this job fails loudly rather than silently skipping — that is the
+        # intended gate (a release is not "done" until PyPI accepts the OIDC identity).
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1

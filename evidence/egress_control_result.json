@@ -1,0 +1,66 @@
+{
+  "scenario": "egress_control_default_deny",
+  "steps": [
+    {
+      "step": "resolved_vpc",
+      "data": {
+        "source": "cloudformation",
+        "vpc_id": "vpc-<SCRUBBED>",
+        "stack": "sentinel-network",
+        "deployed": true,
+        "endpoints_expected": true
+      }
+    },
+    {
+      "step": "classify",
+      "data": {
+        "vpc_id": "vpc-<SCRUBBED>",
+        "isolated_subnet": true,
+        "no_igw": true,
+        "no_default_route_to_internet": true,
+        "internet_route_tables": [],
+        "privatelink_endpoints_present": [
+          "bedrock-agentcore",
+          "ecr.api",
+          "ecr.dkr",
+          "logs",
+          "sts"
+        ],
+        "egress_default_deny": true
+      }
+    },
+    {
+      "step": "verdict",
+      "data": {
+        "isolated_subnet": true,
+        "no_igw": true,
+        "no_default_route_to_internet": true,
+        "privatelink_endpoints_present": [
+          "bedrock-agentcore",
+          "ecr.api",
+          "ecr.dkr",
+          "logs",
+          "sts"
+        ],
+        "egress_default_deny": true,
+        "closed": true,
+        "note": "LIVE topology inspection of the deployed private VPC (no probe instance launched). egress_default_deny = no IGW attached AND no route table with a 0.0.0.0/0 route to an IGW/NAT — public egress is unroutable, not merely filtered. PrivateLink interface endpoints present for ['bedrock-agentcore', 'ecr.api', 'ecr.dkr', 'logs', 'sts'] (all required present)"
+      }
+    }
+  ],
+  "verdict": {
+    "isolated_subnet": true,
+    "no_igw": true,
+    "no_default_route_to_internet": true,
+    "privatelink_endpoints_present": [
+      "bedrock-agentcore",
+      "ecr.api",
+      "ecr.dkr",
+      "logs",
+      "sts"
+    ],
+    "egress_default_deny": true,
+    "closed": true,
+    "note": "LIVE topology inspection of the deployed private VPC (no probe instance launched). egress_default_deny = no IGW attached AND no route table with a 0.0.0.0/0 route to an IGW/NAT — public egress is unroutable, not merely filtered. PrivateLink interface endpoints present for ['bedrock-agentcore', 'ecr.api', 'ecr.dkr', 'logs', 'sts'] (all required present)"
+  }
+}
