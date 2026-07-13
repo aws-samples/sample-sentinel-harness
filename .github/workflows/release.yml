@@ -124,4 +124,4 @@ jobs:
         # Requires a PyPI trusted publisher configured for this repo + this workflow.
         # Until then this job fails loudly rather than silently skipping — that is the
         # intended gate (a release is not "done" until PyPI accepts the OIDC identity).
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
