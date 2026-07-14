@@ -1,52 +1,59 @@
-# Contributing
+# Contributing Guidelines
 
-Thanks for your interest in `sentinel-harness`. This is a reference implementation
-and educational sample for **authorized, defensive** security operations.
+Thank you for your interest in contributing to our project. Whether it's a bug report, new feature, correction, or additional
+documentation, we greatly value feedback and contributions from our community.
 
-## Ground rules
+Please read through this document before submitting any issues or pull requests to ensure we have all the necessary
+information to effectively respond to your bug report or contribution.
 
-1. **No proprietary or organization-specific data — ever.** This is a public repo.
-   Use only generic SecOps content and public threat examples (ATT&CK, public CVEs).
-   Company names, internal hostnames, real asset inventories, and the like do not
-   belong here. CI enforces a name/secret scan and will fail the build.
-2. **No hardcoded secrets or AWS account IDs.** Everything is env-parameterized
-   (`SENTINEL_EXECUTION_ROLE_ARN`, `SENTINEL_REGION`, `AWS_PROFILE`). Use the
-   `000000000000` placeholder in docs/examples.
-3. **Defensive scope only.** Offensive/simulation scenarios must keep a
-   human-in-the-loop gate on every action (Play Mode). No autonomous exploitation.
-4. **English** for all code, comments, and docs.
 
-## Development
+## Reporting Bugs/Feature Requests
 
-This repo uses [`uv`](https://docs.astral.sh/uv/) and a `Makefile` — the same
-toolchain as `docs/QUICKSTART.md`. The offline suite is hermetic (no venv to
-manage, no AWS, no network); `uv` builds the environment on the fly.
+We welcome you to use the GitHub issue tracker to report bugs or suggest features.
 
-```bash
-export SENTINEL_EXECUTION_ROLE_ARN="arn:aws:iam::000000000000:role/test"  # for offline tests
-make test                 # full offline suite (hermetic via uv; no AWS calls)
-make lint                 # ruff over the Python sources
-```
+When filing an issue, please check existing open, or recently closed, issues to make sure somebody else hasn't already
+reported the issue. Please try to include as much information as you can. Details like these are incredibly useful:
 
-Run `make lint` and `make test` before opening a PR — that pair is the CI gate.
+* A reproducible test case or series of steps
+* The version of our code being used
+* Any modifications you've made relevant to the bug
+* Anything unusual about your environment or deployment
 
-Under the hood `make test` runs the canonical hermetic invocation
-(`uv run --no-project --python 3.13 --with pytest --with hypothesis --with boto3 --with pyyaml --with . python -m pytest tests/ -q`);
-run it directly if you need to pass extra pytest flags. `hypothesis` is required —
-`tests/test_prop_*.py` are property-based and fail collection without it. To hack
-on the package in an editable environment, `uv sync` then `uv run pytest tests/ -q`.
 
-Live scenarios require real AWS credentials for a **non-production** account and a
-real execution role — see `docs/SETUP.md`.
+## Contributing via Pull Requests
+Contributions via pull requests are much appreciated. Before sending us a pull request, please ensure that:
 
-## Style
+1. You are working against the latest source on the *main* branch.
+2. You check existing open, and recently merged, pull requests to make sure someone else hasn't addressed the problem already.
+3. You open an issue to discuss any significant work - we would hate for your time to be wasted.
 
-- Match the existing `sentinel_harness/core.py` API and the `scenarios/` style.
-- New scenarios go in `scenarios/`, write their evidence JSON to `evidence/`, and
-  should be runnable end-to-end (create → invoke → verdict → leave cleanup to `sentinel cleanup`).
-- Keep tool templates deterministic where the design calls for it (e.g. linters must
-  not call an LLM).
+To send us a pull request, please:
 
-## Reporting
+1. Fork the repository.
+2. Modify the source; please focus on the specific change you are contributing. If you also reformat all the code, it will be hard for us to focus on your change.
+3. Ensure local tests pass.
+4. Commit to your fork using clear commit messages.
+5. Send us a pull request, answering any default questions in the pull request interface.
+6. Pay attention to any automated CI failures reported in the pull request, and stay involved in the conversation.
 
-Security issues: please open a private report rather than a public issue.
+GitHub provides additional document on [forking a repository](https://help.github.com/articles/fork-a-repo/) and
+[creating a pull request](https://help.github.com/articles/creating-a-pull-request/).
+
+
+## Finding contributions to work on
+Looking at the existing issues is a great way to find something to contribute on. As our projects, by default, use the default GitHub issue labels (enhancement/bug/duplicate/help wanted/invalid/question/wontfix), looking at any 'help wanted' issues is a great place to start.
+
+
+## Code of Conduct
+This project has adopted the [Amazon Open Source Code of Conduct](https://aws.github.io/code-of-conduct).
+For more information see the [Code of Conduct FAQ](https://aws.github.io/code-of-conduct-faq) or contact
+opensource-codeofconduct@amazon.com with any additional questions or comments.
+
+
+## Security issue notifications
+If you discover a potential security issue in this project we ask that you notify AWS/Amazon Security via our [vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/). Please do **not** create a public github issue.
+
+
+## Licensing
+
+See the [LICENSE](LICENSE) file for our project's licensing. We will ask you to confirm the licensing of your contribution.
