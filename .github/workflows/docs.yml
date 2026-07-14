@@ -58,7 +58,7 @@ jobs:
         run: |
           pdoc sentinel_harness -o site \
             --docformat numpy \
-            --logo-link "https://github.com/neosun100/sentinel-harness"
+            --logo-link "https://github.com/aws-samples/sample-sentinel-harness"
           test -f site/index.html
           echo "----- rendered pages -----"; ls site/sentinel_harness/
 
