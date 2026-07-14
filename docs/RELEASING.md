@@ -59,7 +59,7 @@ git push origin vX.Y.Z        # → release.yml fires
 gh release view vX.Y.Z                                   # notes + assets (wheel, sdist, SBOM)
 gh attestation verify dist/<artifact> --repo <owner>/<repo>   # SLSA provenance
 # confirm the SBOM asset (sbom.cyclonedx.json) is attached
-# confirm the API docs site republished: https://neosun100.github.io/sentinel-harness/
+# confirm the API docs site republished: https://aws-samples.github.io/sample-sentinel-harness/
 ```
 
 ## Versioning policy
