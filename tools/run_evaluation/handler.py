@@ -297,7 +297,7 @@ def _score_answer(params: Dict[str, Any]) -> Dict[str, Any]:
     last_exc = None
     for attempt in range(_JUDGE_RETRIES):
         if attempt > 0 and _JUDGE_BACKOFF_SECONDS:
-            time.sleep(_JUDGE_BACKOFF_SECONDS * attempt)   # exponential backoff on retry
+            time.sleep(_JUDGE_BACKOFF_SECONDS * attempt)  # nosemgrep: arbitrary-sleep -- intentional exponential backoff between judge retries; bounded by _JUDGE_RETRIES
         sid = session_id if attempt == 0 else core.new_session("judge")
         try:
             result = core.invoke(judge_arn, sid, prompt, **rest)

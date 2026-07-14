@@ -108,7 +108,7 @@ def _ensure_absent(name, timeout=180):
     while time.time() - t0 < timeout:
         if name not in {h["harnessName"] for h in sh.list_harnesses()}:
             return
-        time.sleep(6)
+        time.sleep(6)  # nosemgrep: arbitrary-sleep -- intentional poll backoff while awaiting async delete; loop is timeout-bounded above
     raise TimeoutError(f"{name} still present after {timeout}s")
 
 
@@ -244,7 +244,7 @@ def _teardown_harness(hid, timeout=240):
             except Exception:  # noqa: BLE001 — already deleting/gone
                 pass
             break
-        time.sleep(8)
+        time.sleep(8)  # nosemgrep: arbitrary-sleep -- intentional poll backoff while awaiting endpoint teardown; loop is timeout-bounded above
     # 2) delete the harness, retrying while the endpoint teardown clears.
     while time.time() - t0 < timeout:
         try:
@@ -252,7 +252,7 @@ def _teardown_harness(hid, timeout=240):
             return {"deleted": hid}
         except Exception as e:  # noqa: BLE001
             if "Conflict" in type(e).__name__:
-                time.sleep(8)
+                time.sleep(8)  # nosemgrep: arbitrary-sleep -- intentional retry backoff on Conflict while endpoint teardown clears; loop is timeout-bounded above
                 continue
             return {"delete_error": str(e)[:120]}
     return {"delete_error": "timed out waiting to delete"}

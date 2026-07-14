@@ -49,7 +49,7 @@ Stated plainly, consistent with the README status matrix (🟢/🟡/🟠) and `d
 ## Get started
 
 ```bash
-git clone https://github.com/aws-samples/sample-sentinel-harness && cd sample-sentinel-harness
+git clone https://github.com/neosun100/sentinel-harness && cd sentinel-harness
 pip install -e .     # Python 3.10+ ; installs the `sentinel` CLI
 make test            # 1742 offline tests — deterministic, no AWS, seconds
 make demo            # narrated L1→L4 platform tour, fully offline

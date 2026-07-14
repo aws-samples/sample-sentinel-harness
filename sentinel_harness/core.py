@@ -218,7 +218,7 @@ def wait_ready(harness_id: str, timeout: int = 360) -> dict:
             return h
         if st in ("CREATE_FAILED", "FAILED", "UPDATE_FAILED"):
             raise RuntimeError(f"{harness_id} -> {st}: {h.get('failureReason')}")
-        time.sleep(8)
+        time.sleep(8)  # nosemgrep: arbitrary-sleep -- intentional poll backoff; AWS control-plane is eventually-consistent, loop is timeout-bounded above
     raise TimeoutError(f"{harness_id} not READY within {timeout}s")
 
 

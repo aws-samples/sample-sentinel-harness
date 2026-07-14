@@ -272,7 +272,7 @@ def wait_gateway_ready(gateway_id: str, timeout: int = 300) -> dict:
             return g
         if st in _FAILED_STATUSES:
             raise RuntimeError(f"{gateway_id} -> {st}: {g.get('statusReasons')}")
-        time.sleep(8)
+        time.sleep(8)  # nosemgrep: arbitrary-sleep -- intentional poll backoff; AWS control-plane is eventually-consistent, loop is timeout-bounded above
     raise TimeoutError(f"{gateway_id} not READY within {timeout}s")
 
 

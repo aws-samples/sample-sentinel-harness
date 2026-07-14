@@ -16,10 +16,10 @@
   <img alt="coverage" src="https://img.shields.io/badge/coverage-91%25-1D8102"/>
   <img alt="milestones" src="https://img.shields.io/badge/milestones-M0--M12%20delivered-1D8102"/>
   <img alt="live" src="https://img.shields.io/badge/live--validated-Runtime%20A2A%20%C2%B7%20closed%20loop%20%C2%B7%20JWT%20%C2%B7%20eval%20%C2%B7%20memory-8b5cf6"/>
-  <a href="https://aws-samples.github.io/sample-sentinel-harness/"><img alt="api docs" src="https://img.shields.io/badge/API%20docs-live-2997ff"/></a>
+  <a href="https://neosun100.github.io/sentinel-harness/"><img alt="api docs" src="https://img.shields.io/badge/API%20docs-live-2997ff"/></a>
 </p>
 
-[Quickstart](#-quickstart) · [Architecture](#-architecture) · [Live on AWS](#-live-validated-on-aws) · [Scenarios](#-scenarios--evidence) · [Status matrix](#-status-validated--designed--missing) · [API reference](https://aws-samples.github.io/sample-sentinel-harness/) · [Docs map](#-documentation-map) · [Roadmap](#-roadmap)
+[Quickstart](#-quickstart) · [Architecture](#-architecture) · [Live on AWS](#-live-validated-on-aws) · [Scenarios](#-scenarios--evidence) · [Status matrix](#-status-validated--designed--missing) · [API reference](https://neosun100.github.io/sentinel-harness/) · [Docs map](#-documentation-map) · [Roadmap](#-roadmap)
 
 </div>
 
@@ -31,7 +31,7 @@
 
 A mature security team usually already owns the pieces — models, internal MCP servers, a pile of analyst skills. What's missing is a **framework to circulate them** so that "what one analyst has, everyone has." `sentinel-harness` is a reference implementation of that framework on the [Amazon Bedrock AgentCore **Harness**](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/harness.html): it reverse-engineers a common three-layer SecOps agent architecture (Strategy / Simulation / Foundation) into AgentCore primitives, borrowing verified patterns from four AWS samples.
 
-Everything here is **generic SecOps content** built and tested against a **non-production** account — no proprietary data, no real vulnerable assets, no real malware. Delivered across milestones **M0–M12**, with the full `[EXTERNAL]` live-proof set — Registry, AgentCore Runtime A2A, CUSTOM_JWT gateway, managed + online Evaluate, cross-session Memory recall, and the end-to-end self-improvement closed loop — **live-validated on AWS** (see below). Full API reference: <https://aws-samples.github.io/sample-sentinel-harness/>.
+Everything here is **generic SecOps content** built and tested against a **non-production** account — no proprietary data, no real vulnerable assets, no real malware. Delivered across milestones **M0–M12**, with the full `[EXTERNAL]` live-proof set — Registry, AgentCore Runtime A2A, CUSTOM_JWT gateway, managed + online Evaluate, cross-session Memory recall, and the end-to-end self-improvement closed loop — **live-validated on AWS** (see below). Full API reference: <https://neosun100.github.io/sentinel-harness/>.
 
 > **What's real vs. aspirational — read this first.** Layer 1 ships **live-validated scenarios** (including a real Gateway create→READY→delete on the GA API) and a library-grade core. Layer 2 Play Mode is live-validated, BAS detection-replay is real (a deterministic Sigma matcher finds detection blind spots offline), and sample detonation is a built+tested full-lifecycle orchestrator that stays an **honest SIMULATED no-op** (no real malware/VM/network — sample-by-reference, sandbox-refused actions, HITL-gated, always destroyed after use). Layer 3 ships a built+tested tool/skill registry, sandbox hooks, and Agent Factory; a dual-track IaC foundation (CDK + a `terraform validate`-clean Terraform mirror) where the Guardrail, Cognito JWT identity, and CloudWatch/Budgets observability stacks are **live-deployed and validated on a real dev account** (a Guardrail really masked a fake AWS key; the private-VPC PrivateLink endpoints stay cost-gated off); plus an A2A specialist container that really `docker build`s (pinned deps, non-root) with a mocked-model zero-network contract test. The four core data-plane tools (`siem_query`/`asset_lookup`/`enrich_ioc`/`ops_query`) are backend-pluggable: offline mock by default, a real stdlib-HTTP client behind a `*_LIVE` env, so connecting a real backend is a config change, not a rebuild. The [status matrix](#-status-validated--designed--missing) is precise about what's proven, built, designed, or skeleton — 🟡 rows are honest about their limits. This honesty is deliberate — see the self-audit in [`docs/FIDELITY-REPORT.md`](docs/FIDELITY-REPORT.md).
 
@@ -102,7 +102,7 @@ Honest build status per capability — mirrors the self-audit.
 ## 🚀 Quickstart
 
 ```bash
-git clone https://github.com/aws-samples/sample-sentinel-harness && cd sample-sentinel-harness
+git clone https://github.com/neosun100/sentinel-harness && cd sentinel-harness
 pip install -e '.[test]'  # Python 3.10+ ; the `sentinel` CLI + test deps
                           # (pytest, hypothesis, coverage). Plain `pip install -e .`
                           # gives just the library + CLI, without the test deps.
@@ -196,7 +196,7 @@ Borrowed patterns (see [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md)): supervisor→s
 | [`docs/TESTING.md`](docs/TESTING.md) | The 1742-test offline suite: layout, determinism, how to run |
 | [`docs/FIDELITY-REPORT.md`](docs/FIDELITY-REPORT.md) | The self-audit — real vs. built vs. designed, with limits stated |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Delivered milestones (M0–M12) and what's next |
-| [**API reference (live)**](https://aws-samples.github.io/sample-sentinel-harness/) | Rendered `sentinel_harness` API docs (pdoc → GitHub Pages) |
+| [**API reference (live)**](https://neosun100.github.io/sentinel-harness/) | Rendered `sentinel_harness` API docs (pdoc → GitHub Pages) |
 | [`CHANGELOG.md`](CHANGELOG.md) | Versioned change history |
 | [`docs/RELEASING.md`](docs/RELEASING.md) | The tag-driven release runbook (SBOM · SLSA provenance · PyPI OIDC) |
 | [`docs/RELEASE-v0.2.0.md`](docs/RELEASE-v0.2.0.md) | The v0.2.0 release notes (highlights, by-the-numbers, honest limits) |
@@ -244,4 +244,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Ground rules: no proprietary data, no ha
 
 ## 📄 License
 
-[MIT-0](LICENSE) © Amazon.com, Inc. or its affiliates.
+[MIT-0](LICENSE) © 2026 sentinel-harness contributors.

@@ -526,7 +526,7 @@ def build_app(
     app = a2a.to_fastapi_app() if hasattr(a2a, "to_fastapi_app") else FastAPI()
 
     @app.get("/ping")
-    def ping() -> dict:
+    def ping() -> dict:  # nosemgrep: useless-inner-function -- not dead code; registered as a route via @app.get decorator (side effect), called by the ASGI server
         # AgentCore polls this for liveness; keep it dependency-free and fast.
         return {"status": "healthy", "agent": SPECIALIST_NAME}
 

@@ -125,7 +125,7 @@ def _ensure_absent(name: str, timeout: int = 180) -> None:
     while time.time() - t0 < timeout:
         if name not in {h["harnessName"] for h in sh.list_harnesses()}:
             return
-        time.sleep(6)
+        time.sleep(6)  # nosemgrep: arbitrary-sleep -- intentional poll backoff while awaiting async delete; loop is timeout-bounded above
     raise TimeoutError(f"{name} still present after {timeout}s (stuck DELETING)")
 
 
