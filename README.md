@@ -192,6 +192,7 @@ Borrowed patterns (see [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md)): supervisor→s
 | [`docs/SETUP.md`](docs/SETUP.md) | Least-privilege execution-role policy and live-run configuration |
 | [`docs/HARNESSES.md`](docs/HARNESSES.md) | The declarative `harness.yaml` configs and how the loader consumes them |
 | [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md) | Registry dual-gate, HITL, sandbox hooks, and tag-guard controls |
+| [`docs/COMPLIANCE.md`](docs/COMPLIANCE.md) | Capability → SOC 2 / ISO 27001 / NIST CSF 2.0 control mapping (anchors machine-verified) |
 | [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | Logging (`logutil`), metrics (token/latency/tool-call/error/eval), the OTEL/Transaction-Search path |
 | [`docs/TESTING.md`](docs/TESTING.md) | The 1742-test offline suite: layout, determinism, how to run |
 | [`docs/FIDELITY-REPORT.md`](docs/FIDELITY-REPORT.md) | The self-audit — real vs. built vs. designed, with limits stated |
