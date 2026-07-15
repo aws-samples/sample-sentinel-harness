@@ -25,6 +25,16 @@ API
 Every accessor returns a fresh copy (via :func:`load_world`), so a caller may
 mutate what it gets back without corrupting the shared source or another tool's
 read — that is what keeps repeated queries deterministic.
+
+Two worlds, on purpose
+----------------------
+- :func:`load_world` (``world.py``) — the CANONICAL SMALL world the alert-triage
+  narrative reads (size-capped by tests so it stays legible).
+- :func:`load_enterprise` / :func:`exposure_surface` (``enterprise.py``) — a DEEP
+  ~50-host, five-tier world for ATTACK-PATH reasoning. ``exposure_surface`` returns
+  exactly the shape ``tools/asset_lookup`` emits and ``build_attack_paths`` consumes,
+  so the real reasoner traverses it directly. Kept separate so deepening the attack
+  surface never touches the canonical world's locked invariants.
 """
 
 from __future__ import annotations
@@ -32,6 +42,11 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from .accounts import accounts, finding_types
+from .enterprise import (
+    crown_jewels,
+    exposure_surface,
+    load_enterprise,
+)
 from .world import load_world
 
 __all__ = [
@@ -42,6 +57,9 @@ __all__ = [
     "tickets_seed",
     "accounts",
     "finding_types",
+    "load_enterprise",
+    "exposure_surface",
+    "crown_jewels",
 ]
 
 
