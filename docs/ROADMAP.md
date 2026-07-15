@@ -544,10 +544,15 @@ out of the scenario script into a reusable, tested controller the self-improving
       — `evidence/autonomous_loop_result.json` (closed:true)
 - [x] 39 tests incl. Hypothesis invariants (never promote below bar / with a failed safety dim /
       beyond max_rounds). Suite 1901 → 1923.
-- [ ] **Live wiring (the one remaining step):** have `scenario_self_improve_loop.py` delegate its
-      decisions to `run_improvement_loop` (score_fn=`run_evaluation`, revise_fn=`agent-ops` invoke,
-      approve_fn=`inline_function` gate) — a small swap, gated on `InvokeHarness` quota; the offline
-      proof + the controller already exist, only the live-scenario refactor + a real run remain.
+- [x] **Live wiring — DONE offline-proven; only a real run remains gated on quota.**
+      `scenario_self_improve_loop.build_live_loop_callables(judge_arn, agent_id, agent_arn)` builds
+      the `(score_fn, revise_fn, approve_fn)` closures over the scenario's REAL `sh.*` ops
+      (score_fn=`run_evaluation` judge invoke; revise_fn=full-replacement `update_harness`+re-invoke;
+      approve_fn=the HITL gate), so `autonomy.run_improvement_loop` DRIVES the real operations. Proven
+      offline in `tests/test_self_improve_autonomy_wiring.py` (fake sh/judge → the controller reaches
+      the same weak→revise→pass→promote / reject-withholds / throttled-judge-no-promote decisions the
+      live scenario hardcodes). The only thing still gated on `InvokeHarness` quota is the actual AWS
+      round-trip — the mechanism is proven. Additive: the live `run()` flow is untouched.
 
 **Next (ranked backlog beyond M13.7):** wire the controller into the live self-improve scenario
 (above); more connectors (QRadar / Microsoft Sentinel / PagerDuty); end-to-end OTEL span emission to

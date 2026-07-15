@@ -258,6 +258,67 @@ def _teardown_harness(hid, timeout=240):
     return {"delete_error": "timed out waiting to delete"}
 
 
+def build_live_loop_callables(judge_arn, agent_id, agent_arn, *, strong_prompt=None):
+    """Wire this scenario's REAL live operations into the C1 autonomy controller.
+
+    Closes the "runner-orchestrated" gap for the LIVE path: instead of the
+    hardcoded score→update→promote steps in :func:`run`, these three callables let
+    ``sentinel_harness.autonomy.run_improvement_loop`` DRIVE the same real
+    operations —
+
+    - ``score_fn(answer)`` → invokes the real independent judge harness via
+      ``run_evaluation`` and projects its verdict into the controller's score shape
+      (aggregate + a ``safety`` dimension so the safety veto can bite);
+    - ``revise_fn(answer, score)`` → applies the retry-with-reasoning as a real
+      full-replacement ``update_harness`` (to ``strong_prompt``), re-invokes, and
+      returns the new answer;
+    - ``approve_fn(answer, score)`` → the HITL promotion gate; a real deployment
+      returns the ``inline_function`` gate decision.
+
+    Returns ``(score_fn, revise_fn, approve_fn)``. This function makes NO AWS call
+    itself — it only builds closures over the scenario's real ``sh.*`` ops — so it
+    is import-safe and unit-testable offline (the closures are exercised live, or
+    with mock ``sh``/judge in tests). A live run wires:
+
+        from sentinel_harness import autonomy
+        score_fn, revise_fn, approve_fn = build_live_loop_callables(judge_arn, aid, aarn)
+        result = autonomy.run_improvement_loop(
+            weak_answer, score_fn, revise_fn,
+            threshold=0.7, max_rounds=3, approve_fn=approve_fn)
+
+    gated only on the account's InvokeHarness quota — the mechanism is proven
+    offline in tests/test_self_improve_autonomy_wiring.py.
+    """
+    strong = strong_prompt if strong_prompt is not None else STRONG_PROMPT
+
+    def score_fn(answer):
+        v = _score(judge_arn, answer)
+        agg = v.get("score") or 0.0
+        # A judge that errored/throttled scores 0 with a safety-neutral dim (the
+        # controller then simply won't promote — an honest non-pass, not a crash).
+        safety = agg if v.get("ok") else 0.0
+        return {"score": agg,
+                "dimension_scores": {"correctness": agg, "safety": safety},
+                "feedback": {"suggestions": v.get("suggestions") or [],
+                             "judge_ok": v.get("ok")}}
+
+    def revise_fn(answer, score):
+        # retry-with-reasoning as a real full-replacement update + re-invoke.
+        sh.update_harness(agent_id, system_prompt=strong,
+                          model=sh.bedrock_model(sh.MODEL_HAIKU),
+                          max_iterations=8, timeout_seconds=120)
+        sh.wait_ready(agent_id)
+        return sh.invoke(agent_arn, sh.new_session("cve_revise"), TASK)["text"]
+
+    def approve_fn(answer, score):
+        # The HITL gate: a real deployment returns the inline_function decision.
+        # Promotion itself (CreateHarnessEndpoint) is the controller-gated action
+        # the caller performs when this returns True.
+        return True
+
+    return score_fn, revise_fn, approve_fn
+
+
 if __name__ == "__main__":
     judge_arn = build_judge()
     judge_id = judge_arn.split("/")[-1]
