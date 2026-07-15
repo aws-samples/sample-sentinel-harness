@@ -153,6 +153,8 @@ you (`sentinel_harness/connectors/`):
 | `splunk` | SPL search (`search index=* … host="web-01"`, `output_mode=json`) | `{"results":[ … ]}` |
 | `elastic` | ES query DSL (`{"query":{"term":{"host.keyword":"web-01"}}}` → `POST …/_search`) | `{"hits":{"hits":[{"_source":{…}}]}}` |
 | `opensearch` | same DSL/envelope as `elastic` | `{"hits":{"hits":[…]}}` |
+| `qradar` | AQL (`SELECT * FROM events WHERE sourceip = '…' LAST 24 HOURS`) | `{"events":[ … ]}` |
+| `microsoft_sentinel` | KQL (`SecurityAlert \| where Computer == "web-01"`) | columnar `{"tables":[{"columns":[…],"rows":[[…]]}]}` |
 
 ```bash
 export SIEM_QUERY_LIVE=1
@@ -167,7 +169,11 @@ a native-response fixture. Field-name drift is absorbed (a source IP under
 and nested keys. An unknown connector name fails loudly as `upstream_error`
 listing the known adapters — it never silently degrades. Leave
 `SIEM_QUERY_CONNECTOR` unset to use the generic contract above. Ticketing has the
-same mechanism via `CREATE_TICKET_CONNECTOR` (`servicenow` / `jira`).
+same mechanism via `CREATE_TICKET_CONNECTOR` (`servicenow` / `jira` / `pagerduty`).
+
+The `microsoft_sentinel` connector shows the framework isn't limited to
+lists-of-objects: it projects the KQL **columnar** envelope (parallel `columns`
++ `rows` arrays) into neutral events by zipping each row against the column names.
 
 ---
 

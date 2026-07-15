@@ -32,15 +32,24 @@ from .base import (
     SiemConnector,
     neutral_event,
 )
-from .siem import ElasticConnector, OpenSearchConnector, SplunkConnector
-from .ticketing import JiraConnector, ServiceNowConnector
+from .siem import (
+    ElasticConnector,
+    MicrosoftSentinelConnector,
+    OpenSearchConnector,
+    QRadarConnector,
+    SplunkConnector,
+)
+from .ticketing import JiraConnector, PagerDutyConnector, ServiceNowConnector
 
 # name -> singleton connector instance (connectors are stateless/pure).
 _SIEM_CONNECTORS: Dict[str, object] = {
-    c.name: c for c in (SplunkConnector(), ElasticConnector(), OpenSearchConnector())
+    c.name: c for c in (
+        SplunkConnector(), ElasticConnector(), OpenSearchConnector(),
+        QRadarConnector(), MicrosoftSentinelConnector(),
+    )
 }
 _TICKETING_CONNECTORS: Dict[str, object] = {
-    c.name: c for c in (ServiceNowConnector(), JiraConnector())
+    c.name: c for c in (ServiceNowConnector(), JiraConnector(), PagerDutyConnector())
 }
 
 __all__ = [
@@ -55,8 +64,11 @@ __all__ = [
     "SplunkConnector",
     "ElasticConnector",
     "OpenSearchConnector",
+    "QRadarConnector",
+    "MicrosoftSentinelConnector",
     "ServiceNowConnector",
     "JiraConnector",
+    "PagerDutyConnector",
 ]
 
 

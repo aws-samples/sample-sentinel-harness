@@ -28,6 +28,9 @@ _SN_URGENCY = {"critical": "1", "high": "1", "medium": "2", "low": "3", "info": 
 # Jira priority names by sentinel severity.
 _JIRA_PRIORITY = {"critical": "Highest", "high": "High", "medium": "Medium",
                   "low": "Low", "info": "Lowest"}
+# PagerDuty incident urgency by sentinel severity (PD urgency is high|low only).
+_PD_URGENCY = {"critical": "high", "high": "high", "medium": "low",
+               "low": "low", "info": "low"}
 
 
 def _require_title(request: Dict[str, Any]) -> str:
@@ -113,4 +116,39 @@ class JiraConnector:
             "ticket_id": str(key),
             "status": "open",
             "url": str(payload.get("self", "")),
+        }
+
+
+class PagerDutyConnector:
+    """PagerDuty connector — creates an incident via the Incidents API.
+
+    build_request maps the neutral ticket to a PagerDuty ``{"incident": {...}}``
+    create payload (``type``/``title``/``urgency``/``body``); parse_response reads
+    the ``incident`` object in the reply, taking ``id`` as the neutral
+    ``ticket_id``, ``status`` as ``status``, and ``html_url`` as ``url``."""
+
+    name = "pagerduty"
+
+    def build_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        title = _require_title(request)
+        sev = str(request.get("severity", "medium")).lower()
+        incident = {
+            "type": "incident",
+            "title": title,
+            "urgency": _PD_URGENCY.get(sev, "low"),
+            "body": {"type": "incident_body", "details": request.get("body", "")},
+        }
+        return {"body": {"incident": incident}, "path": "/incidents"}
+
+    def parse_response(self, payload: Any) -> Dict[str, Any]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("incident"), dict):
+            raise ConnectorError("PagerDuty reply missing 'incident' object")
+        inc = payload["incident"]
+        ticket_id = inc.get("id") or inc.get("incident_number")
+        if not ticket_id:
+            raise ConnectorError("PagerDuty incident missing an id/incident_number")
+        return {
+            "ticket_id": str(ticket_id),
+            "status": str(inc.get("status", "triggered")),
+            "url": str(inc.get("html_url", "")),
         }

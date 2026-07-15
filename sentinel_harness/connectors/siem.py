@@ -164,3 +164,85 @@ class OpenSearchConnector(_EsFamilyConnector):
     """OpenSearch connector — same DSL/envelope as Elasticsearch."""
 
     name = "opensearch"
+
+
+# --------------------------------------------------------------------------- #
+# IBM QRadar (AQL → {"events": [...]})                                        #
+# --------------------------------------------------------------------------- #
+class QRadarConnector:
+    """IBM QRadar connector. Query becomes an AQL SELECT over the events table;
+    results come back as ``{"events": [ {...}, ... ]}`` (QRadar Ariel search
+    result envelope).
+
+    build_request emits the AQL string; parse_response reads ``payload["events"]``.
+    A missing ``events`` key is a ConnectorError (an empty search returns
+    ``{"events": []}``, never a bare list)."""
+
+    name = "qradar"
+
+    def build_request(self, selector: str, value: str) -> Dict[str, Any]:
+        if selector == "*":
+            aql = "SELECT * FROM events LAST 24 HOURS"
+        else:
+            # value is tool-validated; single-quote it for AQL.
+            aql = f"SELECT * FROM events WHERE {selector} = '{value}' LAST 24 HOURS"
+        return {"body": {"query_expression": aql}, "path": "/api/ariel/searches"}
+
+    def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
+        if not isinstance(payload, dict) or "events" not in payload:
+            raise ConnectorError("QRadar reply missing 'events' envelope")
+        rows = payload["events"]
+        if not isinstance(rows, list):
+            raise ConnectorError("QRadar 'events' must be a list")
+        return [_map_record(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- #
+# Microsoft Sentinel / Log Analytics (KQL → columnar tables[].rows[])         #
+# --------------------------------------------------------------------------- #
+class MicrosoftSentinelConnector:
+    """Microsoft Sentinel (Log Analytics) connector. Query becomes KQL; results
+    come back COLUMNAR — ``{"tables": [{"columns": [{"name": ...}], "rows":
+    [[v0, v1, ...]]}]}`` — NOT a list of objects. This exercises the connector
+    framework's flexibility: parse_response zips each row against the column names
+    into a dict before mapping to the neutral event.
+
+    build_request emits a KQL string; parse_response reads the FIRST table's
+    columns+rows. A missing ``tables[0]`` with ``columns``/``rows`` is a
+    ConnectorError."""
+
+    name = "microsoft_sentinel"
+
+    def build_request(self, selector: str, value: str) -> Dict[str, Any]:
+        if selector == "*":
+            kql = "SecurityAlert | take 1000"
+        else:
+            # KQL string filter; value is tool-validated. Double-quote for KQL.
+            kql = f'SecurityAlert | where {selector} == "{value}" | take 1000'
+        return {"body": {"query": kql}, "path": "/v1/query"}
+
+    def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("tables"), list):
+            raise ConnectorError("Microsoft Sentinel reply missing 'tables' list")
+        tables = payload["tables"]
+        if not tables:
+            return []
+        table = tables[0]
+        if not isinstance(table, dict) or "columns" not in table or "rows" not in table:
+            raise ConnectorError("Microsoft Sentinel table missing columns/rows")
+        columns = table["columns"]
+        rows = table["rows"]
+        if not isinstance(columns, list) or not isinstance(rows, list):
+            raise ConnectorError("Microsoft Sentinel columns/rows must be lists")
+        # Column entries may be {"name": "..."} objects or bare strings.
+        col_names = [
+            (c.get("name") if isinstance(c, dict) else str(c)) for c in columns
+        ]
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, list):
+                raise ConnectorError("Microsoft Sentinel row must be a list of values")
+            # zip row values to column names → a record dict → neutral event.
+            record = {name: row[i] for i, name in enumerate(col_names) if name and i < len(row)}
+            out.append(_map_record(record))
+        return out

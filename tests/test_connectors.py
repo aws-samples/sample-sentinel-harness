@@ -21,16 +21,18 @@ from sentinel_harness.connectors.base import NEUTRAL_EVENT_FIELDS, ConnectorErro
 # registry                                                                    #
 # --------------------------------------------------------------------------- #
 def test_siem_registry_lists_expected():
-    assert set(C.available_siem_connectors()) == {"splunk", "elastic", "opensearch"}
+    assert set(C.available_siem_connectors()) == {
+        "splunk", "elastic", "opensearch", "qradar", "microsoft_sentinel",
+    }
 
 
 def test_ticketing_registry_lists_expected():
-    assert set(C.available_ticketing_connectors()) == {"servicenow", "jira"}
+    assert set(C.available_ticketing_connectors()) == {"servicenow", "jira", "pagerduty"}
 
 
 def test_unknown_siem_connector_raises_with_names():
     with pytest.raises(KeyError) as ei:
-        C.get_siem_connector("qradar")
+        C.get_siem_connector("nonesuch_siem")
     assert "splunk" in str(ei.value)  # lists known names
 
 
@@ -181,6 +183,111 @@ def test_jira_missing_key_raises():
 
 
 # --------------------------------------------------------------------------- #
+# QRadar (AQL → events[])                                                     #
+# --------------------------------------------------------------------------- #
+def test_qradar_build_aql():
+    conn = C.get_siem_connector("qradar")
+    assert "SELECT * FROM events" in conn.build_request("*", "*")["body"]["query_expression"]
+    filt = conn.build_request("sourceip", "203.0.113.66")["body"]["query_expression"]
+    assert "sourceip = '203.0.113.66'" in filt
+
+
+def test_qradar_parse_events_envelope():
+    conn = C.get_siem_connector("qradar")
+    ev = conn.parse_response({"events": [
+        {"id": "a1", "severity": "critical", "rule": "Log4Shell", "host": "web-01",
+         "src": "203.0.113.66", "technique": "T1190"}]})
+    assert len(ev) == 1 and set(ev[0]) == set(NEUTRAL_EVENT_FIELDS)
+    assert ev[0]["alert_id"] == "a1" and ev[0]["src_ip"] == "203.0.113.66"
+
+
+def test_qradar_missing_events_raises():
+    with pytest.raises(ConnectorError):
+        C.get_siem_connector("qradar").parse_response({"data": []})
+
+
+def test_qradar_empty_events_is_empty_list():
+    assert C.get_siem_connector("qradar").parse_response({"events": []}) == []
+
+
+# --------------------------------------------------------------------------- #
+# Microsoft Sentinel (KQL → columnar tables[].columns/rows)                   #
+# --------------------------------------------------------------------------- #
+def test_sentinel_build_kql():
+    conn = C.get_siem_connector("microsoft_sentinel")
+    assert "SecurityAlert" in conn.build_request("*", "*")["body"]["query"]
+    filt = conn.build_request("Computer", "web-01")["body"]["query"]
+    assert 'Computer == "web-01"' in filt
+
+
+def test_sentinel_parses_columnar_rows():
+    """The columnar (columns+rows) shape must project to neutral events — the
+    framework-flexibility check (not a list of objects like the others)."""
+    conn = C.get_siem_connector("microsoft_sentinel")
+    reply = {"tables": [{
+        "columns": [{"name": "alert_id"}, {"name": "severity"}, {"name": "rule_name"},
+                    {"name": "host"}, {"name": "src_ip"}, {"name": "technique"}],
+        "rows": [
+            ["a1", "critical", "Log4Shell", "web-01", "203.0.113.66", "T1190"],
+            ["a2", "high", "SSH Brute Force", "bastion-01", "198.51.100.200", "T1110"],
+        ],
+    }]}
+    events = conn.parse_response(reply)
+    assert len(events) == 2
+    assert set(events[0]) == set(NEUTRAL_EVENT_FIELDS)
+    assert events[0]["alert_id"] == "a1" and events[0]["host"] == "web-01"
+    assert events[1]["src_ip"] == "198.51.100.200"
+
+
+def test_sentinel_accepts_bare_string_columns():
+    conn = C.get_siem_connector("microsoft_sentinel")
+    reply = {"tables": [{"columns": ["alert_id", "host"], "rows": [["a3", "db-01"]]}]}
+    ev = conn.parse_response(reply)
+    assert ev[0]["alert_id"] == "a3" and ev[0]["host"] == "db-01"
+
+
+def test_sentinel_empty_tables_is_empty_list():
+    assert C.get_siem_connector("microsoft_sentinel").parse_response({"tables": []}) == []
+
+
+def test_sentinel_missing_tables_raises():
+    with pytest.raises(ConnectorError):
+        C.get_siem_connector("microsoft_sentinel").parse_response({"rows": []})
+    with pytest.raises(ConnectorError):
+        # table without columns/rows
+        C.get_siem_connector("microsoft_sentinel").parse_response({"tables": [{"columns": []}]})
+
+
+# --------------------------------------------------------------------------- #
+# PagerDuty                                                                   #
+# --------------------------------------------------------------------------- #
+def test_pagerduty_build_incident():
+    conn = C.get_ticketing_connector("pagerduty")
+    req = conn.build_request({"title": "Log4Shell on web-01", "severity": "critical",
+                              "body": "exploit observed"})
+    assert req["path"] == "/incidents"
+    assert req["body"]["incident"]["urgency"] == "high"  # critical → high
+    assert req["body"]["incident"]["title"] == "Log4Shell on web-01"
+
+
+def test_pagerduty_medium_is_low_urgency():
+    req = C.get_ticketing_connector("pagerduty").build_request(
+        {"title": "noisy", "severity": "medium"})
+    assert req["body"]["incident"]["urgency"] == "low"
+
+
+def test_pagerduty_parse_incident():
+    res = C.get_ticketing_connector("pagerduty").parse_response(
+        {"incident": {"id": "PABC123", "status": "triggered", "html_url": "http://pd/PABC123"}})
+    assert res["ticket_id"] == "PABC123" and res["status"] == "triggered"
+
+
+def test_pagerduty_missing_incident_raises():
+    with pytest.raises(ConnectorError):
+        C.get_ticketing_connector("pagerduty").parse_response({"error": "bad"})
+
+
+# --------------------------------------------------------------------------- #
 # neutral_event contract + hygiene                                            #
 # --------------------------------------------------------------------------- #
 def test_neutral_event_defaults_all_fields():
@@ -274,9 +381,9 @@ def test_siem_tool_unknown_connector_is_upstream_error(monkeypatch):
     """A mis-set SIEM_QUERY_CONNECTOR fails loudly as upstream_error, not silently."""
     monkeypatch.setenv("SIEM_QUERY_LIVE", "1")
     monkeypatch.setenv("SIEM_QUERY_URL", "http://127.0.0.1:9/x")
-    monkeypatch.setenv("SIEM_QUERY_CONNECTOR", "qradar")
+    monkeypatch.setenv("SIEM_QUERY_CONNECTOR", "nonesuch_siem")
     mod = _load_siem_tool()
     out = mod.handler({"query": "*"}, None)
     assert out["ok"] is False
     assert out["error"] == "upstream_error"
-    assert "qradar" in out["message"]
+    assert "nonesuch_siem" in out["message"]
