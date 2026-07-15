@@ -331,7 +331,28 @@ def _fetch_live(key: str, value: str) -> List[Dict[str, Any]]:
     # never logged, never placed in an error message or the response.
     token = os.environ.get("SIEM_QUERY_TOKEN")
 
-    body = json.dumps({key: value}).encode("utf-8")
+    # Optional named connector: when SIEM_QUERY_CONNECTOR is set (splunk/elastic/
+    # opensearch), translate the neutral (key, value) query into the backend's
+    # native request body + URL path suffix, and later parse the native response
+    # envelope through the same connector. Unset => the generic {key: value} POST
+    # kept for backward compatibility. A bad connector name raises -> upstream_error.
+    connector = None
+    conn_name = os.environ.get("SIEM_QUERY_CONNECTOR")
+    if conn_name:
+        from sentinel_harness.connectors import get_siem_connector
+        try:
+            connector = get_siem_connector(conn_name)
+        except KeyError as exc:
+            raise RuntimeError(str(exc)) from exc
+        built = connector.build_request(key, value)
+        body = json.dumps(built["body"]).encode("utf-8")
+        if built.get("path"):
+            url = url.rstrip("/") + built["path"]
+            # Re-assert safety on the connector-rewritten URL (the path suffix
+            # cannot change host/scheme, but re-check so no code path skips the guard).
+            _assert_safe_url(url)
+    else:
+        body = json.dumps({key: value}).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -371,6 +392,19 @@ def _fetch_live(key: str, value: str) -> List[Dict[str, Any]]:
         raise RuntimeError(
             f"SIEM backend at {url!r} returned malformed JSON: {exc}"
         ) from exc
+
+    # When a connector is configured, it owns response parsing (it knows the
+    # backend's native envelope + field names). Its ConnectorError on a malformed
+    # reply is re-raised as an upstream_error, consistent with the generic path.
+    if connector is not None:
+        from sentinel_harness.connectors.base import ConnectorError
+        try:
+            events = connector.parse_response(data)
+        except ConnectorError as exc:
+            raise RuntimeError(
+                f"SIEM connector {conn_name!r} could not parse the reply from {url!r}: {exc}"
+            ) from exc
+        return sorted(events, key=lambda e: (e["ts"], e["alert_id"]))
 
     if isinstance(data, dict):
         records = data.get("events", [])
