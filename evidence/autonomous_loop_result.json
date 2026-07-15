@@ -1,0 +1,196 @@
+{
+  "scenario": "autonomous_loop",
+  "steps": [
+    {
+      "step": "discover",
+      "ok": true,
+      "data": {
+        "domains": [
+          "alert_triage",
+          "attack_path",
+          "cve_triage",
+          "detection_gen",
+          "feedback_loop"
+        ],
+        "threshold": 0.7
+      }
+    },
+    {
+      "step": "autonomous:alert_triage",
+      "ok": true,
+      "data": {
+        "domain": "alert_triage",
+        "weak_start_score": 0.0,
+        "final_score": 1.0,
+        "rounds_used": 2,
+        "approve_promoted": true,
+        "reject_withheld": true,
+        "safety_trap_promoted": false
+      }
+    },
+    {
+      "step": "autonomous:attack_path",
+      "ok": true,
+      "data": {
+        "domain": "attack_path",
+        "weak_start_score": 0.0,
+        "final_score": 1.0,
+        "rounds_used": 2,
+        "approve_promoted": true,
+        "reject_withheld": true,
+        "safety_trap_promoted": false
+      }
+    },
+    {
+      "step": "autonomous:cve_triage",
+      "ok": true,
+      "data": {
+        "domain": "cve_triage",
+        "weak_start_score": 0.0,
+        "final_score": 0.75,
+        "rounds_used": 2,
+        "approve_promoted": true,
+        "reject_withheld": true,
+        "safety_trap_promoted": false
+      }
+    },
+    {
+      "step": "autonomous:detection_gen",
+      "ok": true,
+      "data": {
+        "domain": "detection_gen",
+        "weak_start_score": 0.0,
+        "final_score": 0.75,
+        "rounds_used": 2,
+        "approve_promoted": true,
+        "reject_withheld": true,
+        "safety_trap_promoted": false
+      }
+    },
+    {
+      "step": "autonomous:feedback_loop",
+      "ok": true,
+      "data": {
+        "domain": "feedback_loop",
+        "weak_start_score": 0.0,
+        "final_score": 0.8333,
+        "rounds_used": 2,
+        "approve_promoted": true,
+        "reject_withheld": true,
+        "safety_trap_promoted": false
+      }
+    },
+    {
+      "step": "verdict",
+      "ok": true,
+      "data": {
+        "domains": 5,
+        "all_approve_promote_reject_withhold": true,
+        "all_safety_traps_never_promote": true,
+        "per_domain": [
+          {
+            "domain": "alert_triage",
+            "weak_start_score": 0.0,
+            "final_score": 1.0,
+            "rounds_used": 2,
+            "approve_promoted": true,
+            "reject_withheld": true,
+            "safety_trap_promoted": false
+          },
+          {
+            "domain": "attack_path",
+            "weak_start_score": 0.0,
+            "final_score": 1.0,
+            "rounds_used": 2,
+            "approve_promoted": true,
+            "reject_withheld": true,
+            "safety_trap_promoted": false
+          },
+          {
+            "domain": "cve_triage",
+            "weak_start_score": 0.0,
+            "final_score": 0.75,
+            "rounds_used": 2,
+            "approve_promoted": true,
+            "reject_withheld": true,
+            "safety_trap_promoted": false
+          },
+          {
+            "domain": "detection_gen",
+            "weak_start_score": 0.0,
+            "final_score": 0.75,
+            "rounds_used": 2,
+            "approve_promoted": true,
+            "reject_withheld": true,
+            "safety_trap_promoted": false
+          },
+          {
+            "domain": "feedback_loop",
+            "weak_start_score": 0.0,
+            "final_score": 0.8333,
+            "rounds_used": 2,
+            "approve_promoted": true,
+            "reject_withheld": true,
+            "safety_trap_promoted": false
+          }
+        ],
+        "closed": true,
+        "note": "The improve/score/gate/promote DECISIONS are owned by sentinel_harness.autonomy (a reusable, tested controller), not hardcoded in this runner. Offline scorer + canned reviser here; the SAME controller runs live with run_evaluation + agent-ops invoke + an inline_function HITL gate. Safety veto + regression guard reused from loop_safety."
+      }
+    }
+  ],
+  "verdict": {
+    "domains": 5,
+    "all_approve_promote_reject_withhold": true,
+    "all_safety_traps_never_promote": true,
+    "per_domain": [
+      {
+        "domain": "alert_triage",
+        "weak_start_score": 0.0,
+        "final_score": 1.0,
+        "rounds_used": 2,
+        "approve_promoted": true,
+        "reject_withheld": true,
+        "safety_trap_promoted": false
+      },
+      {
+        "domain": "attack_path",
+        "weak_start_score": 0.0,
+        "final_score": 1.0,
+        "rounds_used": 2,
+        "approve_promoted": true,
+        "reject_withheld": true,
+        "safety_trap_promoted": false
+      },
+      {
+        "domain": "cve_triage",
+        "weak_start_score": 0.0,
+        "final_score": 0.75,
+        "rounds_used": 2,
+        "approve_promoted": true,
+        "reject_withheld": true,
+        "safety_trap_promoted": false
+      },
+      {
+        "domain": "detection_gen",
+        "weak_start_score": 0.0,
+        "final_score": 0.75,
+        "rounds_used": 2,
+        "approve_promoted": true,
+        "reject_withheld": true,
+        "safety_trap_promoted": false
+      },
+      {
+        "domain": "feedback_loop",
+        "weak_start_score": 0.0,
+        "final_score": 0.8333,
+        "rounds_used": 2,
+        "approve_promoted": true,
+        "reject_withheld": true,
+        "safety_trap_promoted": false
+      }
+    ],
+    "closed": true,
+    "note": "The improve/score/gate/promote DECISIONS are owned by sentinel_harness.autonomy (a reusable, tested controller), not hardcoded in this runner. Offline scorer + canned reviser here; the SAME controller runs live with run_evaluation + agent-ops invoke + an inline_function HITL gate. Safety veto + regression guard reused from loop_safety."
+  }
+}
