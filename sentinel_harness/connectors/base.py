@@ -45,6 +45,24 @@ NEUTRAL_EVENT_FIELDS = (
     "src_ip", "dst_ip", "technique", "summary", "false_positive",
 )
 
+# String tokens a backend uses for a truthy boolean. Real SIEMs commonly
+# JSON-serialize booleans as strings, and `bool("false")` is True (any non-empty
+# string is truthy) — so a naive bool() would flip a genuine alert to a false
+# positive and it might be dropped. Only these tokens (case-insensitive) are True.
+_TRUE_TOKENS = frozenset({"true", "1", "yes", "y", "t"})
+
+
+def _coerce_bool(value: Any) -> bool:
+    """Coerce a backend truthiness value to bool WITHOUT the string-truthiness trap.
+
+    ``True``/``1`` → True; a string is True only if it is a recognized true token
+    ("true"/"1"/"yes"…), so the common string ``"false"``/``"0"`` correctly maps to
+    False (audited: bool("false") is True). Anything else falls back to Python
+    truthiness for non-string values only."""
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUE_TOKENS
+    return bool(value)
+
 
 def neutral_event(record: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce a partially-mapped record into the full neutral 10-field event.
@@ -64,7 +82,7 @@ def neutral_event(record: Dict[str, Any]) -> Dict[str, Any]:
         "dst_ip": record.get("dst_ip"),
         "technique": record.get("technique", ""),
         "summary": record.get("summary", record.get("raw_summary", "")),
-        "false_positive": bool(record.get("false_positive", False)),
+        "false_positive": _coerce_bool(record.get("false_positive", False)),
     }
 
 

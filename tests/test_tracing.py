@@ -190,3 +190,24 @@ def test_offline_path_needs_no_opentelemetry(monkeypatch):
     with tr.span("a"):  # must not touch opentelemetry
         pass
     assert tr.spans[0].status == T.STATUS_OK
+
+
+# --------------------------------------------------------------------------- #
+# regression: audited tracing determinism + JSON-ability findings             #
+# --------------------------------------------------------------------------- #
+def test_set_attribute_is_deterministic_and_sorted():
+    tr = T.Tracer("x", log=lambda line: None)
+    with tr.span("a", tags={"z", "a", "m"}):
+        pass
+    assert tr.spans[0].attributes["tags"] == ["a", "m", "z"]  # sorted, deterministic
+
+
+def test_trace_to_dict_json_able_with_nonprimitive_attr():
+    import datetime
+    import json
+    tr = T.Tracer("x", log=lambda line: None)
+    with tr.span("a", ts=datetime.datetime(2020, 1, 1), obj=object()):
+        pass
+    d = tr.trace_to_dict()
+    json.dumps(d)  # must NOT raise (non-primitive attrs str-coerced)
+    assert isinstance(d["spans"][0]["attributes"]["ts"], str)

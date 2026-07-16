@@ -387,3 +387,61 @@ def test_siem_tool_unknown_connector_is_upstream_error(monkeypatch):
     assert out["ok"] is False
     assert out["error"] == "upstream_error"
     assert "nonesuch_siem" in out["message"]
+
+
+# --------------------------------------------------------------------------- #
+# regression: audited MEDIUM/LOW connector findings                           #
+# --------------------------------------------------------------------------- #
+def test_deeply_nested_dict_never_lands_in_scalar_field():
+    """A doubly-nested object (host.name.fqdn) must not put a dict in ev['host']."""
+    es = C.get_siem_connector("elastic")
+    ev = es.parse_response({"hits": {"hits": [
+        {"_source": {"host": {"name": {"fqdn": "web-01"}}, "alert_id": "a",
+                     "severity": "high", "rule": "R", "technique": "T1190"}}]}})
+    assert ev[0]["host"] == ""  # rejected, not the nested dict
+
+
+def test_ms_sentinel_row_col_mismatch_raises():
+    ms = C.get_siem_connector("microsoft_sentinel")
+    with pytest.raises(ConnectorError):
+        ms.parse_response({"tables": [{"columns": [{"name": "alert_id"}, {"name": "host"}],
+                                       "rows": [["a1"]]}]})  # 2 cols, 1 value
+    with pytest.raises(ConnectorError):
+        ms.parse_response({"tables": [{"columns": [{"name": "alert_id"}],
+                                       "rows": [["a1", "extra"]]}]})  # 1 col, 2 values
+
+
+def test_string_false_positive_not_flipped_true():
+    from sentinel_harness.connectors.base import neutral_event
+    assert neutral_event({"false_positive": "false"})["false_positive"] is False
+    assert neutral_event({"false_positive": "0"})["false_positive"] is False
+    assert neutral_event({"false_positive": "true"})["false_positive"] is True
+    assert neutral_event({"fp": "yes"})["false_positive"] is False  # 'fp' not a neutral key
+    # via the real map path (fp candidate)
+    from sentinel_harness.connectors.siem import _map_record
+    assert _map_record({"alert_id": "x", "fp": "0"})["false_positive"] is False
+
+
+def test_string_related_alert_ids_not_char_split():
+    sn = C.get_ticketing_connector("servicenow")
+    req = sn.build_request({"title": "t", "severity": "high", "related_alert_ids": "alert-1001"})
+    assert req["body"]["correlation_id"] == "alert-1001"  # not 'a,l,e,r,t,...'
+    jira = C.get_ticketing_connector("jira")
+    jreq = jira.build_request({"title": "t", "severity": "high", "related_alert_ids": "alert-1001"})
+    assert "alert-1001" in jreq["body"]["fields"]["labels"]
+
+
+def test_bad_related_alert_ids_type_raises():
+    with pytest.raises(ConnectorError):
+        C.get_ticketing_connector("servicenow").build_request(
+            {"title": "t", "related_alert_ids": 12345})
+
+
+@pytest.mark.parametrize("name", ["splunk", "qradar", "microsoft_sentinel"])
+def test_dsl_injection_is_escaped(name):
+    """A value with the DSL delimiter cannot break out of the quoted literal."""
+    conn = C.get_siem_connector(name)
+    body = conn.build_request("field", 'x" OR 1=1 | drop')["body"]
+    dsl = body.get("search") or body.get("query_expression") or body.get("query")
+    # the raw unescaped delimiter sequence must not appear outside an escaped form
+    assert '" OR 1=1 | drop"' not in dsl or "\\" in dsl

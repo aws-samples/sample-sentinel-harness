@@ -40,6 +40,23 @@ def _require_title(request: Dict[str, Any]) -> str:
     return title
 
 
+def _related_ids(request: Dict[str, Any]) -> list:
+    """Return related_alert_ids as a list of strings, tolerating a bare string.
+
+    A bare string ``"alert-1001"`` must become ``["alert-1001"]``, NOT be iterated
+    char-by-char (audited: ``','.join(...)`` / list-comp over a string produced
+    'a,l,e,r,t,...' garbage, corrupting the ServiceNow correlation_id de-dupe key
+    and Jira labels). A non-str/non-list value raises ConnectorError."""
+    raw = request.get("related_alert_ids")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, (list, tuple)):
+        return [str(a) for a in raw]
+    raise ConnectorError("related_alert_ids must be a string or a list of ids")
+
+
 class ServiceNowConnector:
     """ServiceNow connector — creates an incident on the ``incident`` table.
 
@@ -55,7 +72,7 @@ class ServiceNowConnector:
         title = _require_title(request)
         sev = str(request.get("severity", "medium")).lower()
         urgency = _SN_URGENCY.get(sev, "2")
-        related = request.get("related_alert_ids") or []
+        related = _related_ids(request)
         body = {
             "short_description": title,
             "urgency": urgency,
@@ -94,7 +111,7 @@ class JiraConnector:
     def build_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         title = _require_title(request)
         sev = str(request.get("severity", "medium")).lower()
-        related = request.get("related_alert_ids") or []
+        related = _related_ids(request)
         fields = {
             "summary": title,
             "priority": {"name": _JIRA_PRIORITY.get(sev, "Medium")},

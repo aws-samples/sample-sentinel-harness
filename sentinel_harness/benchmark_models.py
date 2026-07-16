@@ -134,12 +134,24 @@ class Workload:
 
     ``invokes_per_month`` × (``input_tokens`` + ``output_tokens``) per invoke is
     the token volume; the same shape drives per-invoke compute for the managed
-    mode. ``name`` is a human label for the report header."""
+    mode. ``name`` is a human label for the report header.
+
+    All three numeric fields must be NON-NEGATIVE. A negative sizing produces
+    negative-dollar / negative-percent nonsense (baseline=max of negatives flips
+    the savings math), so it is rejected at construction (audited)."""
 
     name: str
     invokes_per_month: int
     input_tokens: int
     output_tokens: int
+
+    def __post_init__(self) -> None:
+        for field_name in ("invokes_per_month", "input_tokens", "output_tokens"):
+            val = getattr(self, field_name)
+            if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+                raise ValueError(
+                    f"Workload.{field_name} must be a non-negative int, got {val!r}"
+                )
 
 
 # A generic, bursty SecOps default: ~200 triage-style invokes/day.

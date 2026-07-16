@@ -222,18 +222,37 @@ _EDGES: List[Dict[str, str]] = [
 ]
 
 
+def _entry_hosts() -> list:
+    """Hosts that are a valid attack ENTRY: internet-exposed AND running a
+    known-vuln service. Mirrors the reasoner's entry criterion."""
+    return [
+        h for h in _HOSTS
+        if h["internet_exposed"] and any(s["known_vuln"] for s in h["services"])
+    ]
+
+
 def _validate_world() -> None:
     """Fail loudly at import if the planted data is internally inconsistent.
 
-    Guards the invariants the eval cases + tests rely on: every edge endpoint is a
-    real host, and every planted chain actually starts at a valid entry node
-    (internet-exposed AND running a known-vuln service). Cheap, deterministic,
-    runs once at import."""
+    Guards the invariants the eval cases + tests rely on:
+      1. every trust-edge endpoint is a real host;
+      2. at least one valid ATTACK ENTRY node exists (internet-exposed AND running
+         a known-vuln service) — otherwise the attack-path world has no foothold
+         and the reasoner would yield zero chains, silently breaking the
+         attack_path eval domain. (The named chain library lives in campaign.py;
+         this guard validates the topology's entry-node viability, which those
+         chains depend on.)
+    Cheap, deterministic, runs once at import."""
     for e in _EDGES:
         if e["src"] not in _HOST_IDS:
             raise ValueError(f"edge src {e['src']!r} is not a known host")
         if e["dst"] not in _HOST_IDS:
             raise ValueError(f"edge dst {e['dst']!r} is not a known host")
+    if not _entry_hosts():
+        raise ValueError(
+            "no valid attack entry node (internet-exposed + known-vuln) — the "
+            "attack-path world would have no foothold"
+        )
 
 
 _validate_world()
@@ -251,12 +270,20 @@ def load_enterprise() -> Dict[str, Any]:
 
 
 def _host_in_subnet(host: Dict[str, Any], cidr: str) -> bool:
-    """True iff the host's subnet is inside (or equal to) the queried CIDR."""
+    """True iff the host's subnet is inside (or equal to) the queried CIDR.
+
+    Returns False (never raises) for an unparseable CIDR OR a version mismatch:
+    an IPv6 query against the IPv4 internal subnets is simply "no match", not an
+    error — ``subnet_of`` across IP versions raises TypeError, so we short-circuit
+    on differing versions before comparing (audited: an IPv6 CIDR query escaped
+    ``exposure_surface``'s never-raises contract)."""
     try:
         want = ipaddress.ip_network(cidr, strict=False)
         have = ipaddress.ip_network(host["subnet"], strict=False)
     except ValueError:
         return False
+    if want.version != have.version:
+        return False  # cross-version comparison is a non-match, not a TypeError
     return have.subnet_of(want) or have == want
 
 

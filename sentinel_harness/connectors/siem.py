@@ -61,14 +61,15 @@ def _lookup(record: Dict[str, Any], key: str) -> Any:
     common in flattened Splunk/ECS exports) AND a NESTED path
     (``{"host": {"name": "x"}}``, common in raw ES ``_source``).
 
-    Tries the literal key first, then the nested walk. A nested value that is
-    itself a dict (e.g. matching ``host`` when only ``host.name`` is meaningful)
+    Tries the literal key first, then the nested walk. A resolved value that is
+    itself a dict (from EITHER branch — e.g. a doubly-nested ``host.name.fqdn``)
     is rejected so a bare object never lands in a scalar neutral field."""
     if key in record:
         val = record[key]
         return None if isinstance(val, dict) else val
     if "." in key:
-        return _dig(record, key)
+        val = _dig(record, key)
+        return None if isinstance(val, dict) else val  # guard the nested branch too
     return None
 
 
@@ -259,7 +260,15 @@ class MicrosoftSentinelConnector:
         for row in rows:
             if not isinstance(row, list):
                 raise ConnectorError("Microsoft Sentinel row must be a list of values")
+            # A row must line up with the columns; a length mismatch is a corrupt
+            # table, not a partial event — raise rather than silently dropping/
+            # defaulting columns (audited: silent partial-event acceptance).
+            if len(row) != len(col_names):
+                raise ConnectorError(
+                    f"Microsoft Sentinel row/column length mismatch: "
+                    f"{len(row)} values vs {len(col_names)} columns"
+                )
             # zip row values to column names → a record dict → neutral event.
-            record = {name: row[i] for i, name in enumerate(col_names) if name and i < len(row)}
+            record = {name: row[i] for i, name in enumerate(col_names) if name}
             out.append(_map_record(record))
         return out

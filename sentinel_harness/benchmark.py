@@ -168,8 +168,12 @@ def run_benchmark(workload: Workload, model_id: str) -> BenchmarkReport:
         model_usd = model_cost_usd(workload, model_id)
         compute_usd = compute_cost_usd(workload, mode)
         # Round the parts first, then sum the ROUNDED parts for the total, so
-        # model_usd + compute_usd == total_usd exactly (independently rounding the
-        # sum can drift by a cent for tiny values — a property test caught this).
+        # model_usd + compute_usd == total_usd to 2-decimal (cent) precision
+        # (independently rounding the sum can drift by a cent — a property test
+        # caught that). NOTE: these are IEEE-754 floats, so exact `==` on the
+        # stored parts vs the stored total is NOT guaranteed (0.06 may store as
+        # 0.060000000000000005); compare with a cent tolerance / round(...,2),
+        # not bare ==. The dollar figures are correct to the cent.
         model_r = round(model_usd, 2)
         compute_r = round(compute_usd, 2)
         results.append(

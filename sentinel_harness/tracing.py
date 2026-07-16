@@ -82,6 +82,33 @@ def _hex_id(seed: str, width: int) -> str:
     return h[:width]
 
 
+def _json_safe(value: Any) -> Any:
+    """Coerce one attribute value into a JSON-serializable, DETERMINISTIC form.
+
+    Fixes two audited issues at once:
+      - a ``set``/``frozenset`` is emitted with unordered iteration → non-repeatable
+        output (PYTHONHASHSEED-dependent); we sort it to a list;
+      - a non-JSON-primitive (datetime, custom object) made ``trace_to_dict``
+        raise on ``json.dumps`` even though ``_emit`` tolerated it via default=str;
+        we str-coerce it here so BOTH paths are JSON-able and identical.
+    Primitives (str/int/float/bool/None) pass through; lists/tuples and dict values
+    are coerced element-wise (recursively)."""
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (set, frozenset)):
+        return sorted(_json_safe(v) for v in value)
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
+    return str(value)  # datetime / arbitrary object → stable string
+
+
+def _json_safe_attrs(attributes: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce a whole attribute dict to JSON-safe, deterministic values."""
+    return {k: _json_safe(v) for k, v in attributes.items()}
+
+
 @dataclass
 class SpanRecord:
     """One emitted span (the auditable record + the OTEL/GenAI line source)."""
@@ -145,7 +172,7 @@ class Tracer:
         span_id = self._next_span_id(name)
         record = SpanRecord(
             name=name, trace_id=self.trace_id, span_id=span_id,
-            parent_span_id=parent, attributes=dict(attributes),
+            parent_span_id=parent, attributes=_json_safe_attrs(attributes),
         )
         self._stack.append(span_id)
         self.spans.append(record)

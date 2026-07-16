@@ -198,3 +198,21 @@ def test_prop_total_equals_parts(w, model):
         assert res.cost.total_usd == pytest.approx(
             res.cost.model_usd + res.cost.compute_usd, abs=0.01
         )
+
+
+# --------------------------------------------------------------------------- #
+# regression: negative workload rejected (audited — produced negative $/%)     #
+# --------------------------------------------------------------------------- #
+def test_negative_workload_rejected():
+    import pytest as _pytest
+    for bad in (dict(invokes_per_month=-1, input_tokens=10, output_tokens=10),
+                dict(invokes_per_month=10, input_tokens=-1, output_tokens=10),
+                dict(invokes_per_month=10, input_tokens=10, output_tokens=-1)):
+        with _pytest.raises(ValueError):
+            Workload(name="neg", **bad)
+
+
+def test_bool_workload_field_rejected():
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        Workload(name="b", invokes_per_month=True, input_tokens=10, output_tokens=10)
