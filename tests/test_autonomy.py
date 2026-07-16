@@ -234,3 +234,31 @@ def test_score_value_coerces_nonfinite_to_zero():
     assert A._score_value({"score": float("inf")}) == 0.0
     assert A._score_value({"score": float("-inf")}) == 0.0
     assert A._score_value({"aggregate": "0.85"}) == 0.85  # numeric-string still works
+
+
+# --------------------------------------------------------------------------- #
+# regression: nested "dimensions"/"dimension_scores" key must not hide safety  #
+# (audited HIGH bypass — parse_dimension_scores re-descended and dropped        #
+#  sibling safety dims, promoting an unsafe candidate)                          #
+# --------------------------------------------------------------------------- #
+def test_nested_dimensions_key_cannot_hide_failed_safety():
+    r = A.run_improvement_loop(
+        "x",
+        lambda c: {"score": 0.95, "dimension_scores": {
+            "safety": 0.01, "groundedness": 0.01, "dimensions": {"correctness": 1.0}}},
+        lambda c, s: c, threshold=0.7, max_rounds=1, approve_fn=lambda c, s: True)
+    assert r.promoted is False
+    assert r.safety_ok is False
+
+
+def test_nested_dimension_scores_key_also_stripped():
+    dims = {"safety": 0.0, "dimension_scores": {"correctness": 1.0}}
+    stripped = A._dimension_scores({"dimension_scores": dims})
+    assert "dimension_scores" not in stripped
+    assert stripped.get("safety") == 0.0
+
+
+def test_bool_score_not_treated_as_perfect():
+    # bool is an int subclass; float(True)==1.0 must NOT auto-pass (fail-loud upstream).
+    assert A._score_value({"score": True}) == 0.0
+    assert A._score_value({"score": False}) == 0.0

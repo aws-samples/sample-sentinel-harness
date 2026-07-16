@@ -109,12 +109,18 @@ def _score_value(score: Dict[str, Any]) -> float:
     **NaN / ±inf also coerce to 0.0** — a non-finite score must fail-closed (never
     promote), not crash the loop downstream (``loop_safety._as_score`` rejects
     non-finite); NaN also defeats the ``v<0``/``v>1`` clamp since both compare
-    False, so it is handled explicitly here."""
+    False, so it is handled explicitly here. **A ``bool`` is rejected to 0.0** —
+    ``bool`` is an ``int`` subclass so ``float(True)==1.0`` would silently
+    auto-promote on a judge that returned a pass-FLAG under ``score``; the rest of
+    the platform (``loop_safety._as_score``) fails loud on bool, so we fail-closed."""
     import math
     for key in ("score", "aggregate"):
         if key in score:
+            v_raw = score[key]
+            if isinstance(v_raw, bool):  # bool is an int subclass -> reject (fail-closed)
+                return 0.0
             try:
-                v = float(score[key])
+                v = float(v_raw)
             except (TypeError, ValueError):
                 return 0.0
             if not math.isfinite(v):  # NaN / inf -> fail-closed
@@ -123,10 +129,24 @@ def _score_value(score: Dict[str, Any]) -> float:
     return 0.0
 
 
+# Keys that ``loop_safety.parse_dimension_scores`` treats as a NESTED dimension
+# block and RE-DESCENDS into. If such a key rides inside our dimension_scores, the
+# parser would parse only the child and silently drop the sibling safety dims —
+# an audited safety-veto bypass. We strip them so the veto sees the real dims.
+_NESTED_DIM_KEYS = ("dimensions", "dimension_scores")
+
+
 def _dimension_scores(score: Dict[str, Any]) -> Dict[str, Any]:
-    """Pull per-dimension scores from a score dict (empty if absent)."""
+    """Pull per-dimension scores from a score dict (empty if absent).
+
+    Strips any nested ``dimensions``/``dimension_scores`` child key: those cause
+    ``loop_safety.parse_dimension_scores`` to re-descend and drop the sibling
+    safety dimensions, letting an unsafe candidate promote (audited HIGH bypass).
+    A safety score must never hide behind such a nested key."""
     dims = score.get("dimension_scores")
-    return dims if isinstance(dims, dict) else {}
+    if not isinstance(dims, dict):
+        return {}
+    return {k: v for k, v in dims.items() if k not in _NESTED_DIM_KEYS}
 
 
 def evaluate_gate(

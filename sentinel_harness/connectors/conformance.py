@@ -95,11 +95,24 @@ class ConformanceResult:
     failures: List[str] = field(default_factory=list)  # human-readable failures
 
 
+# Sentinel meaning "no sample native reply is available to certify parsing with"
+# (distinct from a connector legitimately returning None). Used so the parse check
+# FAILS loudly instead of silently calling parse_response(None) against a sample
+# that never existed (audited: a third-party connector with no sample_response and
+# no built-in fixture would otherwise be certified on a vacuous check).
+_NO_SAMPLE = object()
+
+
 def _sample_for(connector: Any, table: Dict[str, Any]) -> Any:
-    """Return a connector's own sample_response() if provided, else the built-in."""
+    """Return a connector's own ``sample_response()`` if provided, else the built-in
+    fixture for its name, else :data:`_NO_SAMPLE`.
+
+    Callers MUST treat ``_NO_SAMPLE`` as a certification failure (cannot validate
+    parsing without a sample) rather than passing it to ``parse_response``."""
     if hasattr(connector, "sample_response"):
         return connector.sample_response()
-    return table.get(getattr(connector, "name", ""))
+    name = getattr(connector, "name", "")
+    return table[name] if name in table else _NO_SAMPLE
 
 
 def _record(res: ConformanceResult, name: str, ok: bool, detail: str = "") -> None:
@@ -138,9 +151,14 @@ def check_siem_connector(connector: Any) -> ConformanceResult:
     except Exception as exc:  # noqa: BLE001 — record, don't abort
         _record(res, "build_request_shape", False, str(exc))
 
-    # parse_response: own sample -> list of neutral events
-    sample = _sample_for(connector, _SIEM_SAMPLES)
+    # parse_response: own sample -> list of neutral events. The _sample_for call is
+    # INSIDE the try so a throwing/absent/non-callable sample_response is recorded
+    # as a failure, never propagated (audited: it must "never raise").
     try:
+        sample = _sample_for(connector, _SIEM_SAMPLES)
+        if sample is _NO_SAMPLE:
+            raise AssertionError(
+                "no sample_response() and no built-in fixture; cannot certify parsing")
         events = connector.parse_response(sample)
         assert isinstance(events, list) and events, "must return a non-empty list for the sample"
         for ev in events:
@@ -152,17 +170,35 @@ def check_siem_connector(connector: Any) -> ConformanceResult:
     except Exception as exc:  # noqa: BLE001
         _record(res, "parse_sample_to_neutral", False, str(exc))
 
-    # malformed envelope -> ConnectorError (not a bare list, not swallowed)
-    try:
-        connector.parse_response(_FOREIGN_ENVELOPE)
-        _record(res, "rejects_foreign_envelope", False,
-                "parse_response accepted a foreign envelope (should raise ConnectorError)")
-    except ConnectorError:
-        _record(res, "rejects_foreign_envelope", True)
-    except Exception as exc:  # noqa: BLE001 — wrong exception type is still a miss
-        _record(res, "rejects_foreign_envelope", False,
-                f"raised {type(exc).__name__}, expected ConnectorError")
+    # malformed envelopes -> ConnectorError for EACH of several shapes (not just one
+    # dict). A connector that rejects the fixed dict but returns [] for junk
+    # list/str/None still swallows a broken reply — audited. Require ConnectorError
+    # for every probe.
+    _record_foreign_envelope_check(res, connector)
     return res
+
+
+def _record_foreign_envelope_check(res: ConformanceResult, connector: Any) -> None:
+    """Assert parse_response raises ConnectorError for EVERY malformed probe shape.
+
+    Shared by the SIEM + ticketing checks. A connector must never mistake a junk
+    backend reply (dict / bare list / string / None / int) for 'zero events'. All
+    probes must raise ConnectorError; the first that is accepted (or raises the
+    wrong type) fails the check."""
+    for probe in (_FOREIGN_ENVELOPE, [1, 2, 3], "not json", None, 42):
+        try:
+            connector.parse_response(probe)
+        except ConnectorError:
+            continue  # correct: this probe was rejected
+        except Exception as exc:  # noqa: BLE001 — wrong exception type is still a miss
+            _record(res, "rejects_foreign_envelope", False,
+                    f"probe {probe!r}: raised {type(exc).__name__}, expected ConnectorError")
+            return
+        else:
+            _record(res, "rejects_foreign_envelope", False,
+                    f"probe {probe!r}: accepted (should raise ConnectorError)")
+            return
+    _record(res, "rejects_foreign_envelope", True)
 
 
 def check_ticketing_connector(connector: Any) -> ConformanceResult:
@@ -199,9 +235,14 @@ def check_ticketing_connector(connector: Any) -> ConformanceResult:
     except Exception as exc:  # noqa: BLE001
         _record(res, "rejects_titleless", False, f"raised {type(exc).__name__}")
 
-    # parse_response of own sample -> {ticket_id, status, url}, non-empty id
-    sample = _sample_for(connector, _TICKETING_SAMPLES)
+    # parse_response of own sample -> {ticket_id, status, url}, non-empty id. The
+    # _sample_for call is INSIDE the try so a throwing/absent sample_response is a
+    # recorded failure, never propagated.
     try:
+        sample = _sample_for(connector, _TICKETING_SAMPLES)
+        if sample is _NO_SAMPLE:
+            raise AssertionError(
+                "no sample_response() and no built-in fixture; cannot certify parsing")
         result = connector.parse_response(sample)
         assert isinstance(result, dict), "result must be a dict"
         assert {"ticket_id", "status", "url"} <= set(result), "missing neutral result keys"
@@ -210,14 +251,8 @@ def check_ticketing_connector(connector: Any) -> ConformanceResult:
     except Exception as exc:  # noqa: BLE001
         _record(res, "parse_sample_result", False, str(exc))
 
-    # malformed reply -> ConnectorError
-    try:
-        connector.parse_response(_FOREIGN_ENVELOPE)
-        _record(res, "rejects_foreign_envelope", False, "accepted a foreign reply")
-    except ConnectorError:
-        _record(res, "rejects_foreign_envelope", True)
-    except Exception as exc:  # noqa: BLE001
-        _record(res, "rejects_foreign_envelope", False, f"raised {type(exc).__name__}")
+    # malformed replies -> ConnectorError for EVERY probe shape (dict/list/str/None/int)
+    _record_foreign_envelope_check(res, connector)
     return res
 
 
@@ -226,10 +261,23 @@ def certify_all(get_siem, get_ticketing, siem_names, ticketing_names) -> Dict[st
 
     Parameters are the registry accessors + name lists (injected so this stays
     import-cycle-free and reusable by third parties over their own registry).
-    Returns ``{name: ConformanceResult}``."""
+    Returns ``{name: ConformanceResult}``.
+
+    Each connector is certified independently: if resolving or certifying one
+    connector RAISES (a broken registry entry, a check that leaks an exception),
+    it is recorded as a failed result and the run CONTINUES — one bad connector
+    can never abort certification of the rest (audited)."""
     out: Dict[str, ConformanceResult] = {}
-    for n in siem_names:
-        out[n] = check_siem_connector(get_siem(n))
-    for n in ticketing_names:
-        out[n] = check_ticketing_connector(get_ticketing(n))
+    for kind, names, getter, check in (
+        ("siem", siem_names, get_siem, check_siem_connector),
+        ("ticketing", ticketing_names, get_ticketing, check_ticketing_connector),
+    ):
+        for n in names:
+            try:
+                out[n] = check(getter(n))
+            except Exception as exc:  # noqa: BLE001 — isolate a broken connector, keep going
+                res = ConformanceResult(name=n, kind=kind, ok=False)
+                _record(res, "certification_ran", False,
+                        f"resolving/certifying raised {type(exc).__name__}: {exc}")
+                out[n] = res
     return out

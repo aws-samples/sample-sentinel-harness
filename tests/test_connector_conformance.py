@@ -149,3 +149,83 @@ class _ThirdPartySiem:
 def test_third_party_connector_self_certifies_via_sample_response():
     res = K.check_siem_connector(_ThirdPartySiem())
     assert res.ok, f"third-party connector should be conformant: {res.failures}"
+
+
+# --------------------------------------------------------------------------- #
+# regression: audited conformance-kit weaknesses                              #
+# --------------------------------------------------------------------------- #
+class _SwallowsJunkSiem:
+    """Rejects the fixed dict probe but returns [] for junk list/str/None — the
+    swallowed-error case the single-probe check missed."""
+    name = "swallows_junk"
+
+    def build_request(self, s, v):
+        return {"body": {}, "path": ""}
+
+    def parse_response(self, p):
+        from sentinel_harness.connectors.base import ConnectorError, neutral_event
+        if isinstance(p, dict) and "results" in p:
+            return [neutral_event({"alert_id": "x"})]
+        if isinstance(p, dict):
+            raise ConnectorError("bad dict")  # rejects the fixed dict probe
+        return []  # BUT swallows non-dict junk
+
+    def sample_response(self):
+        return {"results": [{}]}
+
+
+def test_kit_bites_connector_that_swallows_nondict_junk():
+    res = K.check_siem_connector(_SwallowsJunkSiem())
+    assert res.ok is False
+    assert any("rejects_foreign_envelope" in f for f in res.failures)
+
+
+class _ThrowingSample:
+    name = "throws_sample"
+
+    def build_request(self, s, v):
+        return {"body": {}, "path": ""}
+
+    def parse_response(self, p):
+        from sentinel_harness.connectors.base import ConnectorError
+        raise ConnectorError("x")
+
+    def sample_response(self):
+        raise RuntimeError("kaboom")
+
+
+def test_kit_never_raises_on_throwing_sample_response():
+    # Must be recorded as a failure, not propagated (the 'never raises' guarantee).
+    res = K.check_siem_connector(_ThrowingSample())
+    assert res.ok is False
+    assert any("parse_sample" in f for f in res.failures)
+
+
+class _NoSampleSiem:
+    name = "ghost_no_sample"  # not in the built-in table, no sample_response
+
+    def build_request(self, s, v):
+        return {"body": {}, "path": ""}
+
+    def parse_response(self, p):
+        from sentinel_harness.connectors.base import ConnectorError, neutral_event
+        if not isinstance(p, dict):
+            raise ConnectorError("x")
+        return [neutral_event({"alert_id": "z"})]  # would fabricate for None too
+
+
+def test_kit_fails_when_no_sample_available():
+    # No sample_response() and no built-in fixture → parse cannot be certified.
+    res = K.check_siem_connector(_NoSampleSiem())
+    assert res.ok is False
+    assert any("parse_sample_to_neutral" in f for f in res.failures)
+
+
+def test_certify_all_isolates_a_raising_getter():
+    def bad_getter(n):
+        raise KeyError("boom")
+    results = K.certify_all(bad_getter, C.get_ticketing_connector,
+                            ["ghost"], C.available_ticketing_connectors())
+    assert "ghost" in results and results["ghost"].ok is False
+    # the good ticketing connectors still got certified
+    assert results["servicenow"].ok is True
