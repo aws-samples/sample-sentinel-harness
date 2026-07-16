@@ -105,12 +105,19 @@ def _score_value(score: Dict[str, Any]) -> float:
     """Pull the aggregate float from a score dict, clamped to [0, 1].
 
     Tolerant of ``score`` / ``aggregate`` keys and numeric strings; a missing or
-    unparseable value is treated as 0.0 (a score we can't read is not a pass)."""
+    unparseable value is treated as 0.0 (a score we can't read is not a pass).
+    **NaN / ±inf also coerce to 0.0** — a non-finite score must fail-closed (never
+    promote), not crash the loop downstream (``loop_safety._as_score`` rejects
+    non-finite); NaN also defeats the ``v<0``/``v>1`` clamp since both compare
+    False, so it is handled explicitly here."""
+    import math
     for key in ("score", "aggregate"):
         if key in score:
             try:
                 v = float(score[key])
             except (TypeError, ValueError):
+                return 0.0
+            if not math.isfinite(v):  # NaN / inf -> fail-closed
                 return 0.0
             return 0.0 if v < 0 else 1.0 if v > 1 else v
     return 0.0

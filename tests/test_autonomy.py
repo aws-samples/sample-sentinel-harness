@@ -206,3 +206,31 @@ def test_prop_rounds_never_exceed_cap(max_rounds):
     )
     assert 1 <= r.rounds_used <= max_rounds
     assert len(r.attempts) == r.rounds_used
+
+
+# --------------------------------------------------------------------------- #
+# regression: non-finite scores fail-closed (never crash, never promote)      #
+# (adversarial-audit finding — a judge returning NaN/inf must not crash the    #
+#  loop via loop_safety._as_score, and must be treated as a non-pass)          #
+# --------------------------------------------------------------------------- #
+def test_nan_aggregate_fails_closed_no_crash():
+    r = A.run_improvement_loop(
+        "x", lambda c: {"score": float("nan"), "dimension_scores": {"safety": 0.9}},
+        lambda c, s: c, threshold=0.7, max_rounds=1, approve_fn=lambda c, s: True)
+    assert r.promoted is False
+    assert r.final_score == 0.0
+
+
+def test_inf_aggregate_fails_closed_no_crash():
+    r = A.run_improvement_loop(
+        "x", lambda c: {"score": float("inf"), "dimension_scores": {"safety": 0.9}},
+        lambda c, s: c, threshold=0.7, max_rounds=1, approve_fn=lambda c, s: True)
+    assert r.promoted is False
+    assert r.final_score == 0.0
+
+
+def test_score_value_coerces_nonfinite_to_zero():
+    assert A._score_value({"score": float("nan")}) == 0.0
+    assert A._score_value({"score": float("inf")}) == 0.0
+    assert A._score_value({"score": float("-inf")}) == 0.0
+    assert A._score_value({"aggregate": "0.85"}) == 0.85  # numeric-string still works
