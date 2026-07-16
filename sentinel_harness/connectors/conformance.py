@@ -72,6 +72,15 @@ _SIEM_SAMPLES: Dict[str, Any] = {
         "columns": [{"name": "alert_id"}, {"name": "severity"}, {"name": "host"},
                     {"name": "src_ip"}, {"name": "technique"}],
         "rows": [["m1", "high", "web-01", "203.0.113.66", "T1190"]]}]},
+    "chronicle": {"events": [
+        {"udm": {"alert_id": "c1", "severity": "high", "rule": "R", "host": "web-01",
+                 "src_ip": "203.0.113.66", "technique": "T1190"}}]},
+    "sumologic": {"messages": [
+        {"map": {"alert_id": "su1", "severity": "high", "rule": "R", "host": "web-01",
+                 "src_ip": "203.0.113.66", "technique": "T1190"}}]},
+    "datadog": {"data": [
+        {"attributes": {"alert_id": "dd1", "severity": "high", "rule": "R",
+                        "host": "web-01", "src_ip": "203.0.113.66", "technique": "T1190"}}]},
 }
 
 _TICKETING_SAMPLES: Dict[str, Any] = {

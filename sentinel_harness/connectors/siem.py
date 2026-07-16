@@ -272,3 +272,113 @@ class MicrosoftSentinelConnector:
             record = {name: row[i] for i, name in enumerate(col_names) if name}
             out.append(_map_record(record))
         return out
+
+
+# --------------------------------------------------------------------------- #
+# Google Chronicle / SecOps (UDM search → {"events": [{"udm": {...}}]})       #
+# --------------------------------------------------------------------------- #
+class ChronicleConnector:
+    """Google Chronicle / SecOps connector. Query becomes a UDM search filter;
+    results come back under ``events`` where each carries a nested ``udm`` object.
+
+    build_request emits a UDM query string (escaped for the double-quoted literal);
+    parse_response reads ``payload["events"]`` and maps each event's ``udm`` block
+    (falling back to the event itself). A missing ``events`` key is a ConnectorError."""
+
+    name = "chronicle"
+
+    def build_request(self, selector: str, value: str) -> Dict[str, Any]:
+        if selector == "*":
+            udm = "metadata.event_type != \"\""
+        else:
+            udm = f'{selector} = "{_escape_dquote(value)}"'
+        return {"body": {"query": udm}, "path": "/v1/events:udmSearch"}
+
+    def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
+        if not isinstance(payload, dict) or "events" not in payload:
+            raise ConnectorError("Chronicle reply missing 'events' envelope")
+        rows = payload["events"]
+        if not isinstance(rows, list):
+            raise ConnectorError("Chronicle 'events' must be a list")
+        out: List[Dict[str, Any]] = []
+        for e in rows:
+            if not isinstance(e, dict):
+                raise ConnectorError("Chronicle event must be an object")
+            out.append(_map_record(e.get("udm", e)))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Sumo Logic (search job → {"messages": [{"map": {...}}]})                    #
+# --------------------------------------------------------------------------- #
+class SumoLogicConnector:
+    """Sumo Logic connector. Query becomes a search-query string; results come
+    back under ``messages`` where each carries a flat ``map`` of fields.
+
+    build_request emits a Sumo query (escaped); parse_response reads
+    ``payload["messages"]`` and maps each message's ``map`` block."""
+
+    name = "sumologic"
+
+    def build_request(self, selector: str, value: str) -> Dict[str, Any]:
+        if selector == "*":
+            q = "_sourceCategory=* | limit 1000"
+        else:
+            q = f'{selector}="{_escape_dquote(value)}" | limit 1000'
+        return {"body": {"query": q}, "path": "/api/v1/search/jobs"}
+
+    def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
+        if not isinstance(payload, dict) or "messages" not in payload:
+            raise ConnectorError("Sumo Logic reply missing 'messages' envelope")
+        rows = payload["messages"]
+        if not isinstance(rows, list):
+            raise ConnectorError("Sumo Logic 'messages' must be a list")
+        out: List[Dict[str, Any]] = []
+        for m in rows:
+            if not isinstance(m, dict):
+                raise ConnectorError("Sumo Logic message must be an object")
+            out.append(_map_record(m.get("map", m)))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Datadog (security signals → {"data": [{"attributes": {...}}]})              #
+# --------------------------------------------------------------------------- #
+class DatadogConnector:
+    """Datadog Cloud SIEM connector. Query becomes a signals search ``filter[query]``;
+    results come back JSON:API style under ``data`` where each item carries an
+    ``attributes`` object (often with a nested ``custom``/``attributes`` block).
+
+    build_request emits the filter query; parse_response reads ``payload["data"]``
+    and maps each item's ``attributes`` (merging a nested ``attributes`` sub-block
+    if present, as Datadog signals nest event fields there)."""
+
+    name = "datadog"
+
+    def build_request(self, selector: str, value: str) -> Dict[str, Any]:
+        if selector == "*":
+            q = "*"
+        else:
+            q = f'@{selector}:"{_escape_dquote(value)}"'
+        return {"body": {"filter": {"query": q}}, "path": "/api/v2/security_monitoring/signals/search"}
+
+    def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
+        if not isinstance(payload, dict) or "data" not in payload:
+            raise ConnectorError("Datadog reply missing 'data' envelope")
+        rows = payload["data"]
+        if not isinstance(rows, list):
+            raise ConnectorError("Datadog 'data' must be a list")
+        out: List[Dict[str, Any]] = []
+        for item in rows:
+            if not isinstance(item, dict):
+                raise ConnectorError("Datadog data item must be an object")
+            attrs = item.get("attributes", item)
+            if not isinstance(attrs, dict):
+                raise ConnectorError("Datadog item attributes must be an object")
+            # Datadog nests the event fields under attributes.attributes for signals;
+            # merge that sub-block over the top-level attrs so both shapes map.
+            merged = dict(attrs)
+            if isinstance(attrs.get("attributes"), dict):
+                merged.update(attrs["attributes"])
+            out.append(_map_record(merged))
+        return out

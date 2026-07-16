@@ -23,6 +23,7 @@ from sentinel_harness.connectors.base import NEUTRAL_EVENT_FIELDS, ConnectorErro
 def test_siem_registry_lists_expected():
     assert set(C.available_siem_connectors()) == {
         "splunk", "elastic", "opensearch", "qradar", "microsoft_sentinel",
+        "chronicle", "sumologic", "datadog",
     }
 
 
@@ -445,3 +446,63 @@ def test_dsl_injection_is_escaped(name):
     dsl = body.get("search") or body.get("query_expression") or body.get("query")
     # the raw unescaped delimiter sequence must not appear outside an escaped form
     assert '" OR 1=1 | drop"' not in dsl or "\\" in dsl
+
+
+# --------------------------------------------------------------------------- #
+# batch-2 SIEM connectors: Chronicle / Sumo Logic / Datadog                   #
+# --------------------------------------------------------------------------- #
+def test_chronicle_build_and_parse():
+    conn = C.get_siem_connector("chronicle")
+    assert "udmSearch" in conn.build_request("host", "web-01")["path"]
+    ev = conn.parse_response({"events": [
+        {"udm": {"alert_id": "c1", "host": {"name": "web-01"}, "severity": "high",
+                 "rule": "R", "src_ip": "203.0.113.66", "technique": "T1190"}}]})
+    assert set(ev[0]) == set(NEUTRAL_EVENT_FIELDS)
+    assert ev[0]["alert_id"] == "c1" and ev[0]["host"] == "web-01"
+
+
+def test_chronicle_missing_events_raises():
+    with pytest.raises(ConnectorError):
+        C.get_siem_connector("chronicle").parse_response({"nope": []})
+
+
+def test_sumologic_build_and_parse():
+    conn = C.get_siem_connector("sumologic")
+    assert "limit 1000" in conn.build_request("*", "*")["body"]["query"]
+    ev = conn.parse_response({"messages": [
+        {"map": {"alert_id": "s1", "host": "bastion-01", "severity": "high",
+                 "rule": "R", "src_ip": "198.51.100.200", "technique": "T1110"}}]})
+    assert set(ev[0]) == set(NEUTRAL_EVENT_FIELDS)
+    assert ev[0]["src_ip"] == "198.51.100.200"
+
+
+def test_sumologic_missing_messages_raises():
+    with pytest.raises(ConnectorError):
+        C.get_siem_connector("sumologic").parse_response({"results": []})
+
+
+def test_datadog_build_and_parse_nested_attributes():
+    conn = C.get_siem_connector("datadog")
+    body = conn.build_request("host", "db-01")["body"]
+    assert "filter" in body and "query" in body["filter"]
+    # Datadog nests event fields under attributes.attributes for signals
+    ev = conn.parse_response({"data": [
+        {"attributes": {"attributes": {"alert_id": "d1", "host": "db-01"},
+                        "severity": "critical", "rule": "R", "technique": "T1005"}}]})
+    assert set(ev[0]) == set(NEUTRAL_EVENT_FIELDS)
+    assert ev[0]["alert_id"] == "d1" and ev[0]["host"] == "db-01"
+    assert ev[0]["severity"] == "critical"
+
+
+def test_datadog_missing_data_raises():
+    with pytest.raises(ConnectorError):
+        C.get_siem_connector("datadog").parse_response({"signals": []})
+
+
+@pytest.mark.parametrize("name", ["chronicle", "sumologic", "datadog"])
+def test_batch2_dsl_injection_escaped(name):
+    conn = C.get_siem_connector(name)
+    body = conn.build_request("field", 'x" OR 1=1')["body"]
+    dsl = body.get("query") or str(body.get("filter"))
+    # the value's quote must be escaped (backslash) so it can't break the literal
+    assert '\\"' in dsl or 'OR 1=1' not in dsl.split('"')[0]

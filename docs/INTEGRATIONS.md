@@ -155,6 +155,13 @@ you (`sentinel_harness/connectors/`):
 | `opensearch` | same DSL/envelope as `elastic` | `{"hits":{"hits":[…]}}` |
 | `qradar` | AQL (`SELECT * FROM events WHERE sourceip = '…' LAST 24 HOURS`) | `{"events":[ … ]}` |
 | `microsoft_sentinel` | KQL (`SecurityAlert \| where Computer == "web-01"`) | columnar `{"tables":[{"columns":[…],"rows":[[…]]}]}` |
+| `chronicle` | Google SecOps UDM search (`host = "web-01"`) | `{"events":[{"udm":{…}}]}` |
+| `sumologic` | Sumo query (`host="web-01" \| limit 1000`) | `{"messages":[{"map":{…}}]}` |
+| `datadog` | Cloud SIEM signals filter (`@host:"web-01"`) | JSON:API `{"data":[{"attributes":{…}}]}` |
+
+All eight escape the query value (backslash for double-quoted DSL, doubled quote
+for AQL) so an attacker-controlled selector value cannot break out of the literal
+and inject commands — a value with a `"` stays inside the quoted string.
 
 ```bash
 export SIEM_QUERY_LIVE=1
