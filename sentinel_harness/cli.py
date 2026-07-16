@@ -217,6 +217,22 @@ def cmd_delete(args: argparse.Namespace) -> int:
 
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
+    # An empty/whitespace prefix would match EVERY harness (''.startswith('')==True)
+    # and cascade-delete managed memory. Refuse with a clean usage error (exit 2)
+    # rather than let it reach the destructive path — the usual trigger is an
+    # unset/empty $PREFIX in a script. core.cleanup guards this too (defense in depth).
+    if not args.prefix.strip():
+        _eprint("cleanup: refusing an empty prefix — it would delete EVERY harness. "
+                "Pass a specific non-empty prefix.")
+        return 2
+    if args.dry_run:
+        # Show what WOULD be deleted without touching anything.
+        matched = [h.get("harnessName", "?") for h in sh.list_harnesses()
+                   if str(h.get("harnessName", "")).startswith(args.prefix)]
+        print(f"[dry-run] {len(matched)} harness(es) would be deleted with prefix {args.prefix!r}")
+        for name in sorted(matched):
+            print(f"  - {name}")
+        return 0
     deleted = sh.cleanup(args.prefix)
     print(f"deleted {len(deleted)} harness(es) with prefix {args.prefix!r}")
     for name in deleted:
@@ -322,6 +338,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     cl = sub.add_parser("cleanup", help="delete every harness whose name starts with prefix")
     cl.add_argument("prefix")
+    cl.add_argument("--dry-run", action="store_true",
+                    help="list the harnesses that WOULD be deleted, delete nothing")
     cl.set_defaults(func=cmd_cleanup)
 
     rs = sub.add_parser("run-scenario", help="run a bundled scenario")

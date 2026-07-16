@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 **M13 — world-class depth + adversarial hardening.** Additive on top of M0–M12
-(no live-validated code rewritten). Test suite **1742 → 2164 offline passing**.
+(no live-validated code rewritten). Test suite **1742 → 2205 offline passing**.
 
 ### Added
 - **Deployment benchmark** (`sentinel_harness/benchmark.py`) — deterministic
@@ -51,11 +51,46 @@ All notable changes to this project are documented here. The format is based on
   design — it never claims a rule is redundant without a proven subset relation, so
   a "safe to delete" verdict never deletes real coverage. Registered +
   governance-approved.
+- **ATT&CK coverage / gap analysis** (`tools/detection_coverage/`) — a
+  deterministic, LLM-free tool that answers a detection team's most important
+  question: which adversary techniques can we NOT detect? Given Sigma rules (with
+  `attack.tXXXX` tags) and a target technique list, it reports `covered` /
+  `uncovered` (the blind spots) / `untagged_rules` / `invalid_tags` +
+  `coverage_ratio`. Conservative — a sub-technique tag covers its parent but a
+  parent tag NEVER covers a specific sub-technique, so a false "covered" cannot
+  hide a real blind spot. Registered + governance-approved.
 
 ### Fixed
-- **Adversarial audit remediation:** four hostile-finder/skeptic-verifier rounds
-  cleared **65 confirmed defects** total (round-1: 20; round-2: 22; round-3: 17;
-  round-4: 6), each with a regression test.
+- **Adversarial audit remediation:** five hostile-finder/skeptic-verifier rounds
+  cleared **72 confirmed defects** total (round-1: 20; round-2: 22; round-3: 17;
+  round-4: 6; round-5: 7), each with a regression test.
+  - Round-5 (the still-not-deep-audited modules: core invoke loop, loader,
+    factory, cli, mockdata). 22 findings → 7 confirmed after independent skeptic
+    verification:
+    - **cli + core (HIGH)** — `sentinel cleanup ""` (or an unset `$PREFIX` in a
+      script) matched EVERY harness (`"".startswith("")` is True) and
+      cascade-deleted managed memory with no confirmation. Now refused at BOTH the
+      CLI (clean exit-2 usage error) and `core.cleanup` (ValueError) layers, plus a
+      `--dry-run` that previews matches.
+    - **core (MED)** — parallel HITL gates were captured but not resumable: the
+      singular `invoke_with_tool_result` answered only one of N, dropping the
+      others (a silently-lost human security decision + a corrupted session). New
+      `invoke_with_tool_results` answers every paused gate in the one required
+      assistant+user message pair; the singular now delegates to it.
+    - **factory (MED)** — teardown deleted an UNTAGGED same-name prior (e.g. a
+      pre-tagging prod harness) because the env-guard only fired on tagged priors;
+      provision treated such a name as a safe skip while teardown deleted it. Now
+      refused (a harness the factory did not stamp is off-limits).
+    - **loader (LOW×2)** — `harnessName` was accepted unvalidated (a non-string or
+      hyphenated name loaded clean then failed/corrupted downstream); `allowedTools`
+      elements were not per-item type-checked (a nested list/dict/None silently
+      failed HITL-gate wiring). Both now validated.
+    - **factory (LOW)** — the documented `name_prefix` manifest key was a silent
+      no-op; now a real governance guard (every provisioned name must start with it).
+    - **mockdata (LOW)** — `_HOST_IDS` / `_IOC_BY_VALUE` carried comments claiming a
+      reference-integrity guard that did not exist; now a live import-time assertion
+      (every alert must name a defined host; malicious src_ips must cross-link to a
+      defined IOC).
   - Round-4 (the never-deep-audited M8–M13 core modules: autonomy, tracing,
     eval_datasets, connectors). 22 findings → 6 confirmed after independent
     skeptic verification (a high refute rate — out-of-contract crashes and

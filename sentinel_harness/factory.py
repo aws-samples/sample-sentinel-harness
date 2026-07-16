@@ -31,7 +31,9 @@ A manifest is a dict (or a path to a yaml file holding that dict)::
 
     env: staging                       # optional; SENTINEL_ENV overrides nothing,
                                        # it is the fallback when this key is absent
-    name_prefix: sentinel_             # optional; teardown-by-prefix convenience
+    name_prefix: sentinel_             # optional governance guard: if set, EVERY
+                                       # harness name MUST start with it (else
+                                       # FactoryError); enables safe teardown-by-prefix
     tags:                              # optional; fleet-wide tags merged into each harness
       team: secops
     harnesses:                         # required; each entry is one harness
@@ -173,6 +175,22 @@ def _resolve_fleet(manifest: dict) -> tuple[list[dict], str]:
         if r["name"] in seen:
             raise FactoryError(f"duplicate harnessName {r['name']!r} in manifest")
         seen.add(r["name"])
+
+    # Optional 'name_prefix' governance guard: if set, EVERY provisioned harness
+    # name must start with it. This makes the documented key real (it was previously
+    # a silent no-op) and lets teardown-by-prefix safely target the whole fleet.
+    name_prefix = manifest.get("name_prefix")
+    if name_prefix is not None:
+        if not isinstance(name_prefix, str) or not name_prefix.strip():
+            raise FactoryError(
+                f"manifest 'name_prefix' must be a non-empty string, got {name_prefix!r}"
+            )
+        offenders = [r["name"] for r in resolved if not r["name"].startswith(name_prefix)]
+        if offenders:
+            raise FactoryError(
+                f"name_prefix {name_prefix!r} guard: these harness names do not start "
+                f"with it: {offenders}. Rename them or drop name_prefix."
+            )
     return resolved, env
 
 
@@ -278,6 +296,18 @@ def teardown_fleet(manifest_or_prefix: Any) -> list[str]:
                 f"cross-env tag-guard: refusing to delete harness {name!r} — it is "
                 f"claimed by env {prior_env!r} but this teardown is env {env!r}. "
                 f"Run against the matching SENTINEL_ENV."
+            )
+        # An UNTAGGED prior was not stamped by this factory (every provisioned harness
+        # carries sentinel:env). Provision treats such a name as a safe non-mutation
+        # skip; teardown must be at least as cautious — deleting an untagged same-name
+        # harness would silently destroy a resource created before env-tagging existed
+        # (or by another tool), e.g. a pre-tagging prod harness. Refuse it.
+        if prior_env is None:
+            raise FactoryError(
+                f"untagged-harness guard: refusing to delete harness {name!r} — it "
+                f"carries no {ENV_TAG_KEY!r} tag, so it was not provisioned by this "
+                f"factory (env {env!r}). Delete it explicitly via core.delete_harness "
+                f"if you are certain it is safe."
             )
         core.delete_harness(prior["harnessId"])
         deleted.append(name)

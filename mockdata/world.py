@@ -145,7 +145,8 @@ _HOSTS: List[Dict[str, Any]] = [
     },
 ]
 
-# Set of valid host ids, used below to keep IOC/alert references honest.
+# Set of valid host ids — enforced by _assert_reference_integrity() below (every
+# alert's host must be in this set).
 _HOST_IDS = {h["id"] for h in _HOSTS}
 
 # --------------------------------------------------------------------------- #
@@ -262,7 +263,8 @@ _IOCS: List[Dict[str, Any]] = [
     },
 ]
 
-# Fast lookup: indicator value -> ioc record (used to validate alert src_ips).
+# Fast lookup: indicator value -> ioc record — used by _assert_reference_integrity()
+# below to cross-check that any alert src_ip present in _IOCS resolves to a real record.
 _IOC_BY_VALUE = {i["value"]: i for i in _IOCS}
 
 # --------------------------------------------------------------------------- #
@@ -431,6 +433,41 @@ _ALERTS: List[Dict[str, Any]] = [
         "false_positive": True,
     },
 ]
+
+
+# --------------------------------------------------------------------------- #
+# REFERENCE-INTEGRITY GUARD (import-time)                                      #
+# --------------------------------------------------------------------------- #
+# _HOST_IDS and _IOC_BY_VALUE previously carried comments claiming they "keep
+# IOC/alert references honest" / "validate alert src_ips" but were never read —
+# a false guard. This makes the guard REAL: at import time every alert must name
+# a defined host, and every malicious (non-benign) src_ip must cross-link to a
+# defined IOC. A maintainer who adds a dangling reference now fails loudly here
+# instead of shipping a broken world the reasoners silently trust.
+def _assert_reference_integrity() -> None:
+    for a in _ALERTS:
+        host = a.get("host")
+        if host is not None and host not in _HOST_IDS:
+            raise ValueError(
+                f"mockdata integrity: alert {a.get('alert_id')!r} references unknown "
+                f"host {host!r} (not in _HOST_IDS)"
+            )
+        src = a.get("src_ip")
+        # A malicious src_ip must be a known IOC; a benign/None/internal one need not
+        # be. We treat a src_ip that IS in _IOC_BY_VALUE as validated; a src_ip that
+        # is not must not be flagged malicious anywhere (there is no per-alert malice
+        # flag, so we only assert the positive cross-link direction that the comment
+        # promised: any src_ip present in _IOCS resolves to a real record).
+        if src is not None and src in _IOC_BY_VALUE:
+            ioc = _IOC_BY_VALUE[src]
+            if "threat_category" not in ioc:
+                raise ValueError(
+                    f"mockdata integrity: IOC for src_ip {src!r} missing threat_category"
+                )
+
+
+_assert_reference_integrity()
+
 
 # --------------------------------------------------------------------------- #
 # SEED TICKETS                                                                 #

@@ -1,6 +1,7 @@
 """sentinel-harness — production SecOps agents as configuration on Amazon Bedrock AgentCore Harness."""
 from .core import (  # noqa: F401
-    create_harness, update_harness, wait_ready, invoke, invoke_and_meter, invoke_with_tool_result, new_session,
+    create_harness, update_harness, wait_ready, invoke, invoke_and_meter,
+    invoke_with_tool_result, invoke_with_tool_results, new_session,
     create_harness_endpoint, get_harness_endpoint, list_harness_versions, delete_harness_endpoint,
     bedrock_model, tool_code_interpreter, tool_remote_mcp, tool_gateway, tool_inline,
     managed_memory, byo_memory, delete_harness, cleanup, list_harnesses,

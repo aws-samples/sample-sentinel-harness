@@ -226,6 +226,15 @@ def load_harness_config(path: str) -> dict:
         name = cfg["harnessName"]
     except KeyError as exc:
         raise ValueError(f"harness config missing required key: {exc}") from exc
+    # Validate the name against the SAME rule core.create_harness enforces server-side
+    # ([a-zA-Z][a-zA-Z0-9_]{0,39}). Without this a non-string (YAML `harnessName: 123`
+    # → int) or a hyphenated name loaded clean and only failed — or corrupted a
+    # downstream lookup — at create/teardown time.
+    if not isinstance(name, str) or not re.match(r"^[a-zA-Z][a-zA-Z0-9_]{0,39}\Z", name):
+        raise ValueError(
+            f"invalid harnessName {name!r}: must be a string matching "
+            f"[a-zA-Z][a-zA-Z0-9_]{{0,39}} (letter-led, alnum/underscore, no hyphens)"
+        )
 
     if "systemPrompt" not in cfg:
         raise ValueError("harness config missing required key: 'systemPrompt'")
@@ -244,6 +253,16 @@ def load_harness_config(path: str) -> dict:
                 f"allowedTools must be a list, got {type(allowed_tools).__name__} "
                 f"({allowed_tools!r}); a bare scalar is a config error"
             )
+        # Every entry must be a non-empty string. A nested list / dict / None slips
+        # through the list check but silently fails HITL-gate wiring in
+        # _inject_inline_gates (a non-str tool name never matches, so its gate is
+        # never injected) — fail loud instead.
+        for i, t in enumerate(allowed_tools):
+            if not isinstance(t, str) or not t.strip():
+                raise ValueError(
+                    f"allowedTools[{i}] must be a non-empty string, got "
+                    f"{type(t).__name__} ({t!r})"
+                )
         if "*" in allowed_tools:
             raise ValueError(
                 "allowedTools must be an explicit allowlist — '*' (grant-all) is "

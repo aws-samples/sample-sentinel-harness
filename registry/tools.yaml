@@ -36,6 +36,15 @@ tools:
       surfaces every rule it cannot soundly analyze. Conservative — never claims
       a rule is redundant without a proven subset relation; makes no network calls.
 
+  - name: detection_coverage
+    owner: detection-engineering
+    status: approved
+    description: >-
+      Deterministic, LLM-free ATT&CK coverage / gap analysis for a Sigma rule set:
+      given rules (with attack.tXXXX tags) and target techniques, reports covered /
+      UNCOVERED (blind spots) / untagged rules / invalid tags. Conservative — a
+      sub-technique tag covers its parent but never the reverse; makes no network calls.
+
   - name: nvd_lookup
     owner: vuln-management
     status: approved

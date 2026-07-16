@@ -361,32 +361,66 @@ def _is_throttle(exc: Exception) -> bool:
     )
 
 
-def invoke_with_tool_result(harness_arn: str, session_id: str, tool_use: dict,
-                            result, *, status="success", actor_id=None, **overrides) -> dict:
-    """Resume a harness that paused on an inline_function (HITL gate), closing the loop.
+def invoke_with_tool_results(harness_arn: str, session_id: str, answers,
+                             *, actor_id=None, **overrides) -> dict:
+    """Resume a harness that paused on ONE OR MORE inline_function (HITL) gates.
 
-    Implements the two-message resume contract: on the SAME ``session_id`` we re-invoke
-    with the assistant ``toolUse`` turn FOLLOWED BY a user ``toolResult`` whose
-    ``toolUseId`` matches — both must be sent together or the session is left corrupted.
+    The Bedrock/Anthropic protocol requires that a resuming turn re-send the paused
+    assistant message containing EVERY ``toolUse`` block, followed by a user message
+    carrying a matching ``toolResult`` for EVERY ``toolUseId`` — a missing one is a
+    ValidationException / corrupted session. When the model emits parallel gates in
+    one turn (``invoke(...)["tool_uses"]`` has >1 entry), answering only the first
+    (the old single-gate path) silently dropped the rest. This plural helper answers
+    them all in the single required message pair.
 
-    ``tool_use`` is the dict from a prior ``invoke(...)["tool_use"]``. ``result`` is the
-    analyst's decision payload; a dict is JSON-serialized into a text content block
-    (the toolResult content block is sent as ``text``). ``status`` is
-    ``"success"`` or ``"error"``."""
-    tuid = tool_use["toolUseId"]; name = tool_use["name"]; tinput = tool_use.get("input", {})
-    result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
-    content = [{"text": result_text}]
+    ``answers`` is a list of ``(tool_use, result[, status])`` — one per paused gate;
+    ``tool_use`` is an entry from ``invoke(...)["tool_uses"]``, ``result`` the analyst
+    decision (a dict is JSON-serialized to a text content block), ``status`` defaults
+    to ``"success"``. Order-independent, but every pending toolUseId MUST be present."""
+    answers = list(answers)
+    if not answers:
+        raise ValueError("invoke_with_tool_results requires at least one (tool_use, result) answer")
+    tool_use_blocks = []
+    tool_result_blocks = []
+    for ans in answers:
+        if len(ans) == 3:
+            tool_use, result, status = ans
+        else:
+            (tool_use, result), status = ans, "success"
+        tuid = tool_use["toolUseId"]; name = tool_use["name"]; tinput = tool_use.get("input", {})
+        result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+        tool_use_blocks.append({"toolUse": {"toolUseId": tuid, "name": name, "input": tinput}})
+        tool_result_blocks.append(
+            {"toolResult": {"toolUseId": tuid, "content": [{"text": result_text}], "status": status}}
+        )
     kw = dict(
         harnessArn=harness_arn, runtimeSessionId=session_id,
         messages=[
-            {"role": "assistant",
-             "content": [{"toolUse": {"toolUseId": tuid, "name": name, "input": tinput}}]},
-            {"role": "user",
-             "content": [{"toolResult": {"toolUseId": tuid, "content": content, "status": status}}]},
+            {"role": "assistant", "content": tool_use_blocks},
+            {"role": "user", "content": tool_result_blocks},
         ])
     if actor_id: kw["actorId"] = actor_id
     kw.update(overrides)
     return _consume_stream(_data.invoke_harness(**kw)["stream"])
+
+
+def invoke_with_tool_result(harness_arn: str, session_id: str, tool_use: dict,
+                            result, *, status="success", actor_id=None, **overrides) -> dict:
+    """Resume a harness that paused on a SINGLE inline_function (HITL) gate.
+
+    Convenience wrapper over :func:`invoke_with_tool_results` for the common
+    one-gate case. If a turn paused on MULTIPLE parallel gates
+    (``invoke(...)["tool_uses"]`` has >1 entry), use ``invoke_with_tool_results``
+    with every gate — answering only one here would leave the others unanswered and
+    corrupt the session.
+
+    ``tool_use`` is the dict from a prior ``invoke(...)["tool_use"]``. ``result`` is the
+    analyst's decision payload; a dict is JSON-serialized into a text content block.
+    ``status`` is ``"success"`` or ``"error"``."""
+    return invoke_with_tool_results(
+        harness_arn, session_id, [(tool_use, result, status)],
+        actor_id=actor_id, **overrides,
+    )
 
 
 # ---------------------------------------------------------------- tool builders
@@ -473,7 +507,17 @@ def _all_harnesses():
 def cleanup(prefix: str):
     """Delete every harness whose name starts with ``prefix`` (cascade-deletes managed memory).
 
-    Paginates ListHarnesses so harnesses beyond the first page are not orphaned."""
+    Paginates ListHarnesses so harnesses beyond the first page are not orphaned.
+
+    REFUSES an empty/whitespace prefix: ``"".startswith("")`` is True, so an empty
+    prefix would match — and delete — EVERY harness in the account (plus its managed
+    memory). That is never an intentional call (a stray/unset ``$PREFIX`` in a script
+    is the usual trigger), so we fail loud rather than wipe the account."""
+    if not isinstance(prefix, str) or not prefix.strip():
+        raise ValueError(
+            "cleanup: refusing an empty/whitespace prefix — it would match and delete "
+            "EVERY harness in the account. Pass a specific non-empty prefix."
+        )
     deleted = []
     for h in _all_harnesses():
         if h["harnessName"].startswith(prefix):
