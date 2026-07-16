@@ -271,3 +271,39 @@ def test_detect_validates_thresholds():
         fb.detect_triggers(ledger, fp_threshold=1.5)
     with pytest.raises(ValueError):
         fb.detect_triggers(ledger, min_events=0)
+
+
+# --------------------------------------------------------------------------- #
+# regression (round-2 audit HIGH): a whitelist task must NEVER suppress an     #
+# indicator that also appears on a TRUE POSITIVE for the same rule            #
+# --------------------------------------------------------------------------- #
+def test_whitelist_never_suppresses_a_true_positive_indicator():
+    events = [
+        fb.FeedbackEvent(alert_id="a1", rule_name="R", disposition="false_positive",
+                         indicators=["8.8.8.8", "1.2.3.4"]),
+        fb.FeedbackEvent(alert_id="a2", rule_name="R", disposition="false_positive",
+                         indicators=["8.8.8.8", "5.6.7.8"]),
+        fb.FeedbackEvent(alert_id="a3", rule_name="R", disposition="true_positive",
+                         indicators=["8.8.8.8"]),  # 8.8.8.8 is ALSO a TP indicator
+    ]
+    ledger = fb.record_disposition(events, tenant="t")
+    tasks = fb.detect_triggers(ledger, fp_threshold=0.5, min_events=3)
+    wl = next(t for t in tasks if t["type"] == "whitelist_optimization")
+    assert "8.8.8.8" not in wl["fp_indicators"]          # the TP indicator is withheld
+    assert wl["withheld_tp_indicators"] == ["8.8.8.8"]   # and surfaced, not silently dropped
+    assert set(wl["fp_indicators"]) == {"1.2.3.4", "5.6.7.8"}
+
+
+def test_ledger_tracks_tp_indicators():
+    events = [fb.FeedbackEvent(alert_id="a", rule_name="R", disposition="true_positive",
+                               indicators=["9.9.9.9"])]
+    ledger = fb.record_disposition(events, tenant="t")
+    assert ledger["rules"]["R"]["tp_indicators"] == ["9.9.9.9"]
+
+
+def test_clean_rule_at_zero_threshold_emits_no_whitelist_task():
+    events = [fb.FeedbackEvent(alert_id=f"c{i}", rule_name="Clean",
+                               disposition="true_positive") for i in range(3)]
+    ledger = fb.record_disposition(events, tenant="t")
+    tasks = fb.detect_triggers(ledger, fp_threshold=0.0, min_events=3)
+    assert not any(t["type"] == "whitelist_optimization" for t in tasks)

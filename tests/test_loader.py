@@ -189,3 +189,48 @@ def test_create_from_config_offline(gateway_env, capture_create):
     assert kw["maxIterations"] == 18
     assert kw["timeoutSeconds"] == 300
     assert kw["allowedTools"] and "*" not in kw["allowedTools"]
+
+
+# --------------------------------------------------------------------------- #
+# regression (round-2 audit): systemPrompt containment + allowedTools shape   #
+# --------------------------------------------------------------------------- #
+def test_systemprompt_absolute_path_rejected(gateway_env, tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOPSECRET")
+    hdir = tmp_path / "h"
+    hdir.mkdir()
+    cfg = hdir / "harness.yaml"
+    cfg.write_text(f"harnessName: t\nsystemPrompt: {secret}\n")
+    with pytest.raises(ValueError, match="absolute"):
+        loader.load_harness_config(str(cfg))
+
+
+def test_systemprompt_parent_escape_rejected(gateway_env, tmp_path):
+    (tmp_path / "secret.txt").write_text("TOPSECRET")
+    hdir = tmp_path / "h"
+    hdir.mkdir()
+    cfg = hdir / "harness.yaml"
+    cfg.write_text("harnessName: t\nsystemPrompt: ../secret.txt\n")
+    with pytest.raises(ValueError, match="escapes"):
+        loader.load_harness_config(str(cfg))
+
+
+def test_scalar_allowedtools_rejected(gateway_env, tmp_path):
+    hdir = tmp_path / "h"
+    hdir.mkdir()
+    (hdir / "sp.md").write_text("prompt")
+    cfg = hdir / "harness.yaml"
+    cfg.write_text("harnessName: t\nsystemPrompt: sp.md\n"
+                   "allowedTools: request_containment_approval\n")  # scalar, not a list
+    with pytest.raises(ValueError, match="must be a list"):
+        loader.load_harness_config(str(cfg))
+
+
+def test_wildcard_allowedtools_rejected(gateway_env, tmp_path):
+    hdir = tmp_path / "h"
+    hdir.mkdir()
+    (hdir / "sp.md").write_text("prompt")
+    cfg = hdir / "harness.yaml"
+    cfg.write_text("harnessName: t\nsystemPrompt: sp.md\nallowedTools: ['*']\n")
+    with pytest.raises(ValueError, match="forbidden"):
+        loader.load_harness_config(str(cfg))

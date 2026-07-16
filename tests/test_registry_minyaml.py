@@ -179,3 +179,33 @@ def test_mini_yaml_empty_doc_yields_empty_tools():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# --------------------------------------------------------------------------- #
+# regression (round-2 audit): block-scalar (>-, |) + non-dict spec + deprecated
+# --------------------------------------------------------------------------- #
+def test_mini_yaml_folds_block_scalar():
+    doc = ("tools:\n"
+           "  - name: t\n"
+           "    description: >-\n"
+           "      line one\n"
+           "      line two\n"
+           "    status: approved\n")
+    out = reg._mini_yaml(doc)["tools"][0]
+    assert out["description"] == "line one line two"  # not the literal '>-'
+    assert out["status"] == "approved"
+
+
+def test_non_dict_spec_raises_registry_error():
+    r = reg.ToolRegistry()
+    with pytest.raises(reg.RegistryError, match="must be a mapping"):
+        r.load_dict({"tools": {"bad": "not-a-dict"}})
+
+
+def test_deprecated_with_code_is_drift():
+    r = reg.ToolRegistry({"old": lambda: {}})
+    r.add_entry(reg.ToolEntry(name="old", owner="x", status="deprecated", description="d"))
+    rep = r.governance_check()
+    assert rep.deprecated_with_code == ["old"]
+    assert rep.ok is False
+    assert "old" not in rep.pending  # not miscategorized as pending

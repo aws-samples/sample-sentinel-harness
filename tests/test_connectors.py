@@ -506,3 +506,19 @@ def test_batch2_dsl_injection_escaped(name):
     dsl = body.get("query") or str(body.get("filter"))
     # the value's quote must be escaped (backslash) so it can't break the literal
     assert '\\"' in dsl or 'OR 1=1' not in dsl.split('"')[0]
+
+
+# --------------------------------------------------------------------------- #
+# regression (round-2 audit): Datadog nested-attributes merge must not clobber #
+# a real top-level value (top level WINS; nested only fills gaps)             #
+# --------------------------------------------------------------------------- #
+def test_datadog_toplevel_attribute_wins_over_nested():
+    conn = C.get_siem_connector("datadog")
+    reply = {"data": [{"attributes": {
+        "attributes": {"alert_id": "d1", "severity": ""},   # nested (raw) sub-block
+        "severity": "critical",                             # real top-level value
+        "rule": "R", "host": "db-01", "technique": "T1005",
+    }}]}
+    ev = conn.parse_response(reply)[0]
+    assert ev["severity"] == "critical"   # top-level wins, NOT the nested ''
+    assert ev["alert_id"] == "d1"         # nested fills a gap the top level lacks

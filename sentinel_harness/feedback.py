@@ -310,6 +310,7 @@ def record_disposition(
                 "fp_rate": 0.0,
                 "fp_alert_ids": [],
                 "fp_indicators": [],
+                "tp_indicators": [],   # indicators seen on a TRUE POSITIVE — never suppress these
                 "dispositions": {d: 0 for d in DISPOSITIONS},
             }
             rules[ev.rule_name] = r
@@ -318,6 +319,11 @@ def record_disposition(
         r["dispositions"][ev.disposition] += 1
         if ev.disposition == TP_DISPOSITION:
             r["tp_count"] += 1
+            # Track TP indicators so a whitelist task can NEVER suppress one (an
+            # indicator on both an FP and a TP must not be allowlisted away).
+            for ind in ev.indicators:
+                if ind and ind not in r["tp_indicators"]:
+                    r["tp_indicators"].append(ind)
         else:  # false_positive or benign -> detection noise
             r["fp_count"] += 1
             if ev.alert_id not in r["fp_alert_ids"]:
@@ -397,24 +403,40 @@ def detect_triggers(
         fp_count = r.get("fp_count", 0)
 
         # --- Noisy rule: tighten the allowlist. ---
-        if fp_rate >= fp_threshold:
-            tasks.append(
-                {
-                    "type": "whitelist_optimization",
-                    "rule_name": rule_name,
-                    "fp_events": list(r.get("fp_alert_ids", [])),
-                    "fp_indicators": list(r.get("fp_indicators", [])),
-                    "fp_rate": fp_rate,
-                    "sample_size": total,
-                    "rationale": (
-                        f"Rule '{rule_name}' produced {fp_count}/{total} "
-                        f"false-positive/benign dispositions (fp_rate="
-                        f"{_pct(fp_rate)} >= threshold {_pct(fp_threshold)}). "
-                        "Suppress the listed alert cohort / indicators via an "
-                        "allowlist predicate to cut analyst noise."
-                    ),
-                }
-            )
+        # SAFETY: an indicator seen on a TRUE POSITIVE must NEVER be suppressed —
+        # allowlisting it would blind the detection to the real threat. Subtract
+        # the rule's tp_indicators from the FP set the task proposes to suppress,
+        # and only emit the task if there is still noise left to suppress AND at
+        # least one FP event (fp_count > 0), so a perfectly-clean rule with a
+        # 0.0 threshold does not spawn a vacuous task.
+        tp_inds = set(r.get("tp_indicators", []))
+        safe_fp_indicators = [i for i in r.get("fp_indicators", []) if i not in tp_inds]
+        withheld = sorted(set(r.get("fp_indicators", [])) & tp_inds)
+        if fp_count > 0 and fp_rate >= fp_threshold:
+            task = {
+                "type": "whitelist_optimization",
+                "rule_name": rule_name,
+                "fp_events": list(r.get("fp_alert_ids", [])),
+                "fp_indicators": safe_fp_indicators,
+                "fp_rate": fp_rate,
+                "sample_size": total,
+                "rationale": (
+                    f"Rule '{rule_name}' produced {fp_count}/{total} "
+                    f"false-positive/benign dispositions (fp_rate="
+                    f"{_pct(fp_rate)} >= threshold {_pct(fp_threshold)}). "
+                    "Suppress the listed alert cohort / indicators via an "
+                    "allowlist predicate to cut analyst noise."
+                ),
+            }
+            if withheld:
+                # Surface (never silently drop) indicators kept OUT of the allowlist
+                # because they also appear on a true positive.
+                task["withheld_tp_indicators"] = withheld
+                task["rationale"] += (
+                    f" WITHHELD {withheld} from suppression — also seen on a true "
+                    "positive; allowlisting them would blind the detection."
+                )
+            tasks.append(task)
 
         # --- Dead/misfiring rule: regenerate via the M1/M2 loop. ---
         # Only-FP over enough events => a whitelist patch cannot save it; the

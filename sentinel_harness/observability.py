@@ -50,17 +50,36 @@ def _live_enabled() -> bool:
     return os.environ.get(LIVE_ENV_FLAG, "").strip().lower() in _TRUTHY
 
 
+def _coerce_int(value) -> int:
+    """Coerce a token count to a non-negative int, NEVER raising.
+
+    ``int(input_tokens or 0)`` crashed on ``inf`` (OverflowError), ``NaN``
+    (ValueError), and non-numeric strings (ValueError) — but the docstring
+    promises a well-formed line even on a partial/errored invoke. This coerces any
+    unreadable/negative/non-finite value to 0 (fail-safe: a token count we can't
+    read is 0, not a crash)."""
+    import math
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(f) or f < 0:
+        return 0
+    return int(f)
+
+
 def token_metric_line(scenario: str, input_tokens, output_tokens, **extra) -> dict:
     """Build the EXACT structured dict the CDK ``MetricFilter`` parses.
 
     The MetricFilter extracts ``$.tokens`` as the metric value, so ``tokens`` is
     the load-bearing key and — by contract — equals ``input_tokens + output_tokens``.
     ``input_tokens``/``output_tokens`` are kept alongside for human-readable log
-    forensics. ``None`` counts coerce to 0 so a partial/errored invoke still emits a
-    well-formed (zero-token) line instead of crashing. ``extra`` merges in any extra
-    structured fields (e.g. ``session_id``) without displacing the required keys."""
-    it = int(input_tokens or 0)
-    ot = int(output_tokens or 0)
+    forensics. Unreadable/None/non-finite/negative counts coerce to 0 (via
+    :func:`_coerce_int`) so a partial/errored invoke still emits a well-formed
+    (zero-token) line instead of crashing. ``extra`` merges in any extra structured
+    fields (e.g. ``session_id``) without displacing the required keys."""
+    it = _coerce_int(input_tokens)
+    ot = _coerce_int(output_tokens)
     line = {
         "scenario": scenario,
         "tokens": it + ot,      # <- the field the MetricFilter keys on ($.tokens)
@@ -105,7 +124,9 @@ def emit_token_metric_from_result(scenario: str, result: dict, *, log=print, **e
         usage = result.get("usage")
         if usage is None:
             usage = (result.get("metadata") or {}).get("usage")
-    usage = usage or {}
+    # Guard the TYPE: a truthy non-dict usage (e.g. a stray list/str) would make
+    # usage.get(...) raise; treat anything non-dict as "no usage".
+    usage = usage if isinstance(usage, dict) else {}
     return emit_token_metric(
         scenario, usage.get("inputTokens", 0), usage.get("outputTokens", 0), log=log, **extra
     )
@@ -173,7 +194,11 @@ def metric_line(name: str, value, *, scenario=None, unit="Count", **dims) -> dic
     if scenario is not None:
         line["scenario"] = scenario
     line.update(dims)
-    line[name] = v  # dims must never clobber the metric-bearing field
+    # Re-assert ALL structural keys after merging dims: a caller-supplied dim named
+    # 'metric'/'unit'/<name> must never clobber the load-bearing metric fields.
+    line["metric"] = name
+    line["unit"] = unit
+    line[name] = v
     return line
 
 

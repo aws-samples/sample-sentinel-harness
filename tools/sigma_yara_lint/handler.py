@@ -31,6 +31,14 @@ YARA (implemented here, lightweight structural check):
   - Balanced braces.
   - Warns if ``strings:`` is absent while the condition references ``$``.
 
+Suricata (implemented here, network-IDS rule grammar):
+  - Header is ``action proto src sport <dir> dst dport`` (>=7 tokens, a ``->``
+    or ``<>`` direction operator, action in the known set alert/drop/reject/…).
+  - A balanced ``( ... )`` option block is present.
+  - Required options ``msg``, ``sid``, ``rev`` are present; ``sid`` is numeric.
+  - Warns on a missing ``classtype``. Handles multi-rule files, ``#`` comments,
+    and ``\\`` line continuations.
+
 Egress & secrets posture
 ------------------------
 - ZERO egress. No network, no external services, no tokens.
@@ -42,7 +50,7 @@ Egress & secrets posture
 
 Input contract
 --------------
-event = {"rule_type": "sigma" | "yara", "content": "<rule text>"}
+event = {"rule_type": "sigma" | "yara" | "suricata", "content": "<rule text>"}
 
 Output contract
 ---------------
@@ -70,13 +78,25 @@ _CONDITION_KEYWORDS = {
 # --------------------------------------------------------------------------
 # Input validation
 # --------------------------------------------------------------------------
+_SUPPORTED_RULE_TYPES = {"sigma", "yara", "suricata"}
+
+# Suricata rule actions (the first token of a rule). The IPS-only actions
+# (drop/reject/…) are valid too; alert is by far the most common.
+_SURICATA_ACTIONS = {"alert", "drop", "reject", "pass", "log", "rejectsrc",
+                     "rejectdst", "rejectboth"}
+# Options that MUST appear in a well-formed Suricata rule's option block.
+_SURICATA_REQUIRED_OPTS = ("msg", "sid", "rev")
+
+
 def _validate(event: Dict[str, Any]) -> Tuple[str, str]:
     """Validate input; return (rule_type, content)."""
     if not isinstance(event, dict):
         raise ValueError("event must be a dict")
     rule_type = event.get("rule_type")
-    if not isinstance(rule_type, str) or rule_type.lower() not in {"sigma", "yara"}:
-        raise ValueError("'rule_type' must be one of: 'sigma', 'yara'")
+    if not isinstance(rule_type, str) or rule_type.lower() not in _SUPPORTED_RULE_TYPES:
+        raise ValueError(
+            f"'rule_type' must be one of: {sorted(_SUPPORTED_RULE_TYPES)}"
+        )
     content = event.get("content")
     if not isinstance(content, str) or not content.strip():
         raise ValueError("missing required non-empty string field 'content'")
@@ -278,27 +298,82 @@ def _check_condition_refs(condition: str, selections: set) -> List[str]:
 # --------------------------------------------------------------------------
 # YARA linter (lightweight structural check)
 # --------------------------------------------------------------------------
+def _strip_yara_noise(content: str) -> str:
+    """Return ``content`` with double-quoted strings, ``//`` and ``/* */`` comments
+    blanked out (replaced by spaces, preserving length/newlines).
+
+    WHY: brace balancing must count only STRUCTURAL braces. A YARA string literal
+    can legitimately contain ``{``/``}`` (e.g. a Log4Shell ``"${jndi:ldap"``
+    content match), and a comment can too; counting those produced false
+    'unbalanced braces' errors on valid rules. A tiny state machine skips string
+    and comment spans. Regex-free (no catastrophic-backtrack risk)."""
+    out: List[str] = []
+    i, n = 0, len(content)
+    in_str = False
+    esc = False
+    while i < n:
+        ch = content[i]
+        if in_str:
+            out.append(" ")
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        # not in a string: check for comment starts
+        if ch == '"':
+            in_str = True
+            out.append(" ")
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and content[i + 1] == "/":
+            while i < n and content[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and content[i + 1] == "*":
+            while i < n and not (content[i] == "*" and i + 1 < n and content[i + 1] == "/"):
+                out.append("\n" if content[i] == "\n" else " ")
+                i += 1
+            # blank the closing */ too (if present)
+            out.append("  ")
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _lint_yara(content: str) -> Tuple[List[str], List[str]]:
     errors: List[str] = []
     warnings: List[str] = []
 
-    open_braces = content.count("{")
-    close_braces = content.count("}")
+    # Count only STRUCTURAL braces (strings/comments blanked) so a brace inside a
+    # string literal (e.g. "${jndi:ldap") is not a false imbalance.
+    structural = _strip_yara_noise(content)
+    open_braces = structural.count("{")
+    close_braces = structural.count("}")
     if open_braces != close_braces:
         errors.append(
             f"unbalanced braces: {open_braces} '{{' vs {close_braces} '}}'"
         )
 
-    rule_headers = re.findall(r"\brule\s+([A-Za-z_]\w*)\s*(?::[^{]*)?\{", content)
+    # Header + body extraction run on the STRUCTURAL text (strings/comments blanked)
+    # so a '{' or '}' inside a string/comment cannot truncate a rule body — the
+    # keywords 'condition:'/'strings:' and '$' refs survive blanking (they are not
+    # inside string literals), so presence checks stay accurate.
+    rule_headers = re.findall(r"\brule\s+([A-Za-z_]\w*)\s*(?::[^{]*)?\{", structural)
     if not rule_headers:
         errors.append("no 'rule <name> { ... }' block found")
         return errors, warnings
 
-    # Split into rule bodies to inspect each.
     for name in rule_headers:
         body_match = re.search(
             r"\brule\s+" + re.escape(name) + r"\s*(?::[^{]*)?\{(.*?)\}",
-            content,
+            structural,
             re.DOTALL,
         )
         body = body_match.group(1) if body_match else ""
@@ -309,6 +384,107 @@ def _lint_yara(content: str) -> Tuple[List[str], List[str]]:
                 f"rule {name!r} references string identifiers ($) but has no "
                 "'strings:' section"
             )
+    return errors, warnings
+
+
+# --------------------------------------------------------------------------
+# Suricata linter (structural check of the network-IDS rule grammar)
+# --------------------------------------------------------------------------
+def _split_suricata_rules(content: str) -> List[str]:
+    """Split rule text into individual rules, skipping blank lines + # comments.
+
+    Suricata rules are one-per-line (a trailing ``\\`` continues a line). We join
+    continuations, then drop comment/blank lines, so each returned entry is one
+    complete rule string. Deterministic; no regex backtracking risk."""
+    joined: List[str] = []
+    buf = ""
+    for raw in content.splitlines():
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+        if buf:
+            buf += " " + stripped
+        elif not stripped or stripped.startswith("#"):
+            continue  # comment / blank between rules
+        else:
+            buf = stripped
+        if buf.endswith("\\"):
+            buf = buf[:-1].rstrip()  # line continuation → keep accumulating
+            continue
+        joined.append(buf)
+        buf = ""
+    if buf:
+        joined.append(buf)
+    return joined
+
+
+def _lint_suricata(content: str) -> Tuple[List[str], List[str]]:
+    """Structurally lint one or more Suricata rules. PURE, deterministic.
+
+    Checks per rule:
+      - the header is ``action proto src sport -> | <> dst dport`` (7 leading
+        tokens with a direction operator), action in the known set;
+      - an option block ``( ... )`` is present and balanced;
+      - required options ``msg``, ``sid``, ``rev`` are present;
+      - ``sid`` is numeric;
+    Warns on a missing ``classtype`` (best practice). Errors make the rule invalid.
+    """
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    rules = _split_suricata_rules(content)
+    if not rules:
+        errors.append("no Suricata rule found (expected 'action proto ... (options)')")
+        return errors, warnings
+
+    for idx, rule in enumerate(rules, 1):
+        tag = f"rule {idx}" if len(rules) > 1 else "rule"
+        # Balanced option-block parentheses.
+        if rule.count("(") != rule.count(")"):
+            errors.append(f"{tag}: unbalanced parentheses in option block")
+            continue
+        open_paren = rule.find("(")
+        if open_paren == -1 or not rule.rstrip().endswith(")"):
+            errors.append(f"{tag}: missing '( ... )' option block")
+            continue
+
+        header = rule[:open_paren].strip()
+        options = rule[open_paren + 1: rule.rstrip().rfind(")")]
+
+        # Header: action proto src sport <dir> dst dport  → >= 7 tokens.
+        htoks = header.split()
+        if not htoks:
+            errors.append(f"{tag}: empty rule header")
+            continue
+        if htoks[0].lower() not in _SURICATA_ACTIONS:
+            errors.append(
+                f"{tag}: unknown action {htoks[0]!r} (expected one of "
+                f"{sorted(_SURICATA_ACTIONS)})"
+            )
+        if not any(d in htoks for d in ("->", "<>")):
+            errors.append(f"{tag}: header missing a direction operator ('->' or '<>')")
+        elif len(htoks) < 7:
+            errors.append(
+                f"{tag}: header must be 'action proto src sport <dir> dst dport', "
+                f"got {len(htoks)} tokens"
+            )
+
+        # Required options. Split on ';' (Suricata option separator).
+        opt_names = {
+            o.split(":", 1)[0].strip().lower()
+            for o in options.split(";") if o.strip()
+        }
+        for req in _SURICATA_REQUIRED_OPTS:
+            if req not in opt_names:
+                errors.append(f"{tag}: missing required option '{req}'")
+
+        # sid must be numeric when present.
+        m = re.search(r"\bsid\s*:\s*([^;]+)", options)
+        if m and not m.group(1).strip().isdigit():
+            errors.append(f"{tag}: 'sid' must be numeric, got {m.group(1).strip()!r}")
+
+        if "classtype" not in opt_names:
+            warnings.append(f"{tag}: no 'classtype' option (recommended for triage)")
+
     return errors, warnings
 
 
@@ -329,6 +505,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     if rule_type == "sigma":
         errors, warnings = _lint_sigma(content)
+    elif rule_type == "suricata":
+        errors, warnings = _lint_suricata(content)
     else:  # yara
         errors, warnings = _lint_yara(content)
 

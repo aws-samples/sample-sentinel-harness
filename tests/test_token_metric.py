@@ -388,3 +388,32 @@ def test_invoke_and_meter_emits_error_metric_on_structured_error(monkeypatch):
     sh.invoke_and_meter("arn", "sess-" + "z" * 30, "hi", scenario="cve", log=captured.append)
     lines = [json.loads(x) for x in captured]
     assert any(ln.get("metric") == "errors" and ln["errors"] == 1.0 for ln in lines)
+
+
+# --------------------------------------------------------------------------- #
+# regression (round-2 audit): non-finite / non-numeric / non-dict never crash #
+# --------------------------------------------------------------------------- #
+from sentinel_harness import observability as _obs  # noqa: E402
+
+
+def test_token_metric_line_coerces_nonfinite_and_nonnumeric():
+    assert _obs.token_metric_line("s", float("inf"), 5)["tokens"] == 5
+    assert _obs.token_metric_line("s", float("nan"), 5)["tokens"] == 5
+    assert _obs.token_metric_line("s", "abc", 5)["tokens"] == 5
+    assert _obs.token_metric_line("s", -10, 5)["tokens"] == 5   # negative -> 0
+    assert _obs.token_metric_line("s", 3, 4)["tokens"] == 7      # normal still works
+
+
+def test_emit_from_result_tolerates_non_dict_usage():
+    out = _obs.emit_token_metric_from_result("s", {"usage": [1, 2, 3]}, log=lambda x: None)
+    assert out["tokens"] == 0  # non-dict usage treated as no usage, no crash
+
+
+def test_metric_line_dims_cannot_clobber_structural_keys():
+    # A dim named 'metric' or the metric-field name arrives via **dims (unit= is a
+    # reserved kwarg, so it can't be a dim). Neither may overwrite the structural
+    # keys after the dims merge.
+    line = _obs.metric_line("latency_ms", 10, metric="HACK", latency_ms=999)
+    assert line["metric"] == "latency_ms"   # re-asserted after dims merge
+    assert line["latency_ms"] == 10.0       # the real value, not the 999 clobber
+    assert line["unit"] == "Count"          # default preserved

@@ -72,12 +72,16 @@ class GovernanceReport:
     live: list[str] = field(default_factory=list)              # in both + approved
     approved_missing_impl: list[str] = field(default_factory=list)  # registry-only
     impl_missing_registry: list[str] = field(default_factory=list)  # code-only
-    pending: list[str] = field(default_factory=list)           # in both, not approved
+    pending: list[str] = field(default_factory=list)           # in both, status==pending
+    deprecated_with_code: list[str] = field(default_factory=list)  # deprecated but code still live
 
     @property
     def ok(self) -> bool:
-        """True when there is no governance drift (no orphan on either side)."""
-        return not self.approved_missing_impl and not self.impl_missing_registry
+        """True when there is no governance drift (no orphan on either side, and no
+        DEPRECATED tool still shipping a live code factory — that tool could still
+        be resolved, so it is drift, not a benign pending)."""
+        return (not self.approved_missing_impl and not self.impl_missing_registry
+                and not self.deprecated_with_code)
 
 
 class ToolRegistry:
@@ -129,6 +133,12 @@ class ToolRegistry:
         else:
             raise RegistryError("registry 'tools' must be a list or mapping")
         for name, spec in pairs:
+            # A non-dict spec (e.g. a bare string) must surface as RegistryError —
+            # the documented error type — not a cryptic bare ValueError from dict().
+            if spec is not None and not isinstance(spec, dict):
+                raise RegistryError(
+                    f"entry {name!r} spec must be a mapping, got {type(spec).__name__}"
+                )
             spec = dict(spec or {})
             spec.pop("name", None)
             known = {k: spec.pop(k) for k in ("owner", "status", "description") if k in spec}
@@ -201,12 +211,18 @@ class ToolRegistry:
                     report.live.append(name)
                 else:
                     report.approved_missing_impl.append(name)
+            elif entry.status == "pending":
+                if name in code_names:
+                    report.pending.append(name)
             elif name in code_names:
-                report.pending.append(name)
+                # A non-approved, non-pending status (e.g. deprecated) that STILL
+                # ships a live code factory is drift — resolve() could serve it.
+                report.deprecated_with_code.append(name)
         report.impl_missing_registry = sorted(code_names - reg_names)
         report.live.sort()
         report.approved_missing_impl.sort()
         report.pending.sort()
+        report.deprecated_with_code.sort()
         return report
 
 
@@ -227,27 +243,58 @@ def _mini_yaml(text: str) -> dict:
     tools: list[dict] = []
     current: dict | None = None
     in_tools = False
-    for raw in text.splitlines():
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
         line = raw.split("#", 1)[0].rstrip()
         if not line.strip():
+            i += 1
             continue
         stripped = line.strip()
         indent = len(line) - len(line.lstrip())
         if indent == 0:
             in_tools = stripped.rstrip(":") == "tools"
+            i += 1
             continue
         if not in_tools:
+            i += 1
             continue
         if stripped.startswith("- "):
             current = {}
             tools.append(current)
             stripped = stripped[2:].strip()
             if not stripped:
+                i += 1
                 continue
         if current is None or ":" not in stripped:
+            i += 1
             continue
         key, _, value = stripped.partition(":")
-        current[key.strip()] = _scalar(value.strip())
+        value = value.strip()
+        # Block-scalar indicators (>-, >, |, |-): the value is the following
+        # more-indented lines folded/joined. Without this the description came
+        # back as the literal '>-'. We fold to a single space-joined string
+        # (good enough for our one-line descriptions); the indicator's chomping
+        # nuances are not modeled.
+        if value in (">", ">-", ">+", "|", "|-", "|+"):
+            block: list[str] = []
+            j = i + 1
+            while j < len(lines):
+                bl = lines[j]
+                if not bl.strip():
+                    j += 1
+                    continue
+                bindent = len(bl) - len(bl.lstrip())
+                if bindent <= indent:
+                    break
+                block.append(bl.strip())
+                j += 1
+            current[key.strip()] = " ".join(block)
+            i = j
+            continue
+        current[key.strip()] = _scalar(value)
+        i += 1
     return {"tools": tools}
 
 

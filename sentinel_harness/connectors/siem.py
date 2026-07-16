@@ -375,10 +375,12 @@ class DatadogConnector:
             attrs = item.get("attributes", item)
             if not isinstance(attrs, dict):
                 raise ConnectorError("Datadog item attributes must be an object")
-            # Datadog nests the event fields under attributes.attributes for signals;
-            # merge that sub-block over the top-level attrs so both shapes map.
-            merged = dict(attrs)
-            if isinstance(attrs.get("attributes"), dict):
-                merged.update(attrs["attributes"])
+            # Datadog nests some event fields under attributes.attributes for
+            # signals. Merge so the TOP-LEVEL attrs WIN on any key collision (the
+            # nested sub-block only FILLS keys the top level lacks) — otherwise the
+            # raw sub-block clobbered a real top-level value (e.g. severity → '').
+            nested = attrs.get("attributes")
+            nested = nested if isinstance(nested, dict) else {}
+            merged = {**nested, **{k: v for k, v in attrs.items() if k != "attributes"}}
             out.append(_map_record(merged))
         return out

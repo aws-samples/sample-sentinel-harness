@@ -284,3 +284,34 @@ def test_teardown_by_prefix_delegates_to_cleanup(fake_control):
     assert set(deleted) == {"sentinel_a", "sentinel_b"}
     remaining = {h["harnessName"] for h in fake_control.list_harnesses()["harnesses"]}
     assert remaining == {"other_c"}
+
+
+# --------------------------------------------------------------------------- #
+# regression (round-2 audit HIGH/MED): teardown guards + name-regex           #
+# --------------------------------------------------------------------------- #
+def test_teardown_empty_prefix_refused(fake_control):
+    """An empty/whitespace prefix must NOT delegate to cleanup('') (delete-all)."""
+    fake_control.create_harness(harnessName="sentinel_a", systemPrompt=[{"text": "x"}])
+    for bad in ("", "   ", "\t"):
+        with pytest.raises(factory.FactoryError, match="empty teardown prefix"):
+            factory.teardown_fleet(bad)
+    # nothing was deleted
+    assert {h["harnessName"] for h in fake_control.list_harnesses()["harnesses"]} == {"sentinel_a"}
+
+
+def test_teardown_refuses_cross_env_harness(gateway_env, monkeypatch, fake_control):
+    """A staging teardown must NOT delete a harness tagged for a different env."""
+    # Provision the fleet under staging (gateway_env pins SENTINEL_ENV=staging).
+    factory.provision_fleet(_manifest_two())
+    # Re-tag one existing harness as prod (simulate a same-named prod harness).
+    for h in fake_control.list_harnesses()["harnesses"]:
+        if h["harnessName"] == "sentinel_alert_triage":
+            h.setdefault("tags", {})[factory.ENV_TAG_KEY] = "prod"
+    with pytest.raises(factory.FactoryError, match="cross-env tag-guard"):
+        factory.teardown_fleet(_manifest_two())
+
+
+def test_name_regex_rejects_trailing_newline():
+    assert factory._NAME_RE.match("valid_name")
+    assert not factory._NAME_RE.match("valid_name\n")   # \Z, not $
+    assert not factory._NAME_RE.match("bad name")

@@ -16,8 +16,16 @@ tools:
     owner: detection-engineering
     status: approved
     description: >-
-      Deterministic, LLM-free structural linter for Sigma and YARA detection
-      rules. Mandatory pre-publish gate; makes no network calls.
+      Deterministic, LLM-free structural linter for Sigma, YARA, and Suricata
+      detection rules. Mandatory pre-publish gate; makes no network calls.
+
+  - name: detection_translate
+    owner: detection-engineering
+    status: approved
+    description: >-
+      Deterministic, LLM-free Sigma -> YARA/Suricata SKELETON translator for
+      human review. Ports the faithful string-predicate subset and surfaces
+      lossy predicates (regex/numeric) explicitly; makes no network calls.
 
   - name: nvd_lookup
     owner: vuln-management

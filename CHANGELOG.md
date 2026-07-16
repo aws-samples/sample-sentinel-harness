@@ -6,7 +6,64 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-_Nothing yet._
+**M13 — world-class depth + adversarial hardening.** Additive on top of M0–M12
+(no live-validated code rewritten). Test suite **1742 → 2087 offline passing**.
+
+### Added
+- **Deployment benchmark** (`sentinel_harness/benchmark.py`) — deterministic
+  cost/latency/ops model comparing AgentCore Harness vs raw-Bedrock-DIY vs
+  self-hosted EKS, with a procurement-ready Markdown report + evidence.
+- **All-domain evaluation** — golden datasets for `alert_triage` / `attack_path` /
+  `feedback_loop` (eval now spans 5 domains), a deterministic offline
+  assertion-grounding scorer with a hard safety gate (`eval_datasets.py`), and an
+  all-domain baseline scenario.
+- **Deep enterprise mock world** (`mockdata/enterprise.py`) — 45-host, five-tier
+  topology the real attack-path reasoner traverses (3 planted crown-jewel chains).
+- **Time-series campaign + cross-domain E2E pipeline** — a 28-alert Log4Shell
+  intrusion timeline (`mockdata/campaign.py`) driven through triage → correlation →
+  attack-path → feedback → autonomy under one trace (`scenario_e2e_pipeline.py`).
+- **Autonomous self-improvement controller** (`sentinel_harness/autonomy.py`) — the
+  reusable decision engine (score→revise→gate→promote) closing the north-star
+  runner-orchestration gap; wired into the live self-improve scenario (offline-proven).
+- **Code-emitted GenAI/OTEL spans** (`sentinel_harness/tracing.py`) — deterministic
+  offline span lines + an opt-in real-OTEL path (`SENTINEL_OTEL`), feeding the
+  managed online-eval `aws/spans` source.
+- **Plug-and-play SIEM/ticketing connectors** (`sentinel_harness/connectors/`) —
+  8 SIEM backends (Splunk, Elasticsearch, OpenSearch, QRadar, Microsoft Sentinel,
+  Google Chronicle, Sumo Logic, Datadog) + 3 ticketing (ServiceNow, Jira, PagerDuty),
+  pure translators wired into `siem_query` via `SIEM_QUERY_CONNECTOR`, plus an
+  importable conformance kit that self-certifies any connector.
+- **Compliance control mapping** (`docs/COMPLIANCE.md`) — 18 capability anchors →
+  SOC 2 / ISO 27001:2022 / NIST CSF 2.0, with a test that fails if any anchor drifts.
+- **Suricata detection-rule linting** — `sigma_yara_lint` now lints Suricata rules
+  (header grammar, required `msg`/`sid`/`rev`, numeric sid, balanced options,
+  multi-rule/comment/continuation handling) alongside Sigma and YARA.
+- **Multi-language detection-rule translation** (`tools/detection_translate/`) — a
+  deterministic Sigma→YARA/Suricata skeleton translator: faithful modifiers
+  (`contains`/`startswith`/`endswith`) become content matches, lossy ones
+  (`re`/`base64`/`cidr`/numeric comparisons) are surfaced in an `untranslatable`
+  list rather than silently dropped. Registered + governance-approved.
+
+### Fixed
+- **Adversarial audit remediation:** two hostile-finder/skeptic-verifier rounds
+  cleared **42 confirmed defects** total (round-1: 20; round-2: 22 — 4 HIGH, 14
+  MED, 4 LOW), each with a regression test.
+  - Round-1: safety-gate bypasses (refusal-marker evasion, nested
+    `dimensions`-key veto skip), a NaN/non-finite score crash, tracing
+    `BaseException` stack corruption, SIEM DSL injection (SPL/AQL/KQL value
+    escaping), string-boolean misclassification, an IPv6-CIDR `TypeError`, and
+    conformance-kit blind spots.
+  - Round-2 (never-deep-audited core modules): true-positive indicators no longer
+    suppressed by the feedback whitelist; parallel `tool_use` blocks all captured
+    from the invoke stream (+ `_raw` double-pop fix); `teardown_fleet` rejects an
+    empty prefix and applies the env tag-guard; `loader` contains a `systemPrompt`
+    path to the harness dir (no absolute/`..` escape) and rejects a scalar or
+    `'*'`-wildcard `allowedTools`; `cleanup`/`list_harnesses` paginate all
+    harnesses; a YARA brace miscount inside string/comment noise; the `_mini_yaml`
+    fallback folds block scalars; a non-dict registry spec raises `RegistryError`;
+    a DEPRECATED-but-still-coded tool is flagged as drift; token/metric emitters
+    fail-safe on `inf`/`NaN`/non-dict usage; and the Datadog nested-`attributes`
+    merge lets the top-level value win.
 
 ## [0.3.0] — 2026-07-12
 

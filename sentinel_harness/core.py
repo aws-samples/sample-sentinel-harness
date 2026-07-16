@@ -232,7 +232,7 @@ def _consume_stream(stream) -> dict:
     a result back via :func:`invoke_with_tool_result` (the HITL resume contract)."""
     out, events, stop, meta, tools_used = "", [], None, None, []
     cur = None          # tool call currently being assembled
-    tool_use = None     # the completed pending call (if the loop paused on tool_use)
+    pending = []        # ALL completed tool calls in this turn (parallel tool_use)
     error = None        # first stream-level error, surfaced explicitly (not just in text)
     for ev in stream:
         for et, payload in ev.items():
@@ -250,9 +250,19 @@ def _consume_stream(stream) -> dict:
                     cur["_raw"] += tu["input"]   # input arrives as JSON string deltas
             elif et == "contentBlockStop":
                 if cur is not None:
-                    try: cur["input"] = json.loads(cur.pop("_raw") or "{}")
-                    except (ValueError, TypeError): cur["input"] = {"_unparsed": cur.pop("_raw", "")}
-                    tool_use = cur; cur = None
+                    # Capture raw ONCE before parsing: popping inside both the try and
+                    # except lost the payload (2nd pop returned the '' default), so the
+                    # _unparsed fallback was always empty. Now it preserves the raw text.
+                    raw = cur.pop("_raw", "") or ""
+                    try:
+                        cur["input"] = json.loads(raw or "{}")
+                    except (ValueError, TypeError):
+                        cur["input"] = {"_unparsed": raw}
+                    # APPEND — a turn can pause on MULTIPLE parallel tool_use blocks;
+                    # keeping only the last silently dropped earlier HITL gates and
+                    # produced a resume message missing a toolResult for each pending id.
+                    pending.append(cur)
+                    cur = None
             elif et == "messageStop":
                 stop = payload.get("stopReason")
             elif et == "metadata":
@@ -268,8 +278,15 @@ def _consume_stream(stream) -> dict:
     # metadata blob — see sentinel_harness.observability.emit_token_metric. None when a
     # stream carried no usage metadata (e.g. an errored/empty stream).
     usage = (meta or {}).get("usage")
+    # Expose the pending HITL calls only when the loop actually paused on tool_use.
+    # ``tool_uses`` is the FULL list (>=1 for parallel gates); ``tool_use`` stays the
+    # first for backward compatibility with single-gate callers, but a caller that
+    # must resume correctly should answer EVERY entry in ``tool_uses``.
+    paused = pending if stop == "tool_use" else []
     return {"text": out, "events": events, "stop_reason": stop,
-            "tools_used": tools_used, "tool_use": tool_use if stop == "tool_use" else None,
+            "tools_used": tools_used,
+            "tool_use": paused[0] if paused else None,
+            "tool_uses": paused,
             "metadata": meta, "usage": usage, "error": error}
 
 
@@ -333,7 +350,10 @@ def invoke_and_meter(harness_arn: str, session_id: str, text: str, *,
 
 def _is_throttle(exc: Exception) -> bool:
     """True if ``exc`` looks like a botocore throttling/rate error (best-effort)."""
-    code = getattr(exc, "response", {}).get("Error", {}).get("Code", "") if hasattr(exc, "response") else ""
+    # `or {}` guards a present-but-None `.response` (e.g. a connection error with
+    # response=None): getattr would return None and None.get(...) would raise,
+    # masking the original fault.
+    code = (getattr(exc, "response", None) or {}).get("Error", {}).get("Code", "")
     name = type(exc).__name__
     return (
         "Throttl" in code or "TooManyRequests" in code or code == "RequestLimitExceeded"
@@ -432,10 +452,30 @@ def delete_harness(harness_id, keep_memory=False):
     return _control.delete_harness(**kw)
 
 
+def _all_harnesses():
+    """Return EVERY harness summary, following ``nextToken`` pagination.
+
+    ListHarnesses is paginated; reading only the first page (``.get('harnesses')``)
+    silently ignored harnesses beyond page 1, so ``cleanup``/``list_harnesses``
+    orphaned them (cost + governance leak). This drains all pages. A page-count cap
+    guards against a backend that never clears the token."""
+    out, token, guard = [], None, 0
+    while True:
+        resp = _control.list_harnesses(nextToken=token) if token else _control.list_harnesses()
+        out.extend(resp.get("harnesses", []))
+        token = resp.get("nextToken")
+        guard += 1
+        if not token or guard > 10_000:  # no more pages (or runaway guard)
+            break
+    return out
+
+
 def cleanup(prefix: str):
-    """Delete every harness whose name starts with ``prefix`` (cascade-deletes managed memory)."""
+    """Delete every harness whose name starts with ``prefix`` (cascade-deletes managed memory).
+
+    Paginates ListHarnesses so harnesses beyond the first page are not orphaned."""
     deleted = []
-    for h in _control.list_harnesses().get("harnesses", []):
+    for h in _all_harnesses():
         if h["harnessName"].startswith(prefix):
             try:
                 delete_harness(h["harnessId"]); deleted.append(h["harnessName"])
@@ -446,7 +486,7 @@ def cleanup(prefix: str):
 
 
 def list_harnesses():
-    """Return the account's harness summaries (the ``harnesses`` list from
-    ``ListHarnesses``), or ``[]`` if none. Each item carries ``harnessId`` /
-    ``harnessName`` / ``status`` / ``arn``."""
-    return _control.list_harnesses().get("harnesses", [])
+    """Return the account's harness summaries (ALL pages of ``ListHarnesses``), or
+    ``[]`` if none. Each item carries ``harnessId`` / ``harnessName`` /
+    ``status`` / ``arn``."""
+    return _all_harnesses()

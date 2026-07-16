@@ -310,3 +310,94 @@ def test_determinism_same_input_same_output():
     a = lint("sigma", GOOD_SIGMA)
     b = lint("sigma", GOOD_SIGMA)
     assert a == b
+
+
+# --------------------------------------------------------------------------- #
+# Suricata linter (network-IDS rule grammar)                                  #
+# --------------------------------------------------------------------------- #
+GOOD_SURICATA = (
+    'alert tcp $HOME_NET any -> $EXTERNAL_NET any '
+    '(msg:"ET TROJAN Log4Shell JNDI callback"; content:"jndi:ldap"; '
+    'sid:2034567; rev:2; classtype:trojan-activity;)'
+)
+
+
+def test_suricata_valid_rule_passes():
+    r = lint("suricata", GOOD_SURICATA)
+    assert r["ok"] is True and r["rule_type"] == "suricata"
+    assert r["valid"] is True
+    assert r["errors"] == []
+
+
+def test_suricata_missing_required_options():
+    r = lint("suricata", 'alert tcp any any -> any any (msg:"x"; content:"y";)')
+    assert r["valid"] is False
+    assert any("sid" in e for e in r["errors"])
+    assert any("rev" in e for e in r["errors"])
+
+
+def test_suricata_non_numeric_sid():
+    r = lint("suricata", 'alert http any any -> any any (msg:"x"; sid:ABC; rev:1;)')
+    assert r["valid"] is False
+    assert any("sid" in e and "numeric" in e for e in r["errors"])
+
+
+def test_suricata_unknown_action_and_missing_direction():
+    r = lint("suricata", 'frobnicate tcp any any any any (msg:"x"; sid:1; rev:1;)')
+    assert r["valid"] is False
+    assert any("action" in e for e in r["errors"])
+    assert any("direction" in e for e in r["errors"])
+
+
+def test_suricata_missing_option_block():
+    r = lint("suricata", "alert tcp any any -> any any")
+    assert r["valid"] is False
+    assert any("option block" in e for e in r["errors"])
+
+
+def test_suricata_unbalanced_parens():
+    r = lint("suricata", 'alert tcp any any -> any any (msg:"x"; sid:1; rev:1;')
+    assert r["valid"] is False
+    assert any("unbalanced" in e for e in r["errors"])
+
+
+def test_suricata_classtype_warning_only():
+    # valid rule missing classtype: a warning, not an error
+    r = lint("suricata", 'alert tcp any any -> any any (msg:"x"; sid:1; rev:1;)')
+    assert r["valid"] is True
+    assert any("classtype" in w for w in r["warnings"])
+
+
+def test_suricata_multi_rule_and_comments_and_continuation():
+    content = (
+        "# a comment line\n"
+        'alert tcp any any -> any any (msg:"a"; sid:1; rev:1; classtype:x;)\n'
+        "\n"
+        'alert udp any any -> any any (msg:"b"; sid:2; \\\n'
+        "rev:1; classtype:y;)\n"
+    )
+    r = lint("suricata", content)
+    assert r["valid"] is True
+    assert r["errors"] == []
+
+
+def test_suricata_empty_content_rejected():
+    r = lint("suricata", "   \n # only a comment\n")
+    assert r["valid"] is False
+    assert any("no Suricata rule" in e for e in r["errors"])
+
+
+def test_suricata_bidirectional_operator_ok():
+    r = lint("suricata", 'alert tcp any any <> any any (msg:"x"; sid:5; rev:1; classtype:z;)')
+    assert r["valid"] is True
+
+
+def test_suricata_is_deterministic():
+    assert lint("suricata", GOOD_SURICATA) == lint("suricata", GOOD_SURICATA)
+
+
+def test_rule_type_suricata_accepted_by_validation():
+    # unknown type still rejected; suricata now accepted
+    bad = lint("snort", "x")
+    assert bad["ok"] is False and bad["error"] == "validation_error"
+    assert lint("suricata", GOOD_SURICATA)["ok"] is True

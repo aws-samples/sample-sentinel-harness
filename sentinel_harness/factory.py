@@ -66,7 +66,9 @@ ENV_TAG_KEY = "sentinel:env"
 
 # Same naming rule core.create_harness enforces server-side ([a-zA-Z][a-zA-Z0-9_]{0,39}).
 # We check it during dry-run so a bad name fails locally, not after a round trip.
-_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,39}$")
+# \Z (not $) so a trailing newline is rejected: '$' matches before a final \n,
+# which would let 'name\n' pass local validation and fail only server-side.
+_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,39}\Z")
 
 
 class FactoryError(RuntimeError):
@@ -245,15 +247,38 @@ def teardown_fleet(manifest_or_prefix: Any) -> list[str]:
     Returns the list of deleted harness names. Deletion errors are not swallowed."""
     # A bare prefix string is anything that is not an on-disk manifest file.
     if isinstance(manifest_or_prefix, str) and not os.path.isfile(manifest_or_prefix):
+        # Guard: an empty/whitespace prefix would delegate to core.cleanup("") which
+        # matches EVERY harness (''.startswith('') is True) — a catastrophic
+        # delete-everything. Refuse it explicitly.
+        if not manifest_or_prefix.strip():
+            raise FactoryError(
+                "refusing an empty teardown prefix — it would match and delete "
+                "EVERY harness; pass a non-empty prefix or a manifest"
+            )
         return core.cleanup(manifest_or_prefix)
 
     manifest = _load_manifest(manifest_or_prefix)
-    resolved, _ = _resolve_fleet(manifest)
-    wanted = {r["name"] for r in resolved}
+    resolved, env = _resolve_fleet(manifest)
     existing = _index_existing()
 
     deleted: list[str] = []
-    for name in (n for n in wanted if n in existing):
-        core.delete_harness(existing[name]["harnessId"])
+    # Iterate the ORDERED resolved list (not a set) so deletion order + the
+    # returned list are deterministic.
+    for r in resolved:
+        name = r["name"]
+        prior = existing.get(name)
+        if prior is None:
+            continue
+        # Tag-guard on teardown too (mirrors provision_fleet): never delete a
+        # harness claimed by a DIFFERENT env — a staging teardown must not wipe a
+        # prod harness that happens to share the name.
+        prior_env = _existing_env(prior)
+        if prior_env is not None and prior_env != env:
+            raise FactoryError(
+                f"cross-env tag-guard: refusing to delete harness {name!r} — it is "
+                f"claimed by env {prior_env!r} but this teardown is env {env!r}. "
+                f"Run against the matching SENTINEL_ENV."
+            )
+        core.delete_harness(prior["harnessId"])
         deleted.append(name)
     return deleted

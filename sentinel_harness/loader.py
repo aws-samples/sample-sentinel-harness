@@ -166,7 +166,22 @@ def _resolve_system_prompt(system_prompt, harness_dir: str):
         raise ValueError(
             f"systemPrompt must be a path string or a list, got {type(system_prompt).__name__}"
         )
-    prompt_path = system_prompt if os.path.isabs(system_prompt) else os.path.join(harness_dir, system_prompt)
+    # CONTAINMENT: the systemPrompt path must resolve to a file INSIDE harness_dir.
+    # An absolute path or a '..' escape would let a malicious/mistaken harness.yaml
+    # read any process-readable file and ship its contents to the model — reject
+    # both. (Docstring: "read relative to the yaml's directory".)
+    if os.path.isabs(system_prompt):
+        raise ValueError(
+            f"systemPrompt must be a path RELATIVE to the harness dir, got absolute "
+            f"path {system_prompt!r}"
+        )
+    prompt_path = os.path.realpath(os.path.join(harness_dir, system_prompt))
+    base = os.path.realpath(harness_dir)
+    if prompt_path != base and not prompt_path.startswith(base + os.sep):
+        raise ValueError(
+            f"systemPrompt path {system_prompt!r} escapes the harness directory "
+            f"(resolved to {prompt_path!r}); '..' traversal is not allowed"
+        )
     if not os.path.isfile(prompt_path):
         raise FileNotFoundError(f"systemPrompt file not found: {prompt_path}")
     with open(prompt_path, "r", encoding="utf-8") as fh:
@@ -218,6 +233,22 @@ def load_harness_config(path: str) -> dict:
 
     tools = list(cfg.get("tools") or [])
     allowed_tools = cfg.get("allowedTools")
+    # Validate allowedTools shape BEFORE using it (governance-critical):
+    #  - it must be a list (a bare scalar string would be iterated CHARACTER by
+    #    character in _inject_inline_gates, silently failing to wire a HITL gate);
+    #  - '*' is FORBIDDEN (ironclad rule #1: allowedTools is always an explicit
+    #    allowlist, never a wildcard that would grant every tool).
+    if allowed_tools is not None:
+        if not isinstance(allowed_tools, list):
+            raise ValueError(
+                f"allowedTools must be a list, got {type(allowed_tools).__name__} "
+                f"({allowed_tools!r}); a bare scalar is a config error"
+            )
+        if "*" in allowed_tools:
+            raise ValueError(
+                "allowedTools must be an explicit allowlist — '*' (grant-all) is "
+                "forbidden (ironclad rule #1)"
+            )
     tools = _inject_inline_gates(tools, allowed_tools)
 
     kwargs: dict = dict(name=name, system_prompt=system_prompt)

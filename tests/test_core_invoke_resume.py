@@ -198,3 +198,41 @@ def test_empty_stream_yields_benign_structured_result(fake_data):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# --------------------------------------------------------------------------- #
+# regression (round-2 audit HIGH): parallel tool_use blocks must ALL be kept  #
+# --------------------------------------------------------------------------- #
+def _block(tuid, name, raw):
+    return [
+        {"contentBlockStart": {"start": {"toolUse": {"toolUseId": tuid, "name": name}}}},
+        {"contentBlockDelta": {"delta": {"toolUse": {"input": raw}}}},
+        {"contentBlockStop": {}},
+    ]
+
+
+def test_parallel_tool_use_blocks_all_captured():
+    stream = (_block("tu1", "gateA", '{"a": 1}')
+              + _block("tu2", "gateB", '{"b": 2}')
+              + [{"messageStop": {"stopReason": "tool_use"}}])
+    r = sh._consume_stream(iter(stream))
+    assert r["tools_used"] == ["gateA", "gateB"]
+    assert len(r["tool_uses"]) == 2
+    assert [t["toolUseId"] for t in r["tool_uses"]] == ["tu1", "tu2"]
+    assert r["tool_use"]["toolUseId"] == "tu1"  # back-compat: first
+    assert [t["input"] for t in r["tool_uses"]] == [{"a": 1}, {"b": 2}]
+
+
+def test_malformed_tool_input_preserves_raw_in_unparsed():
+    stream = ([{"contentBlockStart": {"start": {"toolUse": {"toolUseId": "x", "name": "g"}}}},
+               {"contentBlockDelta": {"delta": {"toolUse": {"input": '{"action": '}}}},  # truncated
+               {"contentBlockStop": {}},
+               {"messageStop": {"stopReason": "tool_use"}}])
+    r = sh._consume_stream(iter(stream))
+    assert r["tool_use"]["input"] == {"_unparsed": '{"action": '}  # raw preserved, not empty
+
+
+def test_no_pending_tool_uses_when_not_paused():
+    stream = _block("tu1", "gateA", "{}") + [{"messageStop": {"stopReason": "end_turn"}}]
+    r = sh._consume_stream(iter(stream))
+    assert r["tool_uses"] == [] and r["tool_use"] is None
