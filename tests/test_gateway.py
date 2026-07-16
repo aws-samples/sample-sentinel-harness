@@ -384,7 +384,11 @@ def test_lambda_interceptor_points_and_input_config():
     )
     assert e["interceptionPoints"] == ["REQUEST", "RESPONSE"]
     assert e["inputConfiguration"]["passRequestHeaders"] is True
-    assert e["inputConfiguration"]["payloadFilter"] == {"exclude": ["$.secret", "$.token"]}
+    # payloadFilter.exclude is a list of {"field": <jsonpath>} SELECTOR STRUCTS, not
+    # bare strings (round-7: the raw-string shape crashed the real CreateGateway API).
+    assert e["inputConfiguration"]["payloadFilter"] == {
+        "exclude": [{"field": "$.secret"}, {"field": "$.token"}]
+    }
 
 
 def test_lambda_interceptor_payload_filter_defaults_headers_false():
@@ -392,7 +396,7 @@ def test_lambda_interceptor_payload_filter_defaults_headers_false():
     # (the service requires it inside inputConfiguration).
     e = gw.lambda_interceptor("arn:...:function:f", payload_exclude=["$.x"])
     assert e["inputConfiguration"]["passRequestHeaders"] is False
-    assert e["inputConfiguration"]["payloadFilter"] == {"exclude": ["$.x"]}
+    assert e["inputConfiguration"]["payloadFilter"] == {"exclude": [{"field": "$.x"}]}
 
 
 def test_lambda_interceptor_rejects_bad_point():
@@ -475,6 +479,12 @@ def test_hardening_builders_match_service_schema():
     inp = ic.members["inputConfiguration"]
     assert "passRequestHeaders" in inp.members
     assert "exclude" in inp.members["payloadFilter"].members
+    # exclude is a list<structure{field}> — descend into the element so a bare-string
+    # drift (round-7) is caught offline, not only against the live service.
+    exclude_member = inp.members["payloadFilter"].members["exclude"].member
+    assert "field" in exclude_member.members, (
+        "payloadFilter.exclude element must be a {'field': ...} selector struct"
+    )
     # policyEngineConfiguration.{arn, mode}
     pe = shape.members["policyEngineConfiguration"]
     assert "arn" in pe.members and "mode" in pe.members

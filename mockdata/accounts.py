@@ -53,11 +53,15 @@ from typing import Any, Dict, List
 # --------------------------------------------------------------------------- #
 # Fictional multi-account inventory (synthetic, deterministic).
 #
-# Four accounts spanning prod + non-prod. The two prod accounts each carry a
-# genuine open finding (a public S3 bucket; an over-permissive role) so the
-# triage supervisor has real issues to open tickets for; dev-sandbox has a
-# low-severity finding; security-audit is clean (a negative case so the agent
-# must not over-report). Resource counts are small, round, and fictional.
+# Four accounts spanning prod + non-prod:
+#   - prod-payments (111...): a public S3 bucket AND an over-permissive role;
+#   - prod-web (222...): an unencrypted volume;
+#   - dev-sandbox (333...): a low-severity mfa_disabled finding;
+#   - security-audit (444...): CLEAN (no open findings) — a negative case so the
+#     agent must not over-report. (Note: it is tagged environment=prod, so three
+#     accounts are prod; `environment` is descriptive metadata, not a filter key.)
+# The prod accounts give the triage supervisor real issues to open tickets for.
+# Resource counts are small, round, and fictional.
 #
 # Account ids are OBVIOUSLY-FICTIONAL repeated-digit demo ids, NOT real AWS
 # account numbers, and never appear in an arn:/iam:: context.

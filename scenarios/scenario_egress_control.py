@@ -149,20 +149,42 @@ def classify_egress(ec2_client: Any, vpc_id: str) -> Dict[str, Any]:
     )
     route_tables = rt_resp.get("RouteTables", [])
 
+    # Route-target fields (top-level keys in a boto3 Route) that forward a default
+    # route OFF the VPC toward the public internet — directly (IGW/NAT/EIGW) or via
+    # another network (Transit Gateway, NAT instance, VPC peering, carrier/vgw). The
+    # ONLY containing target for a 0.0.0.0/0 route is the implicit "local" route,
+    # which never has a 0.0.0.0/0 destination anyway. We enumerate the escape targets
+    # and FAIL CLOSED on anything else (see _is_internet_default_route).
+    _INTERNET_TARGET_FIELDS = (
+        "NatGatewayId", "TransitGatewayId", "InstanceId", "NetworkInterfaceId",
+        "VpcPeeringConnectionId", "CarrierGatewayId", "EgressOnlyInternetGatewayId",
+        "LocalGatewayId", "CoreNetworkArn", "VpcEndpointId",
+    )
+
     def _is_internet_default_route(route: Dict[str, Any]) -> bool:
-        """A default route (0.0.0.0/0 or ::/0) whose target is an internet device."""
+        """A default route (0.0.0.0/0 or ::/0) whose target can reach the internet.
+
+        FAIL CLOSED: a default route is treated as internet-capable unless its ONLY
+        target is the implicit ``local`` gateway. The prior allowlist recognized only
+        igw-/eigw-/NatGateway and MISSED off-VPC escapes — a 0.0.0.0/0 route via a
+        Transit Gateway (the standard AWS centralized-egress pattern), a NAT instance
+        (InstanceId/NetworkInterfaceId), VPC peering, or a carrier gateway — so a VPC
+        with full internet egress was falsely certified "contained"."""
         dest = route.get("DestinationCidrBlock") or route.get("DestinationIpv6CidrBlock")
         if dest not in ("0.0.0.0/0", "::/0"):
             return False
-        # Any of these targets forwards toward the public internet.
         gw = route.get("GatewayId") or ""
-        nat = route.get("NatGatewayId") or ""
-        eigw = route.get("EgressOnlyInternetGatewayId") or ""
-        return (
-            gw.startswith("igw-")
-            or bool(nat)
-            or gw.startswith("eigw-")
-            or bool(eigw)
+        if gw == "local":
+            return False  # the implicit in-VPC route — the only contained target
+        if gw.startswith("igw-") or gw.startswith("eigw-"):
+            return True
+        if any(route.get(f) for f in _INTERNET_TARGET_FIELDS):
+            return True
+        # A default route with SOME other/unknown non-local target is treated as
+        # internet-capable (fail closed) rather than silently assumed contained.
+        return bool(gw) or any(
+            v for k, v in route.items()
+            if k.endswith("Id") or k.endswith("Arn")
         )
 
     def _rt_has_internet_route(rt: Dict[str, Any]) -> bool:

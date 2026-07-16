@@ -201,7 +201,12 @@ def triage(
         for h in asset_surface.get("hosts", []):
             host_id = h.get("id")
             for svc in h.get("services", []):
-                if svc.get("known_vuln") and svc.get("cve_id") == cve_id:
+                # Case-insensitive CVE join: the query id was upper-cased (line 187)
+                # but the asset-side cve_id is copied verbatim, so a mixed/lower-case
+                # value on a host would silently drop the match and flip the verdict
+                # to "not exposed". Normalize both sides.
+                svc_cve = str(svc.get("cve_id") or "").strip().upper()
+                if svc.get("known_vuln") and svc_cve == cve_id:
                     if host_id and host_id not in affected_hosts:
                         affected_hosts.append(host_id)
                     if h.get("internet_exposed"):
@@ -314,13 +319,26 @@ def run_pure(cve_id: str = DEFAULT_CVE) -> Dict[str, Any]:
     # --- Step 4: assemble the deterministic CVETriage verdict. ---
     verdict = triage(cve_id, nvd_cve, epss_rec, surface)
     affected_hosts = verdict["affected_hosts"]
-    # Real invariant (not a tautology): the blast radius must actually agree with
-    # the affected-host set — affected_count == len(affected_hosts) AND every
-    # reachable host is a real, distinct neighbour of an affected host.
     blast = verdict["blast_radius"]
     reachable = blast.get("reachable_hosts") or []
+    # Real invariant (NOT a tautology): recompute the affected set INDEPENDENTLY from
+    # the raw surface — a case-insensitive join of this CVE against every host's
+    # known-vuln services — and require the verdict to agree with that ground truth.
+    # (The prior check compared affected_count to len(affected_hosts) taken from the
+    # SAME verdict dict, which is always equal — it could never fail.)
+    _want = cve_id.strip().upper()
+    expected_affected = sorted({
+        h.get("id") for h in ((surface or {}).get("hosts") or [])
+        for svc in (h.get("services") or [])
+        if svc.get("known_vuln")
+        and str(svc.get("cve_id") or "").strip().upper() == _want
+        and h.get("id")
+    })
     blast_radius_computed = (
-        blast.get("affected_count") == len(affected_hosts)
+        sorted(affected_hosts) == expected_affected
+        and blast.get("affected_count") == len(expected_affected)
+        # a reachable (blast-radius) host must be a DISTINCT neighbour, never an
+        # already-affected host counted twice.
         and set(reachable).isdisjoint(set(affected_hosts))
     )
     rec("triage", bool(affected_hosts), verdict)

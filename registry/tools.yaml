@@ -55,6 +55,15 @@ tools:
       findings list. Adds no judgement beyond composing the three conservative
       tools; makes no network calls.
 
+  - name: detection_navigator
+    owner: detection-engineering
+    status: approved
+    description: >-
+      Deterministic, LLM-free renderer that turns detection_coverage output into a
+      standard MITRE ATT&CK Navigator layer JSON (v4.5): covered techniques green,
+      blind spots red, each annotated with the detecting rule(s). A thin faithful
+      renderer — inherits detection_coverage's conservative semantics; no network calls.
+
   - name: nvd_lookup
     owner: vuln-management
     status: approved

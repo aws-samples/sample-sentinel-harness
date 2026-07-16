@@ -191,10 +191,10 @@ def test_load_registry_with_shipped_yaml_dual_gate():
     that have code; web_search is pending so it is never live regardless."""
     factory_map = {n: _factory(n) for n in
                    ("sigma_yara_lint", "detection_translate", "detection_dedup",
-                    "detection_coverage", "detection_audit", "nvd_lookup", "epss_kev",
-                    "attack_lookup", "harness_ops", "run_evaluation", "sigma_match",
-                    "asset_lookup", "siem_query", "enrich_ioc", "create_ticket",
-                    "whitelist_optimizer", "ops_query")}
+                    "detection_coverage", "detection_audit", "detection_navigator",
+                    "nvd_lookup", "epss_kev", "attack_lookup", "harness_ops",
+                    "run_evaluation", "sigma_match", "asset_lookup", "siem_query",
+                    "enrich_ioc", "create_ticket", "whitelist_optimizer", "ops_query")}
     reg = load_registry(factory_map, TOOLS_YAML)
     rep = reg.governance_check()
     # harness_ops (M1) + run_evaluation (M2) + sigma_match/asset_lookup (M3) +
@@ -202,9 +202,10 @@ def test_load_registry_with_shipped_yaml_dual_gate():
     # ops_query (M5 ops-automation) are approved + code-mapped, so live (list_live is sorted).
     assert reg.list_live() == ["asset_lookup", "attack_lookup", "create_ticket",
                                "detection_audit", "detection_coverage", "detection_dedup",
-                               "detection_translate", "enrich_ioc", "epss_kev", "harness_ops",
-                               "nvd_lookup", "ops_query", "run_evaluation", "siem_query",
-                               "sigma_match", "sigma_yara_lint", "whitelist_optimizer"]
+                               "detection_navigator", "detection_translate", "enrich_ioc",
+                               "epss_kev", "harness_ops", "nvd_lookup", "ops_query",
+                               "run_evaluation", "siem_query", "sigma_match", "sigma_yara_lint",
+                               "whitelist_optimizer"]
     assert rep.approved_missing_impl == []       # all approved tools implemented
     assert rep.impl_missing_registry == []       # no shadow code
     assert rep.pending == []                      # web_search has no factory here
@@ -217,10 +218,10 @@ def test_shipped_yaml_flags_missing_impl_as_drift():
     rep = reg.governance_check()
     assert set(rep.approved_missing_impl) == {
         "sigma_yara_lint", "detection_translate", "detection_dedup",
-        "detection_coverage", "detection_audit", "nvd_lookup", "epss_kev",
-        "attack_lookup", "harness_ops", "run_evaluation", "sigma_match", "asset_lookup",
-        "siem_query", "enrich_ioc", "create_ticket", "whitelist_optimizer",
-        "ops_query"
+        "detection_coverage", "detection_audit", "detection_navigator",
+        "nvd_lookup", "epss_kev", "attack_lookup", "harness_ops", "run_evaluation",
+        "sigma_match", "asset_lookup", "siem_query", "enrich_ioc", "create_ticket",
+        "whitelist_optimizer", "ops_query"
     }
     assert rep.ok is False
 

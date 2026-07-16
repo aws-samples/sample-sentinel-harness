@@ -169,8 +169,14 @@ _CONDITION_KEYWORDS = {"and", "or", "not", "of", "them", "all"}
 
 # A lone wildcard value (``'*'`` / ``"*"`` / ``*``) makes a selection match every
 # event — the single most common way a generated rule becomes an alert cannon.
-# Detected as a high-severity objection driving fp_risk high.
-_LONE_WILDCARD_RE = re.compile(r""":\s*['"]?\*['"]?\s*$""", re.MULTILINE)
+# Detected as a high-severity objection driving fp_risk high. Two forms must match:
+#   - inline scalar: ``CommandLine: '*'``  (colon then wildcard)
+#   - YAML list item: ``  - '*'`` / the ``- *`` a dict artifact renders for a
+#     single-element wildcard list (``CommandLine: ['*']``) — semantically identical
+#     to the scalar, so the earlier colon-only regex was a false-negative.
+_LONE_WILDCARD_RE = re.compile(
+    r"""(?m)(?::\s*['"]?\*['"]?\s*$|^\s*-\s*['"]?\*['"]?\s*$)"""
+)
 
 # A detection-map identifier key line, e.g. ``    selection:`` or ``  filter_x:``.
 # Used to know which condition identifiers are actually defined.
@@ -317,7 +323,11 @@ def review_detection(
 
     # --- Condition presence + breadth ----------------------------------------
     condition = _condition_line(low)
-    if condition is None:
+    # An EMPTY/whitespace condition is functionally identical to a missing one (it
+    # matches nothing or everything depending on the backend) — `_condition_line`
+    # returns '' for a bare `condition:` marker, so guard on falsy, not `is None`,
+    # or the high-severity objection is silently skipped (audited bypass).
+    if not (condition or "").strip():
         _object("missing_condition", "high",
                 "rule declares no condition; depending on the backend it matches nothing "
                 "or every event — either way it is not a usable detection.")
@@ -343,18 +353,28 @@ def review_detection(
 
     # --- Logic flaws: condition references an undefined identifier ------------
     logic_flaws: List[str] = []
-    if condition:
+    if (condition or "").strip():
         defined = _defined_identifiers(text)
+        # Capture an optional trailing '*' so a Sigma glob reference ('selection*')
+        # is extracted WHOLE — otherwise the '*' is dropped and a legitimate glob
+        # looks like a bare 'selection' typo.
         referenced = [
-            tok for tok in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", condition)
-            if tok not in _CONDITION_KEYWORDS
+            tok for tok in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*\*?", condition)
+            if tok.rstrip("*") not in _CONDITION_KEYWORDS
         ]
         for ident in referenced:
-            # A trailing/leading wildcard reference (e.g. 'selection*') is a Sigma
-            # glob over identifiers; treat it as satisfied if ANY defined id shares
-            # the stem, otherwise flag it.
+            # Prefix/glob matching applies ONLY when the identifier is actually a
+            # Sigma glob (ends with '*', e.g. 'selection*'); a plain identifier must
+            # match a defined id EXACTLY. Treating every ident as a prefix meant a
+            # typo like 'sel' (a prefix of 'selection') was silently accepted, so a
+            # broken condition got APPROVE (audited false-negative).
+            is_glob = ident.endswith("*")
             stem = ident.rstrip("*")
-            if any(d == ident or d.startswith(stem) for d in defined):
+            if is_glob:
+                ok = any(d == stem or d.startswith(stem) for d in defined)
+            else:
+                ok = ident in defined
+            if ok:
                 continue
             logic_flaws.append(
                 f"condition references '{ident}', which is not defined as a "

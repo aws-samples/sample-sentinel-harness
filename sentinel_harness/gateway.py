@@ -251,7 +251,16 @@ def lambda_interceptor(lambda_arn, *, interception_points=("REQUEST",),
     if pass_request_headers is not None or payload_exclude is not None:
         input_cfg: dict = {"passRequestHeaders": bool(pass_request_headers)}
         if payload_exclude is not None:
-            input_cfg["payloadFilter"] = {"exclude": list(payload_exclude)}
+            # The CreateGateway model types payloadFilter.exclude as a list of
+            # InterceptorPayloadExclusionSelector STRUCTURES ({"field": <jsonpath>}),
+            # NOT bare strings — emitting raw strings raised a botocore
+            # ParamValidationError against the real service (the redaction feature
+            # crashed while offline tests passed). Wrap each entry as {"field": ...};
+            # pass an already-shaped {"field": ...} dict through unchanged.
+            input_cfg["payloadFilter"] = {
+                "exclude": [f if isinstance(f, dict) else {"field": f}
+                            for f in payload_exclude]
+            }
         entry["inputConfiguration"] = input_cfg
     return entry
 

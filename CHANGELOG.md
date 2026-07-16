@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 **M13 — world-class depth + adversarial hardening.** Additive on top of M0–M12
-(no live-validated code rewritten). Test suite **1742 → 2242 offline passing**.
+(no live-validated code rewritten). Test suite **1742 → 2273 offline passing**.
 
 ### Added
 - **Deployment benchmark** (`sentinel_harness/benchmark.py`) — deterministic
@@ -67,11 +67,51 @@ All notable changes to this project are documented here. The format is based on
   three conservative tools; resilient to a junk entry (surfaced, not a crash).
   Registered + governance-approved. This completes the detection-engineering suite:
   **lint → translate → dedup → coverage → audit**.
+- **ATT&CK Navigator layer export** (`tools/detection_navigator/`) — a
+  deterministic, LLM-free renderer that turns `detection_coverage` output into a
+  standard MITRE ATT&CK Navigator layer JSON (v4.5): covered techniques green
+  (score 100), blind spots red (score 0), each annotated with the detecting rule(s).
+  Drag-drop the layer into mitre-attack.github.io/attack-navigator for an
+  executive-ready coverage heat-map. A thin faithful renderer — inherits
+  `detection_coverage`'s conservative sub-technique semantics; no network calls.
+  Registered + governance-approved.
 
 ### Fixed
-- **Adversarial audit remediation:** six hostile-finder/skeptic-verifier rounds
-  cleared **81 confirmed defects** total (round-1: 20; round-2: 22; round-3: 17;
-  round-4: 6; round-5: 7; round-6: 9), each with a regression test.
+- **Adversarial audit remediation:** seven hostile-finder/skeptic-verifier rounds
+  cleared **89 confirmed defects** total (round-1: 20; round-2: 22; round-3: 17;
+  round-4: 6; round-5: 7; round-6: 9; round-7: 8), each with a regression test.
+  - Round-7 (gateway auth, mockdata/accounts, remaining scenarios, specialist
+    agents, CDK IaC). 8 confirmed:
+    - **gateway (HIGH)** — `lambda_interceptor` emitted `payloadFilter.exclude` as a
+      list of bare strings, but the CreateGateway API wants `{"field": <jsonpath>}`
+      selector structs — the redaction interceptor crashed against the real service
+      while two false-green offline tests asserted the buggy shape. Now wrapped as
+      `{"field": ...}`; the schema-drift guard test now descends into the element.
+    - **egress scenario (HIGH, false-contained)** — the default-deny gate only
+      recognized igw-/eigw-/NatGateway as internet targets, so a `0.0.0.0/0` route
+      via a Transit Gateway (the standard AWS centralized-egress pattern), a NAT
+      instance, VPC peering, or a carrier gateway was silently certified
+      "contained". Now FAIL-CLOSED: any non-`local` default-route target is treated
+      as internet-capable.
+    - **cve-asset scenario (HIGH)** — the CVE↔asset join upper-cased the query id
+      but compared case-sensitively against the asset-side `cve_id`, dropping a
+      mixed/lower-case match and flipping the verdict to "not exposed". Now
+      case-insensitive on both sides.
+    - **adversarial-reviewer (HIGH)** — the undefined-selection logic-flaw check
+      prefix-matched every condition identifier, so a typo (a prefix of a real
+      selection, e.g. `sel` for `selection`) got APPROVE. Now an exact match is
+      required unless the identifier is an actual `*` glob.
+    - **cve-asset scenario (MED)** — the `blast_radius_computed` invariant was a
+      tautology (it compared verdict fields to themselves). Now recomputed
+      independently from the raw asset surface.
+    - **adversarial-reviewer (MED)** — an empty `condition:` bypassed the
+      `missing_condition` objection (the guard was `is None` but the value is `''`).
+      Now guards on falsy.
+    - **adversarial-reviewer (MED)** — the lone-wildcard (`broad_selection`) check
+      missed the YAML list-item form `- '*'` (and the `- *` a dict artifact
+      renders). Now matches both the scalar and list-item wildcard forms.
+    - **mockdata/accounts (LOW)** — an inline comment misdescribed the per-account
+      findings placement; corrected to match the fixture data.
   - Round-6 (gateway, exporter, observability, benchmark_models, scenarios,
     a2a-contract). 9 confirmed:
     - **whitelist_optimizer (HIGH, false-green)** — for a `domain_suffix` whitelist
