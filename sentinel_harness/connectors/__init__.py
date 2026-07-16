@@ -33,11 +33,14 @@ from .base import (
     neutral_event,
 )
 from .siem import (
+    ChronicleConnector,
+    DatadogConnector,
     ElasticConnector,
     MicrosoftSentinelConnector,
     OpenSearchConnector,
     QRadarConnector,
     SplunkConnector,
+    SumoLogicConnector,
 )
 from .ticketing import JiraConnector, PagerDutyConnector, ServiceNowConnector
 
@@ -46,6 +49,7 @@ _SIEM_CONNECTORS: Dict[str, object] = {
     c.name: c for c in (
         SplunkConnector(), ElasticConnector(), OpenSearchConnector(),
         QRadarConnector(), MicrosoftSentinelConnector(),
+        ChronicleConnector(), SumoLogicConnector(), DatadogConnector(),
     )
 }
 _TICKETING_CONNECTORS: Dict[str, object] = {
@@ -66,6 +70,9 @@ __all__ = [
     "OpenSearchConnector",
     "QRadarConnector",
     "MicrosoftSentinelConnector",
+    "ChronicleConnector",
+    "SumoLogicConnector",
+    "DatadogConnector",
     "ServiceNowConnector",
     "JiraConnector",
     "PagerDutyConnector",
