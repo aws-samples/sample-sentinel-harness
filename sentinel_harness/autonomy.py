@@ -261,8 +261,15 @@ def run_improvement_loop(
         )
         last_gate = gate
 
-        # A candidate that already passes bar+safety cannot be "improved" further.
-        done = gate["passed_bar"] and gate["safety_ok"]
+        # Stop early only when the candidate is FULLY promotable (bar + safety +
+        # no regression) — i.e. the actual promotion gate. Using only bar+safety
+        # here was an audited bug: a candidate that clears the bar and is safe but
+        # REGRESSES below the incumbent would terminate the loop and refuse a
+        # promotion a further revision could have earned — and, perversely, a WORSE
+        # starting candidate (below bar) would keep revising and promote while a
+        # better-but-regressing one stopped and failed. Gating on the full
+        # promotion condition keeps revising until it truly beats the incumbent.
+        done = gate["promotable_pre_human"]
         revised = False
         if not done and rnd < max_rounds:
             nxt = revise_fn(candidate, last_score)

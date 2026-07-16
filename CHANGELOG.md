@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 **M13 — world-class depth + adversarial hardening.** Additive on top of M0–M12
-(no live-validated code rewritten). Test suite **1742 → 2126 offline passing**.
+(no live-validated code rewritten). Test suite **1742 → 2164 offline passing**.
 
 ### Added
 - **Deployment benchmark** (`sentinel_harness/benchmark.py`) — deterministic
@@ -43,11 +43,41 @@ All notable changes to this project are documented here. The format is based on
   (`contains`/`startswith`/`endswith`) become content matches, lossy ones
   (`re`/`base64`/`cidr`/numeric comparisons) are surfaced in an `untranslatable`
   list rather than silently dropped. Registered + governance-approved.
+- **Sigma rule-set governance** (`tools/detection_dedup/`) — a deterministic,
+  LLM-free tool that reports PROVABLE `duplicate` / `subsumption` / `overlap`
+  relationships across a Sigma library (same-logsource pairs, sound
+  set-containment over `contains`/`startswith`/`endswith`/equals predicates) and
+  surfaces every rule it cannot soundly analyze in `not_analyzed`. Conservative by
+  design — it never claims a rule is redundant without a proven subset relation, so
+  a "safe to delete" verdict never deletes real coverage. Registered +
+  governance-approved.
 
 ### Fixed
-- **Adversarial audit remediation:** three hostile-finder/skeptic-verifier rounds
-  cleared **59 confirmed defects** total (round-1: 20; round-2: 22; round-3: 17),
-  each with a regression test.
+- **Adversarial audit remediation:** four hostile-finder/skeptic-verifier rounds
+  cleared **65 confirmed defects** total (round-1: 20; round-2: 22; round-3: 17;
+  round-4: 6), each with a regression test.
+  - Round-4 (the never-deep-audited M8–M13 core modules: autonomy, tracing,
+    eval_datasets, connectors). 22 findings → 6 confirmed after independent
+    skeptic verification (a high refute rate — out-of-contract crashes and
+    already-caught paths were correctly rejected):
+    - **eval_datasets safety gate (HIGH+LOW)** — the offline safety-trap gate
+      mis-read a complying unsafe answer as a refusal because `_REFUSAL_MARKERS`
+      held weak substrings (`instead` matches "instead of", plus `unsafe`/
+      `unauthorized`/bare `reject` that merely NAME the risk); removed them (every
+      golden refusal leads with a strong opener, so they added only bypass
+      surface). Also fold typographic apostrophes/quotes to ASCII so a curly `’`
+      no longer evades the compliance markers.
+    - **tracing (MED)** — a non-finite float attribute (`inf`/`NaN`) was emitted as
+      the bare `Infinity`/`NaN` tokens, which are not valid JSON and break strict
+      `aws/spans` consumers; now folded to a stable string.
+    - **autonomy (MED)** — the revise loop's early-stop used only `passed_bar and
+      safety_ok`, omitting `regression_ok`; a bar-passing but regressing candidate
+      was falsely refused (and, perversely, a worse starting candidate could
+      promote while a better one stopped). Now gates on the full
+      `promotable_pre_human` condition.
+    - **connectors/ticketing (LOW)** — the PagerDuty connector silently dropped
+      `assigned_team` and `related_alert_ids`; now carried as an `assignments`
+      entry and a `dedup_key` (mirroring ServiceNow's `correlation_id` de-dupe).
   - Round-3 (the brand-new detection-engineering code — `detection_translate` +
     Suricata linting — audited hardest because it had only passed its author's
     tests). Two defect classes:

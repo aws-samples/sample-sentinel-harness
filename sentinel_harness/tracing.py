@@ -85,15 +85,27 @@ def _hex_id(seed: str, width: int) -> str:
 def _json_safe(value: Any) -> Any:
     """Coerce one attribute value into a JSON-serializable, DETERMINISTIC form.
 
-    Fixes two audited issues at once:
+    Fixes three audited issues at once:
       - a ``set``/``frozenset`` is emitted with unordered iteration → non-repeatable
         output (PYTHONHASHSEED-dependent); we sort it to a list;
       - a non-JSON-primitive (datetime, custom object) made ``trace_to_dict``
         raise on ``json.dumps`` even though ``_emit`` tolerated it via default=str;
-        we str-coerce it here so BOTH paths are JSON-able and identical.
+        we str-coerce it here so BOTH paths are JSON-able and identical;
+      - a NON-FINITE float (``inf``/``-inf``/``NaN``) was passed through unchanged,
+        and ``json.dumps`` renders those as the bare tokens ``Infinity``/``NaN``
+        which are NOT valid JSON — a strict consumer (JS ``JSON.parse``, Go/Rust
+        serde, the ``aws/spans`` online-eval source) rejects the whole span line.
+        We fold a non-finite float to a stable string so the line stays valid JSON.
     Primitives (str/int/float/bool/None) pass through; lists/tuples and dict values
     are coerced element-wise (recursively)."""
-    if isinstance(value, (str, int, float, bool)) or value is None:
+    if isinstance(value, float):
+        # bool is handled below (isinstance(True, int) is True in Python, but bool
+        # is not float, so we only reach here for real floats).
+        import math
+        if not math.isfinite(value):
+            return str(value)  # 'inf' / '-inf' / 'nan' — valid JSON string, stable
+        return value
+    if isinstance(value, (str, int, bool)) or value is None:
         return value
     if isinstance(value, (set, frozenset)):
         return sorted(_json_safe(v) for v in value)

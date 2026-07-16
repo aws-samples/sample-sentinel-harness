@@ -149,12 +149,26 @@ class PagerDutyConnector:
     def build_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         title = _require_title(request)
         sev = str(request.get("severity", "medium")).lower()
+        related = _related_ids(request)
         incident = {
             "type": "incident",
             "title": title,
             "urgency": _PD_URGENCY.get(sev, "low"),
             "body": {"type": "incident_body", "details": request.get("body", "")},
         }
+        # Carry the two neutral fields the other connectors carry (audited: they
+        # were silently dropped → mis-routing + duplicate incidents on re-run).
+        # related_alert_ids → dedup_key so a re-run UPDATES rather than duplicates
+        # (PagerDuty's de-dupe key, mirroring ServiceNow's correlation_id).
+        if related:
+            incident["dedup_key"] = ",".join(related)
+        # assigned_team → an assignment so the incident routes to the right team
+        # (PagerDuty routes via assignments[].assignee).
+        team = request.get("assigned_team")
+        if team:
+            incident["assignments"] = [
+                {"assignee": {"type": "team_reference", "id": str(team)}}
+            ]
         return {"body": {"incident": incident}, "path": "/incidents"}
 
     def parse_response(self, payload: Any) -> Dict[str, Any]:

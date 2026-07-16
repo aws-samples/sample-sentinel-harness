@@ -27,6 +27,15 @@ tools:
       human review. Ports the faithful string-predicate subset and surfaces
       lossy predicates (regex/numeric) explicitly; makes no network calls.
 
+  - name: detection_dedup
+    owner: detection-engineering
+    status: approved
+    description: >-
+      Deterministic, LLM-free Sigma rule-set governance: reports provable
+      duplicate / subsumption / overlap relationships across a rule library and
+      surfaces every rule it cannot soundly analyze. Conservative — never claims
+      a rule is redundant without a proven subset relation; makes no network calls.
+
   - name: nvd_lookup
     owner: vuln-management
     status: approved
