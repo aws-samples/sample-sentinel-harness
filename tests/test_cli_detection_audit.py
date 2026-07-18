@@ -229,5 +229,69 @@ def test_baseline_missing_baseline_file_exits_2(tmp_path, capsys):
     assert rc == 2
 
 
+# --------------------------------------------------------------------------- #
+# `sentinel detection ci` — one-shot combined gate                           #
+# --------------------------------------------------------------------------- #
+def test_ci_clean_passes(tmp_path, capsys):
+    d = _write_rules(tmp_path, {"a.yml": _GOOD})
+    rc = cli.main(["detection", "ci", d, "--min-score", "90"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "CI GATE: PASS" in out
+
+
+def test_ci_min_score_gate_fails(tmp_path, capsys):
+    d = _write_rules(tmp_path, {"a.yml": _GOOD, "broken.yml": _BROKEN})
+    rc = cli.main(["detection", "ci", d, "--min-score", "95"])
+    out = capsys.readouterr().out
+    assert rc == 1 and "CI GATE: FAIL" in out and "min-score" in out
+
+
+def test_ci_regression_gate_fails(tmp_path, capsys):
+    d = _write_rules(tmp_path, {"a.yml": _GOOD})
+    snap = tmp_path / "b.json"
+    cli.main(["detection", "baseline", d, "--snapshot", str(snap)])
+    capsys.readouterr()
+    (tmp_path / "broken.yml").write_text(_BROKEN)
+    # no --min-score, so ONLY the regression gate can fail it
+    rc = cli.main(["detection", "ci", d, "--against", str(snap)])
+    out = capsys.readouterr().out
+    assert rc == 1 and "regressed vs baseline" in out
+
+
+def test_ci_both_gates_reported(tmp_path, capsys):
+    d = _write_rules(tmp_path, {"a.yml": _GOOD})
+    snap = tmp_path / "b.json"
+    cli.main(["detection", "baseline", d, "--snapshot", str(snap)])
+    capsys.readouterr()
+    (tmp_path / "broken.yml").write_text(_BROKEN)
+    rc = cli.main(["detection", "ci", d, "--min-score", "95", "--against", str(snap)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    # BOTH failures listed
+    assert "min-score" in out and "regressed vs baseline" in out
+
+
+def test_ci_navigator_export_side_effect(tmp_path, capsys):
+    d = _write_rules(tmp_path, {"a.yml": _GOOD})
+    nav = tmp_path / "layer.json"
+    rc = cli.main(["detection", "ci", d, "--min-score", "90",
+                   "--techniques", "T1059", "--navigator-out", str(nav)])
+    assert rc == 0 and nav.is_file()
+    layer = json.loads(nav.read_text())
+    assert layer["versions"]["layer"] == "4.5"
+
+
+def test_ci_json_summary(tmp_path, capsys):
+    d = _write_rules(tmp_path, {"a.yml": _GOOD, "broken.yml": _BROKEN})
+    rc = cli.main(["detection", "ci", d, "--min-score", "95", "--json"])
+    obj = json.loads(capsys.readouterr().out)
+    assert rc == 1 and obj["passed"] is False and obj["gate_failures"]
+
+
+def test_ci_empty_dir_exits_2(tmp_path, capsys):
+    rc = cli.main(["detection", "ci", str(tmp_path)])
+    assert rc == 2
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

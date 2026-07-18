@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 **M13 — world-class depth + adversarial hardening.** Additive on top of M0–M12
-(no live-validated code rewritten). Test suite **1742 → 2324 offline passing**.
+(no live-validated code rewritten). Test suite **1742 → 2352 offline passing**.
 
 ### Added
 - **Deployment benchmark** (`sentinel_harness/benchmark.py`) — deterministic
@@ -88,8 +88,37 @@ All notable changes to this project are documented here. The format is based on
   uncovered technique / duplicate pair. Set-diff (not just the scalar score) catches
   churn that a flat score hides — the detection-engineering analogue of a coverage
   floor. Deterministic; registered + governance-approved.
+- **Splunk SPL + Elastic EQL translation targets** (`tools/detection_translate/`) —
+  the translator now emits FIELD-AWARE SIEM queries in addition to the content
+  matchers: a Sigma `field|modifier: value` maps to a real field term
+  (`field="*value*"` SPL / `field like~ "*value*"` EQL). More faithful than content
+  matching; values are grammar-escaped (quote/backslash/backtick/wildcard) so an
+  untrusted value cannot break out of the query, and lossy predicates still land in
+  `untranslatable`. Default targets stay `yara`+`suricata` (back-compat); SPL/EQL are
+  opt-in. A dedicated injection audit of the new emitters found + fixed 4 defects
+  (see Fixed).
+- **`sentinel detection ci <dir>` one-shot gate** — runs the whole detection suite
+  as a SINGLE CI step: audit (lint + dedup + ATT&CK coverage) + optional baseline
+  regression compare (`--against`) + optional Navigator layer export
+  (`--navigator-out`), with ONE combined exit code (fails on `--min-score` OR a
+  regression). Pure/offline; `--json` for a machine-readable gate summary.
 
 ### Fixed
+- **Splunk/Elastic translation output-injection + fidelity (4 defects).** An
+  adversarial audit of the NEW SPL/EQL emitters (the round-3 injection class applied
+  to fresh translation code) found, each now fixed + regression-tested:
+  - **SPL comment-delimiter injection (HIGH)** — a Sigma title containing the SPL
+    triple-backtick comment delimiter closed the provenance comment and injected a
+    live `| delete` command. `_dq_escape` now strips backticks (a Splunk
+    metacharacter for both the comment delimiter AND the macro trigger).
+  - **EQL case-sensitivity drift (MED)** — plain equality used EQL's case-SENSITIVE
+    `==` while Sigma's default match is case-INsensitive (a silent false negative:
+    `cmd.exe` missed `CMD.EXE`). All arms now use the case-insensitive `like~`.
+  - **EQL value-wildcard drift (MED)** — a value-borne `*`/`?` stayed a live wildcard
+    in EQL but was neutralized in SPL, so the same Sigma value matched differently
+    across the two targets. EQL now neutralizes value wildcards identically to SPL.
+  - **SPL macro backtick in values (LOW)** — a backtick in a value could reference a
+    Splunk search macro; removed by the same `_dq_escape` backtick strip.
 - **Service-model payload-shape drift (5 defects, offline-green/live-red).** A
   workflow validated every AWS-payload-building module against the REAL botocore
   service model and found payloads that pass mocked/offline tests (botocore checks

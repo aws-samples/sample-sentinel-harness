@@ -1,19 +1,27 @@
-"""detection_translate — deterministic Sigma → YARA / Suricata skeleton translator.
+"""detection_translate — deterministic Sigma → YARA / Suricata / Splunk / Elastic translator.
 
 SecOps purpose
 --------------
 A detection engineer often authors ONE rule (typically in Sigma, the vendor-neutral
 format) but must deploy across engines: a network IDS wants Suricata, a
-file/memory scanner wants YARA. Hand-porting is error-prone. This tool
-DETERMINISTICALLY translates the *translatable subset* of a Sigma detection into
-YARA and Suricata SKELETONS a human then reviews — and is HONEST about what does
-not carry over (a Sigma log-field predicate has no faithful YARA/Suricata
-equivalent, so it becomes a content match + a clearly-labeled ``note``).
+file/memory scanner wants YARA, a SIEM wants Splunk SPL or Elastic EQL. Hand-porting
+is error-prone. This tool DETERMINISTICALLY translates the *translatable subset* of a
+Sigma detection into SKELETONS a human then reviews — and is HONEST about what does
+not carry over (a lossy modifier has no faithful equivalent, so it is surfaced in
+``untranslatable``, never silently dropped).
+
+Two target families:
+  - CONTENT matchers (``yara``, ``suricata``) — byte/string content matches; a log
+    FIELD predicate has no true field semantics here, so it degrades to a content
+    match + a note.
+  - FIELD-AWARE queries (``splunk`` SPL, ``elastic`` EQL) — the Sigma field predicate
+    maps to a REAL field term (``field="*value*"`` / ``field like~ "*value*"``), a
+    more faithful translation; the OR-flatten boolean caveat still applies.
 
 This tool is DETERMINISTIC and LLM-FREE: no model, no tokens, no network. Same
-Sigma in → same YARA/Suricata out. It pairs with ``sigma_yara_lint`` (which then
-validates the emitted skeletons) and reuses ``sigma_match``'s selection parsing so
-the three tools agree on what a Sigma detection means.
+Sigma in → same output out. It pairs with ``sigma_yara_lint`` (which validates the
+emitted YARA/Suricata) and reuses ``sigma_match``'s selection parsing so the
+detection tools agree on what a Sigma detection means.
 
 What it translates (the honest, faithful subset)
 -------------------------------------------------
@@ -31,8 +39,9 @@ What it does NOT translate (surfaced in ``notes``, never silently dropped)
 
 Input contract
 --------------
-event = {"sigma": "<sigma rule yaml text>", "targets": ["yara", "suricata"]}
-    ``targets`` optional; defaults to both.
+event = {"sigma": "<sigma rule yaml text>", "targets": ["yara", "suricata", "splunk", "elastic"]}
+    ``targets`` optional; defaults to ["yara", "suricata"] (back-compat). Valid
+    targets: yara, suricata, splunk, elastic.
 
 Output contract
 ---------------
@@ -81,7 +90,7 @@ _FAITHFUL_MODIFIERS = {"contains", "startswith", "endswith", None}
 # Modifiers we cannot faithfully carry to YARA/Suricata content matching.
 _LOSSY_MODIFIERS = {"re", "base64", "base64offset", "cidr", "gt", "gte", "lt", "lte"}
 
-_VALID_TARGETS = {"yara", "suricata"}
+_VALID_TARGETS = {"yara", "suricata", "splunk", "elastic"}
 
 
 # --------------------------------------------------------------------------- #
@@ -274,6 +283,113 @@ def _emit_suricata(title: str, predicates: List[tuple], notes: List[str]) -> str
     )
 
 
+# --------------------------------------------------------------------------- #
+# Splunk SPL + Elastic EQL — FIELD-AWARE query languages                      #
+# --------------------------------------------------------------------------- #
+# Unlike YARA/Suricata (content matching over bytes), SPL and EQL are field-aware:
+# a Sigma `field|contains: value` maps to a real field predicate, so the translation
+# is MORE faithful than content matching. Both share the OR-flatten caveat (the
+# condition boolean structure is not reconstructed — noted). Values are grammar-
+# escaped so an untrusted value can never break out of the quoted literal.
+def _spl_field(field: str) -> str:
+    """Sanitize a Sigma field name for an SPL/EQL field token. Sigma fields are dotted
+    identifiers (``winlog.event_data.Image``); we keep alnum/underscore/dot and drop
+    anything else so a crafted field name cannot inject query syntax. A field that
+    reduces to empty falls back to a clearly-fake placeholder."""
+    safe = re.sub(r"[^A-Za-z0-9_.]", "", field)
+    return safe or "UNKNOWN_FIELD"
+
+
+def _dq_escape(text: str) -> str:
+    """Escape untrusted text for a double-quoted SPL/EQL string literal: backslash
+    then double-quote are backslash-escaped, control chars (newline/CR/tab) are
+    stripped to spaces, and the BACKTICK is removed entirely.
+
+    The backtick is dropped because it is a metacharacter in Splunk BOTH as the
+    triple-backtick comment delimiter (a title placed in an SPL provenance comment
+    could otherwise close the comment and inject a live ``| delete`` — an audited
+    output-injection) AND as the search-macro trigger; no legitimate detection value
+    needs a literal backtick, so removing it is the safe, context-independent fix."""
+    cleaned = "".join(
+        c if (0x20 <= ord(c) <= 0x7E or ord(c) > 0x7F) and c != "`" else (" " if c != "`" else "")
+        for c in text
+    )
+    return cleaned.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _spl_value(modifier: str, value: str) -> str:
+    """Render an SPL match value for a modifier. SPL ``field="..."`` supports ``*``
+    wildcards inside the quotes; contains/startswith/endswith become wildcard
+    positions. The value is escaped; any literal ``*`` in the value is itself
+    escaped so it is not mistaken for a wildcard we did not intend."""
+    esc = _dq_escape(value).replace("*", "\\*")   # neutralize value-borne wildcards
+    if modifier == "contains":
+        return f'"*{esc}*"'
+    if modifier == "startswith":
+        return f'"{esc}*"'
+    if modifier == "endswith":
+        return f'"*{esc}"'
+    return f'"{esc}"'  # plain equality
+
+
+def _emit_splunk(title: str, predicates: List[tuple], notes: List[str]) -> str:
+    """Build a Splunk SPL search skeleton. Each faithful predicate becomes a
+    ``field=<value>`` term; terms are AND-joined (the common single-selection case).
+    The OR-flatten caveat is noted. Returns a one-line ``search`` command."""
+    terms: List[str] = []
+    for sel, field, modifier, value in predicates:
+        terms.append(f"{_spl_field(field)}={_spl_value(modifier, str(value))}")
+    if not terms:
+        terms = ['REPLACE_ME="*"']
+    notes.append("Splunk: terms are AND-joined (single-selection assumption); a "
+                 "multi-selection condition (OR / NOT) must be reconstructed by hand. "
+                 "Prepend your index/sourcetype (e.g. `index=... sourcetype=...`).")
+    # `search` prefix + a provenance comment line (``` ```comment``` is SPL comment).
+    return f"search {' '.join(terms)}  ```Auto-translated from Sigma: {_dq_escape(title)}```\n"
+
+
+def _eql_value(modifier: str, value: str) -> str:
+    """Render an EQL match for a modifier. ALL arms use ``like~`` — EQL's
+    CASE-INSENSITIVE wildcard operator — including plain equality, because Sigma's
+    default string match is case-insensitive; using EQL's case-SENSITIVE ``==`` for
+    equality silently under-matched (``cmd.exe`` would miss ``CMD.EXE``, a false
+    negative) and was inconsistent with the other arms.
+
+    Value-borne ``*``/``?`` are neutralized to LITERALS — matching what
+    ``_spl_value`` does for SPL — so the SAME Sigma value matches identically across
+    both targets (they previously diverged: SPL literal vs EQL live-wildcard, with no
+    note). The ``*`` we add for contains/startswith/endswith positions stays a real
+    ``like~`` wildcard."""
+    # Neutralize value-borne like~ wildcards AFTER _dq_escape (identical ordering to
+    # _spl_value) so the '\' we add for '\*'/'\?' is not itself doubled by
+    # _dq_escape's backslash handling — keeping SPL and EQL byte-for-byte consistent.
+    esc = _dq_escape(value).replace("*", "\\*").replace("?", "\\?")
+    if modifier == "contains":
+        return f'like~ "*{esc}*"'
+    if modifier == "startswith":
+        return f'like~ "{esc}*"'
+    if modifier == "endswith":
+        return f'like~ "*{esc}"'
+    return f'like~ "{esc}"'  # plain equality — case-insensitive, no positional wildcard
+
+
+def _emit_elastic(title: str, predicates: List[tuple], notes: List[str]) -> str:
+    """Build an Elastic EQL query skeleton. Each faithful predicate becomes a
+    ``field <op> "value"`` condition, AND-joined inside ``any where ...``. The
+    ``like~`` operator gives case-insensitive wildcard matching for the
+    contains/startswith/endswith modifiers. OR-flatten caveat noted."""
+    conds: List[str] = []
+    for sel, field, modifier, value in predicates:
+        conds.append(f"{_spl_field(field)} {_eql_value(modifier, str(value))}")
+    if not conds:
+        conds = ['REPLACE_ME == "*"']
+    notes.append("Elastic EQL: conditions are AND-joined under `any where` (single-"
+                 "selection assumption); a multi-selection condition (OR / NOT) must "
+                 "be reconstructed. `any` matches any event category — narrow it "
+                 "(e.g. `process where ...`) to the real logsource.")
+    return f"any where {' and '.join(conds)}\n"
+
+
 def _classify_condition(condition: str, untranslatable: List[str], notes: List[str]) -> None:
     """Inspect the Sigma ``condition`` and record how faithfully the OR-flatten
     skeleton preserves it.
@@ -368,6 +484,10 @@ def _translate(sigma_text: str, targets: List[str]) -> Dict[str, Any]:
         translations["yara"] = _emit_yara(title, predicates, notes)
     if "suricata" in targets:
         translations["suricata"] = _emit_suricata(title, predicates, notes)
+    if "splunk" in targets:
+        translations["splunk"] = _emit_splunk(title, predicates, notes)
+    if "elastic" in targets:
+        translations["elastic"] = _emit_elastic(title, predicates, notes)
 
     return {
         "ok": True,

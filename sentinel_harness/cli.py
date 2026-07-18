@@ -505,6 +505,80 @@ def cmd_detection_baseline(args: argparse.Namespace) -> int:
     return 1 if cmp["regressed"] else 0
 
 
+def cmd_detection_ci(args: argparse.Namespace) -> int:
+    """One-shot detection-library CI gate: audit + (optional) baseline regression
+    compare + (optional) Navigator layer export, with a SINGLE combined exit code.
+
+    Exits non-zero (1) if EITHER gate fails — health_score below ``--min-score`` OR
+    a regression vs ``--against`` — so a pipeline can run one command. Exit 2 on bad
+    input. Prints a combined report; ``--json`` emits a machine-readable summary."""
+    techniques = None
+    if args.techniques:
+        techniques = [t.strip().upper() for t in args.techniques.split(",") if t.strip()]
+    rc, audit = _audit_directory(args.directory, techniques)
+    if rc != 0:
+        return rc
+
+    gate_failures: list = []
+
+    # --- min-score gate ---
+    score = audit["health_score"]
+    if args.min_score is not None and score < args.min_score:
+        gate_failures.append(f"health_score {score} < --min-score {args.min_score}")
+
+    # --- regression gate (optional) ---
+    compare = None
+    if args.against:
+        try:
+            with open(args.against, "r", encoding="utf-8") as fh:
+                baseline = json.load(fh)
+        except (OSError, ValueError) as exc:
+            _eprint(f"detection ci: could not read baseline {args.against!r}: {exc}")
+            return 2
+        compare = _load_tool_handler("detection_baseline").handler({
+            "mode": "compare", "audit": audit, "baseline": baseline,
+            "allow_score_drop": args.allow_score_drop,
+        }, None)
+        if not compare.get("ok"):
+            _eprint(f"detection ci: {compare.get('message')}")
+            return 2
+        if compare["regressed"]:
+            gate_failures.append("regressed vs baseline: " + "; ".join(compare["reasons"]))
+
+    # --- Navigator export (optional side-effect; never affects the gate) ---
+    if args.navigator_out:
+        nav_event = {"rules": _collect_sigma_rules(args.directory)}
+        if techniques is not None:
+            nav_event["techniques"] = techniques
+        nav = _load_tool_handler("detection_navigator").handler(nav_event, None)
+        if nav.get("ok"):
+            _emit_json(nav["layer"], args.navigator_out)
+        else:
+            _eprint(f"detection ci: navigator export skipped: {nav.get('message')}")
+
+    passed = not gate_failures
+    if args.json:
+        _emit_json({
+            "ok": True, "passed": passed, "health_score": score,
+            "totals": audit["totals"], "gate_failures": gate_failures,
+            "compare": compare,
+        }, None)
+    else:
+        _print_audit_report(audit)
+        if compare is not None:
+            print(f"Baseline: health {compare['baseline']['health_score']} -> "
+                  f"{score} (delta {compare['health_delta']})")
+            for r in compare["reasons"]:
+                print(f"  ! {r}")
+        if gate_failures:
+            print("CI GATE: FAIL")
+            for g in gate_failures:
+                print(f"  - {g}")
+        else:
+            print("CI GATE: PASS")
+    return 0 if passed else 1
+
+
 # ------------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -611,6 +685,33 @@ def build_parser() -> argparse.ArgumentParser:
                     help="tolerate a health-score decrease of up to N (default 0)")
     db.add_argument("--json", action="store_true", help="emit the raw compare JSON")
     db.set_defaults(func=cmd_detection_baseline)
+
+    # `sentinel detection ci <dir>` — one-shot gate: audit + optional baseline
+    # regression compare + optional Navigator export, one combined exit code.
+    dc = det_sub.add_parser(
+        "ci",
+        help="one-shot CI gate: audit + baseline regression + navigator export",
+        description=(
+            "Run the whole detection suite as ONE CI gate over DIRECTORY: audit "
+            "(lint + dedup + ATT&CK coverage), optionally compare against a baseline "
+            "(--against) for regressions, and optionally export a Navigator layer "
+            "(--navigator-out). Exits non-zero if health_score < --min-score OR a "
+            "regression is detected — a single command for a pipeline step."
+        ),
+    )
+    dc.add_argument("directory", help="directory of Sigma rule files (.yml/.yaml, recursive)")
+    dc.add_argument("--techniques",
+                    help="comma-separated target ATT&CK technique ids to score coverage")
+    dc.add_argument("--min-score", type=int, metavar="N",
+                    help="fail if health_score < N")
+    dc.add_argument("--against", metavar="BASELINE",
+                    help="also fail if regressed vs this baseline JSON (from `baseline --snapshot`)")
+    dc.add_argument("--allow-score-drop", type=int, default=0, metavar="N",
+                    help="tolerate a health-score decrease of up to N in the regression check")
+    dc.add_argument("--navigator-out", metavar="OUT",
+                    help="also write an ATT&CK Navigator layer JSON to OUT (does not affect the gate)")
+    dc.add_argument("--json", action="store_true", help="emit a machine-readable gate summary")
+    dc.set_defaults(func=cmd_detection_ci)
 
     return p
 

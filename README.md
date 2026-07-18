@@ -93,7 +93,7 @@ Honest build status per capability — mirrors the self-audit.
 | **L3 Foundation** | Deployable Terraform mirror (identity/vpc/guardrail/obs/harness) | 🟢 **built** (`terraform validate` clean) | `iac-terraform/` |
 | **Config** | YAML→harness loader (`sentinel create <harness.yaml>`) | 🟢 **built + tested** | `sentinel_harness/loader.py` |
 | **Core** | Harness lifecycle library + builders (create/invoke/HITL-resume/tools/memory) | 🟢 **library-grade, tested** | `sentinel_harness/core.py` |
-| **Tools** | `sigma_yara_lint` (real, deterministic, LLM-free) | 🟢 **functional + unit-tested** | `tools/sigma_yara_lint/`, `tests/test_sigma_yara_lint.py` |
+| **Tools** | Detection-engineering suite — `sigma_yara_lint` · `detection_translate` (→YARA/Suricata/SPL/EQL) · `detection_dedup` · `detection_coverage` · `detection_audit` · `detection_navigator` · `detection_baseline` (all deterministic, LLM-free, offline) | 🟢 **functional + unit-tested**; CLI-driven (`sentinel detection audit/baseline/ci`) — see [Detection-engineering suite](#-detection-engineering-suite-deterministic-offline-llm-free) | `tools/detection_*/`, `tools/sigma_yara_lint/`, `tests/test_detection_*.py` |
 | **Tools** | `nvd_lookup` / `epss_kev` / `attack_lookup` / `web_search` | 🟡 **reference stubs** (offline-safe, contract-tested) | `tools/`, `tests/test_tool_handlers.py` |
 | **Tools** | `siem_query` / `asset_lookup` / `enrich_ioc` / `ops_query` — backend-pluggable | 🟢 **built + tested** (offline mock default; `*_LIVE`=1 switches to a real stdlib-HTTP client — env-driven URL + bearer, timeouts, all failures→`upstream_error` with no silent fallback — proven end-to-end against an in-process 127.0.0.1 mock server, zero external network) | `tools/{siem_query,asset_lookup,enrich_ioc,ops_query}/`, `tests/test_*_live.py` |
 
@@ -122,6 +122,36 @@ sentinel cleanup sentinel_        # tear down every harness this repo created
 ```
 
 Execution-role policy (least-privilege, and **why** it omits `InvokeAgentRuntimeCommand`): [`docs/SETUP.md`](docs/SETUP.md).
+
+## 🛡 Detection-engineering suite (deterministic, offline, LLM-free)
+
+Seven composable tools take a Sigma rule library from authoring to a CI gate — every
+one is **deterministic, LLM-free, zero-network**, and **conservative** (each surfaces
+what it *cannot* soundly analyze in an explicit ledger rather than guessing):
+
+| Tool | Answers | Notes |
+|---|---|---|
+| `sigma_yara_lint` | Is each rule structurally valid? | Sigma + YARA + Suricata grammar |
+| `detection_translate` | Port one Sigma rule to other engines | → YARA · Suricata · **Splunk SPL** · **Elastic EQL**; lossy predicates → `untranslatable` |
+| `detection_dedup` | Which rules are duplicate / subsumed / overlapping? | provable set-containment only |
+| `detection_coverage` | Which ATT&CK techniques are **uncovered** (blind spots)? | sub-technique tag covers its parent, never the reverse |
+| `detection_audit` | One 0–100 health score + prioritized findings | aggregates lint + dedup + coverage |
+| `detection_navigator` | Coverage as an ATT&CK Navigator heat-map | standard layer v4.5 JSON |
+| `detection_baseline` | Did the library **regress** vs a saved baseline? | set-diff catches churn a scalar score hides |
+
+Driven from the CLI over a directory of `.yml`/`.yaml` Sigma rules:
+
+```bash
+sentinel detection audit rules/ --techniques T1059,T1190      # health report + coverage
+sentinel detection audit rules/ --navigator layer.json        # export ATT&CK Navigator layer
+sentinel detection baseline rules/ --snapshot baseline.json   # capture a regression baseline
+sentinel detection ci rules/ --min-score 90 --against baseline.json \
+                             --navigator-out layer.json        # ONE CI gate: score + regression + export
+```
+
+`detection ci` exits non-zero if the health score is below `--min-score` **or** the
+library regressed vs the baseline — a single pipeline step. All of the above run with
+**zero AWS / zero network**.
 
 ## 🔬 Scenarios & evidence
 

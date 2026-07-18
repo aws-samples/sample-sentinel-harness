@@ -559,6 +559,36 @@ out of the scenario script into a reusable, tested controller the self-improving
 feed managed online-eval; and running the remaining `[EXTERNAL]` items on an account with
 `InvokeHarness`/`CreateAgentRuntime` quota.
 
+## 4d. Continuous adversarial hardening + the detection-engineering suite (M14) — ✅ DELIVERED (offline; one live proof)
+
+> Theme: **relentlessly audit what exists, and turn detection engineering into a
+> first-class, CLI-driven, CI-gateable capability.** All additive, deterministic,
+> LLM-free; test suite **2126 → 2352 offline passing**, zero regressions.
+
+### M14 — audit rounds 3–8 + service-model drift + detection suite — ✅ DELIVERED
+- [x] **Eight adversarial-audit rounds** (hostile-finder → independent skeptic-verifier,
+      CONFIRMED-only) across every surface: detection tools (r3), core M8–M13 modules (r4),
+      core/loader/factory/cli/mockdata (r5), gateway/exporter/observability/scenarios/a2a (r6),
+      gateway-auth/scenarios/specialists/CDK (r7), CDK/deploy/CI supply-chain (r8). **96 confirmed
+      defects fixed, each with a regression test.** Refute rate 40–68% throughout — the verifier
+      is not a rubber stamp.
+- [x] **Service-model drift scan** — validate every AWS-payload-building module against the REAL
+      botocore service model (offline). Found **5 "offline-green / live-red"** shape defects
+      (botocore checks types but not string patterns / min-max / Create-vs-Update asymmetry):
+      `update_harness` memory `optionalValue` wrapper, `clientToken` pattern+length sanitize,
+      factory tag-read via `ListTagsForResource`, tag-value string validation. Each model-grounded.
+- [x] **Detection-engineering suite (7 tools, all deterministic/LLM-free/offline, conservative
+      with an explicit "cannot analyze" ledger):** `sigma_yara_lint` → `detection_translate`
+      (YARA/Suricata **+ Splunk SPL + Elastic EQL**) → `detection_dedup` → `detection_coverage`
+      → `detection_audit` (0–100 health score) → `detection_navigator` (ATT&CK Navigator layer)
+      → `detection_baseline` (regression gate). Fresh SPL/EQL emitters got their own injection
+      audit → 4 fixes (comment-delimiter injection, EQL case-sensitivity, value-wildcard drift).
+- [x] **CLI:** `sentinel detection audit | baseline | ci <dir>` — the suite as a one-command CI
+      gate (`ci` = audit + baseline regression + Navigator export, one combined exit code).
+- [x] **`[EXTERNAL]` live proof of a drift fix** — a model-legal underscore-named Registry
+      (`alert_triage`) created on a real non-prod account (pre-fix: server `ValidationException`
+      from the illegal clientToken), then torn down (zero residue) — `evidence/drift_fix_registry_clienttoken_live.json`.
+
 ---
 
 ## 5. Key specs (P0 detail; other milestones self-expand at this granularity)

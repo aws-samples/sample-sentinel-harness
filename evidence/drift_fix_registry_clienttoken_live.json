@@ -1,0 +1,26 @@
+{
+  "proof": "clientToken sanitize fix (registry_live) \u2014 underscore name create + teardown",
+  "account": "non-prod (jiasunm-neo Isengard dev)",
+  "underscore_name": "drift_proof_alert_triage",
+  "derived_client_token": "sentinel-registry-drift-proof-alert-triage-idempotency",
+  "token_len": 54,
+  "token_pattern_valid": true,
+  "steps": [
+    {
+      "create_registry": "OK \u2014 underscore name accepted LIVE (pre-fix: ValidationException on clientToken)",
+      "arn": "arn:aws:bedrock-agentcore:us-east-1:<acct>:registry/VNvUzFw7TkmE3qoS"
+    },
+    {
+      "live_status_observed": [
+        "CREATING",
+        "READY"
+      ]
+    },
+    {
+      "delete_registry": "OK \u2014 issued at READY (DeleteRegistry rejects CREATING); polled to gone"
+    }
+  ],
+  "teardown": "COMPLETE \u2014 registry deleted, absent from list_registries",
+  "registry_gone_confirmed": true,
+  "verdict": "PASS: the round-8/drift clientToken fix lets a model-legal underscore name create a real Registry; pre-fix it would fail server-side. Resource torn down; zero residue."
+}

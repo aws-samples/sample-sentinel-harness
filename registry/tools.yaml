@@ -23,9 +23,10 @@ tools:
     owner: detection-engineering
     status: approved
     description: >-
-      Deterministic, LLM-free Sigma -> YARA/Suricata SKELETON translator for
-      human review. Ports the faithful string-predicate subset and surfaces
-      lossy predicates (regex/numeric) explicitly; makes no network calls.
+      Deterministic, LLM-free Sigma -> YARA/Suricata/Splunk-SPL/Elastic-EQL SKELETON
+      translator for human review. Content matchers (YARA/Suricata) and field-aware
+      queries (SPL/EQL); ports the faithful string-predicate subset, surfaces lossy
+      predicates (regex/numeric) explicitly, grammar-escapes values; no network calls.
 
   - name: detection_dedup
     owner: detection-engineering
