@@ -10,11 +10,13 @@ on:
     branches: [main]
     paths:
       - "sentinel_harness/**"
+      - "site/**"
       - ".github/workflows/docs.yml"
   pull_request:
     branches: [main]
     paths:
       - "sentinel_harness/**"
+      - "site/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -56,17 +58,26 @@ jobs:
           AWS_ACCESS_KEY_ID: "docs"
           AWS_SECRET_ACCESS_KEY: "docs"
         run: |
-          pdoc sentinel_harness -o site \
+          pdoc sentinel_harness -o _apidocs \
             --docformat numpy \
-            --logo-link "https://github.com/neosun100/sentinel-harness"
-          test -f site/index.html
-          echo "----- rendered pages -----"; ls site/sentinel_harness/
+            --logo-link "https://neosun100.github.io/sentinel-harness/"
+          test -f _apidocs/index.html
+          echo "----- rendered API pages -----"; ls _apidocs/sentinel_harness/
+
+      - name: Assemble site (landing page + API docs)
+        run: |
+          cp -r site _site
+          cp -r _apidocs _site/api
+          test -f _site/index.html
+          test -f _site/api/index.html
+          echo "----- final site structure -----"
+          find _site -maxdepth 2 -type f | head -30
 
       - name: Upload Pages artifact
         # actions/upload-pages-artifact v5.0.0 (Node 24 — clears the Node 20 deprecation warning)
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
         with:
-          path: site
+          path: _site
 
   deploy:
     name: deploy to GitHub Pages

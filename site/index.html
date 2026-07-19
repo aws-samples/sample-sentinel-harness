@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>sentinel-harness — Production SecOps Agents as Configuration</title>
+<meta name="description" content="The world's most thoroughly hardened SecOps agent framework on Amazon Bedrock AgentCore Harness. 2352 tests, 100 defects fixed, live-validated on AWS."/>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0e1a;--bg2:#111827;--bg3:#1e293b;
+  --text:#e2e8f0;--muted:#94a3b8;--accent:#60a5fa;--accent2:#818cf8;
+  --green:#34d399;--orange:#fb923c;--purple:#a78bfa;--red:#f87171;
+  --glow:0 0 40px rgba(96,165,250,.15);
+  --radius:12px;
+  --font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  --mono:'JetBrains Mono','Fira Code','SF Mono',Consolas,monospace;
+}
+html{scroll-behavior:smooth;font-size:16px}
+body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.7;overflow-x:hidden}
+a{color:var(--accent);text-decoration:none;transition:color .2s}
+a:hover{color:var(--accent2)}
+
+/* Hero */
+.hero{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;position:relative;padding:2rem}
+.hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(96,165,250,.08) 0%,transparent 60%),radial-gradient(ellipse at 80% 80%,rgba(129,140,248,.06) 0%,transparent 50%);pointer-events:none}
+.hero-badge{display:inline-flex;align-items:center;gap:.5rem;padding:.4rem 1rem;border-radius:999px;background:rgba(96,165,250,.1);border:1px solid rgba(96,165,250,.3);font-size:.8rem;color:var(--accent);margin-bottom:1.5rem;animation:fadeIn .8s ease}
+.hero h1{font-size:clamp(2.5rem,6vw,4.5rem);font-weight:800;letter-spacing:-.03em;background:linear-gradient(135deg,#e2e8f0 0%,#60a5fa 50%,#818cf8 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;animation:fadeIn 1s ease}
+.hero-sub{font-size:clamp(1rem,2.5vw,1.4rem);color:var(--muted);max-width:700px;margin:1rem auto 2rem;animation:fadeIn 1.2s ease}
+.hero-stats{display:flex;flex-wrap:wrap;gap:1.5rem;justify-content:center;margin:2rem 0;animation:fadeIn 1.4s ease}
+.stat{text-align:center;min-width:120px}
+.stat-num{font-size:2rem;font-weight:800;font-family:var(--mono)}
+.stat-num.green{color:var(--green)}
+.stat-num.accent{color:var(--accent)}
+.stat-num.purple{color:var(--purple)}
+.stat-num.orange{color:var(--orange)}
+.stat-label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.1em}
+.hero-actions{display:flex;gap:1rem;flex-wrap:wrap;justify-content:center;margin-top:2rem;animation:fadeIn 1.6s ease}
+.btn{display:inline-flex;align-items:center;gap:.5rem;padding:.75rem 1.5rem;border-radius:var(--radius);font-weight:600;font-size:.9rem;transition:all .2s}
+.btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 4px 20px rgba(96,165,250,.3)}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(96,165,250,.4);color:#fff}
+.btn-secondary{background:var(--bg3);color:var(--text);border:1px solid rgba(148,163,184,.2)}
+.btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
+
+/* Sections */
+section{padding:5rem 2rem;max-width:1200px;margin:0 auto}
+.section-header{text-align:center;margin-bottom:3rem}
+.section-header h2{font-size:clamp(1.8rem,4vw,2.8rem);font-weight:700;margin-bottom:.5rem}
+.section-header p{color:var(--muted);max-width:600px;margin:0 auto}
+
+/* North Star */
+.north-star{position:relative;padding:4rem 2rem;margin:0 auto;max-width:1000px;border-radius:20px;background:linear-gradient(135deg,rgba(96,165,250,.05),rgba(129,140,248,.05));border:1px solid rgba(96,165,250,.15);text-align:center}
+.north-star h3{font-size:1.6rem;margin-bottom:1rem}
+.north-star .flow{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:.5rem;margin:1.5rem 0;font-family:var(--mono);font-size:.85rem;color:var(--muted)}
+.north-star .flow .step{padding:.4rem .8rem;border-radius:6px;background:var(--bg3);border:1px solid rgba(148,163,184,.15)}
+.north-star .flow .arrow{color:var(--accent);font-weight:700}
+
+/* Cards grid */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1.5rem}
+.card{background:var(--bg2);border:1px solid rgba(148,163,184,.1);border-radius:var(--radius);padding:1.5rem;transition:all .3s}
+.card:hover{border-color:var(--accent);transform:translateY(-4px);box-shadow:var(--glow)}
+.card-icon{font-size:2rem;margin-bottom:.75rem}
+.card h3{font-size:1.1rem;margin-bottom:.5rem}
+.card p{color:var(--muted);font-size:.9rem}
+.card-tag{display:inline-block;padding:.15rem .5rem;border-radius:4px;font-size:.7rem;font-weight:600;text-transform:uppercase;margin-top:.75rem}
+.tag-live{background:rgba(52,211,153,.15);color:var(--green)}
+.tag-offline{background:rgba(96,165,250,.15);color:var(--accent)}
+.tag-proven{background:rgba(167,139,250,.15);color:var(--purple)}
+
+/* Architecture */
+.arch-container{background:var(--bg2);border:1px solid rgba(148,163,184,.1);border-radius:var(--radius);padding:2rem;overflow-x:auto}
+.arch-svg{width:100%;max-width:900px;margin:0 auto;display:block}
+
+/* Timeline */
+.timeline{position:relative;padding-left:2rem}
+.timeline::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:linear-gradient(to bottom,var(--accent),var(--accent2),var(--purple))}
+.tl-item{position:relative;padding:1rem 0 2rem 2rem}
+.tl-item::before{content:'';position:absolute;left:-5px;top:1.25rem;width:12px;height:12px;border-radius:50%;background:var(--accent);border:2px solid var(--bg)}
+.tl-item.done::before{background:var(--green)}
+.tl-tag{font-family:var(--mono);font-size:.8rem;color:var(--accent);font-weight:600}
+.tl-title{font-size:1.05rem;font-weight:600;margin:.25rem 0}
+.tl-desc{font-size:.85rem;color:var(--muted)}
+
+/* Detection suite */
+.pipe{display:flex;align-items:center;flex-wrap:wrap;gap:.25rem;margin:1.5rem 0;justify-content:center}
+.pipe-step{padding:.5rem 1rem;border-radius:8px;background:var(--bg3);border:1px solid rgba(148,163,184,.15);font-family:var(--mono);font-size:.8rem;white-space:nowrap}
+.pipe-arrow{color:var(--accent);font-weight:700}
+
+/* Evidence table */
+.evidence-table{width:100%;border-collapse:collapse;font-size:.85rem}
+.evidence-table th{text-align:left;padding:.75rem;color:var(--muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;border-bottom:1px solid rgba(148,163,184,.1)}
+.evidence-table td{padding:.75rem;border-bottom:1px solid rgba(148,163,184,.05)}
+.evidence-table tr:hover td{background:rgba(96,165,250,.03)}
+.proof-badge{display:inline-flex;align-items:center;gap:.3rem;padding:.15rem .5rem;border-radius:4px;font-size:.7rem;font-weight:600;background:rgba(52,211,153,.1);color:var(--green)}
+
+/* Code block */
+.code-block{background:var(--bg2);border:1px solid rgba(148,163,184,.1);border-radius:var(--radius);padding:1.5rem;font-family:var(--mono);font-size:.85rem;overflow-x:auto;line-height:1.8}
+.code-block .comment{color:#6b7280}
+.code-block .cmd{color:var(--green)}
+.code-block .flag{color:var(--accent)}
+
+/* Footer */
+footer{text-align:center;padding:3rem 2rem;color:var(--muted);font-size:.85rem;border-top:1px solid rgba(148,163,184,.05)}
+footer a{color:var(--accent)}
+
+/* Animations */
+@keyframes fadeIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+.fade-in{opacity:0;transform:translateY(20px);transition:all .6s ease}
+.fade-in.visible{opacity:1;transform:translateY(0)}
+
+/* Responsive */
+@media(max-width:768px){
+  .hero-stats{gap:1rem}
+  .stat{min-width:80px}
+  .stat-num{font-size:1.5rem}
+  .cards{grid-template-columns:1fr}
+  section{padding:3rem 1rem}
+}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:8px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:rgba(148,163,184,.3)}
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<header class="hero">
+  <div class="hero-badge">🛡️ v0.4.0 — 100 adversarial defects fixed</div>
+  <h1>sentinel-harness</h1>
+  <p class="hero-sub">Production security-operations agents, built as <strong>configuration</strong> — on Amazon Bedrock AgentCore Harness. The agent that builds agents.</p>
+
+  <div class="hero-stats">
+    <div class="stat"><div class="stat-num green">2352</div><div class="stat-label">Tests Passing</div></div>
+    <div class="stat"><div class="stat-num accent">90%</div><div class="stat-label">Coverage</div></div>
+    <div class="stat"><div class="stat-num purple">100</div><div class="stat-label">Defects Fixed</div></div>
+    <div class="stat"><div class="stat-num orange">M0–M14</div><div class="stat-label">Delivered</div></div>
+    <div class="stat"><div class="stat-num green">20</div><div class="stat-label">Tools</div></div>
+    <div class="stat"><div class="stat-num accent">36</div><div class="stat-label">Evidence Sets</div></div>
+  </div>
+
+  <div class="hero-actions">
+    <a href="https://github.com/neosun100/sentinel-harness" class="btn btn-primary">
+      <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+    <a href="https://pypi.org/project/sentinel-harness/" class="btn btn-secondary">
+      📦 PyPI
+    </a>
+    <a href="./api/" class="btn btn-secondary">
+      📖 API Docs
+    </a>
+    <a href="https://github.com/neosun100/sentinel-harness/blob/main/docs/QUICKSTART.md" class="btn btn-secondary">
+      🚀 Quickstart
+    </a>
+  </div>
+</header>
+
+<!-- North Star -->
+<section>
+  <div class="north-star fade-in">
+    <h3>🎯 North Star: Agent Builds Agents</h3>
+    <p style="color:var(--muted)">A self-iterating security-operations platform where natural language flows in, and the platform auto-builds, tests, evaluates, iterates, and promotes agents — fully controllable (HITL gates) and observable.</p>
+    <div class="flow">
+      <span class="step">NL request</span>
+      <span class="arrow">→</span>
+      <span class="step">Meta-Agent (Opus)</span>
+      <span class="arrow">→</span>
+      <span class="step">auto-build</span>
+      <span class="arrow">→</span>
+      <span class="step">evaluate</span>
+      <span class="arrow">→</span>
+      <span class="step">iterate</span>
+      <span class="arrow">→</span>
+      <span class="step">promote</span>
+    </div>
+    <p style="font-size:.8rem;color:var(--green);margin-top:1rem">✅ Live-validated: closed loop proven on real AWS (weak→improve→pass→HITL→promote)</p>
+  </div>
+</section>
+
+<!-- Why -->
+<section>
+  <div class="section-header">
+    <h2>Why sentinel-harness?</h2>
+    <p>The thesis: a production SecOps agent should be configuration, not orchestration code.</p>
+  </div>
+  <div class="cards">
+    <div class="card fade-in">
+      <div class="card-icon">⚡</div>
+      <h3>Zero Orchestration Code</h3>
+      <p>Declare model · prompt · tools · skills · memory · limits. AWS runs the entire agent loop in a per-session Firecracker microVM.</p>
+      <span class="card-tag tag-live">Live-validated</span>
+    </div>
+    <div class="card fade-in">
+      <div class="card-icon">🔄</div>
+      <h3>Self-Improving Loop</h3>
+      <p>Build → evaluate → retry-with-reasoning → promote. The framework auto-improves its own agents via managed evaluation + regression guard + safety veto.</p>
+      <span class="card-tag tag-proven">Proven on AWS</span>
+    </div>
+    <div class="card fade-in">
+      <div class="card-icon">🛡️</div>
+      <h3>Security-First</h3>
+      <p>HITL gates everywhere. Sandbox hooks. Egress control. Guardrail injection defense. Supply-chain hardened (SBOM + SLSA + CodeQL + pip-audit).</p>
+      <span class="card-tag tag-offline">100 defects fixed</span>
+    </div>
+    <div class="card fade-in">
+      <div class="card-icon">🔌</div>
+      <h3>Plug-and-Play</h3>
+      <p>Backend-pluggable tools (Splunk / Elasticsearch / ServiceNow / Jira connectors), multi-account ops, a `*_LIVE` env to connect any real SIEM.</p>
+      <span class="card-tag tag-offline">Offline-first</span>
+    </div>
+    <div class="card fade-in">
+      <div class="card-icon">📊</div>
+      <h3>Detection Engineering Suite</h3>
+      <p>7 deterministic, LLM-free tools: lint → translate (YARA/Suricata/SPL/EQL) → dedup → coverage → audit → Navigator → baseline regression gate.</p>
+      <span class="card-tag tag-offline">CI-gateable</span>
+    </div>
+    <div class="card fade-in">
+      <div class="card-icon">🏗️</div>
+      <h3>Enterprise IaC</h3>
+      <p>Dual-track CDK + Terraform. Private VPC, Cognito JWT, CloudWatch observability, Budgets alarm. `make deploy` → one command to production.</p>
+      <span class="card-tag tag-live">Deployed</span>
+    </div>
+  </div>
+</section>
+
+<!-- Detection Suite -->
+<section>
+  <div class="section-header">
+    <h2>Detection Engineering Pipeline</h2>
+    <p>7 deterministic tools, LLM-free, offline, CI-gateable — with an explicit "cannot analyze" honesty ledger.</p>
+  </div>
+  <div class="pipe">
+    <span class="pipe-step">sigma_yara_lint</span>
+    <span class="pipe-arrow">→</span>
+    <span class="pipe-step">detection_translate</span>
+    <span class="pipe-arrow">→</span>
+    <span class="pipe-step">detection_dedup</span>
+    <span class="pipe-arrow">→</span>
+    <span class="pipe-step">detection_coverage</span>
+    <span class="pipe-arrow">→</span>
+    <span class="pipe-step">detection_audit</span>
+    <span class="pipe-arrow">→</span>
+    <span class="pipe-step">detection_navigator</span>
+    <span class="pipe-arrow">→</span>
+    <span class="pipe-step">detection_baseline</span>
+  </div>
+  <div class="code-block" style="max-width:700px;margin:2rem auto">
+    <span class="comment"># One-command CI gate</span><br/>
+    <span class="cmd">$</span> sentinel detection ci ./rules <span class="flag">--min-score 70 --against baseline.json</span><br/><br/>
+    <span class="comment"># Translate Sigma to Splunk SPL + Elastic EQL</span><br/>
+    <span class="cmd">$</span> sentinel detection audit ./rules <span class="flag">--targets splunk,elastic</span><br/><br/>
+    <span class="comment"># Export ATT&CK Navigator layer</span><br/>
+    <span class="cmd">$</span> sentinel detection ci ./rules <span class="flag">--navigator-out layer.json</span>
+  </div>
+</section>
+
+<!-- Live Evidence -->
+<section>
+  <div class="section-header">
+    <h2>Live-Validated on AWS</h2>
+    <p>Not mock — exercised against real AgentCore APIs on a non-production account, then torn down.</p>
+  </div>
+  <div class="arch-container">
+    <table class="evidence-table">
+      <thead><tr><th>Proof</th><th>What ran</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Runtime A2A</strong></td>
+          <td>CreateAgentRuntime → arm64 microVM → live A2A message/send → Bedrock Haiku → Log4Shell verdict</td>
+          <td><span class="proof-badge">✓ HTTP 200</span></td>
+        </tr>
+        <tr>
+          <td><strong>Closed Loop</strong></td>
+          <td>Weak agent (0.0) → improve → re-score (1.0) → safety veto + regression guard → HITL → promote endpoint</td>
+          <td><span class="proof-badge">✓ closed:true</span></td>
+        </tr>
+        <tr>
+          <td><strong>CUSTOM_JWT Gateway</strong></td>
+          <td>Cognito OIDC M2M → RS256 token accepted (200) + no/garbage token rejected (401)</td>
+          <td><span class="proof-badge">✓ enforced</span></td>
+        </tr>
+        <tr>
+          <td><strong>Memory Recall</strong></td>
+          <td>4 sessions tenant-1 → SEMANTIC extraction → cross-session recall; tenant-2 = 0 (isolation)</td>
+          <td><span class="proof-badge">✓ isolated</span></td>
+        </tr>
+        <tr>
+          <td><strong>Managed Evaluator</strong></td>
+          <td>SESSION LLM-judge ACTIVE + OnlineEvaluationConfig scoring 100% spans (Faithfulness/Harmfulness)</td>
+          <td><span class="proof-badge">✓ ACTIVE</span></td>
+        </tr>
+        <tr>
+          <td><strong>Guardrail</strong></td>
+          <td>GUARDRAIL_INTERVENED masked a fake AWS key + sk- token in tool response</td>
+          <td><span class="proof-badge">✓ masked</span></td>
+        </tr>
+        <tr>
+          <td><strong>Egress Control</strong></td>
+          <td>Private VPC — no IGW, no NAT, no 0.0.0.0/0 — PrivateLink only</td>
+          <td><span class="proof-badge">✓ default-deny</span></td>
+        </tr>
+        <tr>
+          <td><strong>Registry Governance</strong></td>
+          <td>Registry + record: DRAFT → PENDING_APPROVAL (autoApproval=false dual-gate)</td>
+          <td><span class="proof-badge">✓ governed</span></td>
+        </tr>
+        <tr>
+          <td><strong>Drift Fix (live)</strong></td>
+          <td>Underscore-named Registry created (pre-fix: ValidationException) → torn down, zero residue</td>
+          <td><span class="proof-badge">✓ fixed</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Milestones -->
+<section>
+  <div class="section-header">
+    <h2>Milestones Delivered</h2>
+    <p>15 milestones from baseline reproduction to world-class depth — all shipped.</p>
+  </div>
+  <div class="timeline">
+    <div class="tl-item done"><span class="tl-tag">M0</span><div class="tl-title">Environment & baseline</div><div class="tl-desc">2352 offline tests green + live scenario reproduction</div></div>
+    <div class="tl-item done"><span class="tl-tag">M1</span><div class="tl-title">Meta-agent self-iteration engine</div><div class="tl-desc">NL request → Opus emits harness spec → really builds + invokes + tears down</div></div>
+    <div class="tl-item done"><span class="tl-tag">M2</span><div class="tl-title">Evaluation-driven self-improvement</div><div class="tl-desc">Score → retry-with-reasoning → promote endpoint (LLM-judge, safety veto, regression guard)</div></div>
+    <div class="tl-item done"><span class="tl-tag">M3</span><div class="tl-title">Attack validation & simulation</div><div class="tl-desc">BAS replay + Sigma matcher finds blind spots; detonation lifecycle (honest simulated)</div></div>
+    <div class="tl-item done"><span class="tl-tag">M4</span><div class="tl-title">Foundation: identity / gateway / egress / observability</div><div class="tl-desc">CDK + Terraform dual-track; Guardrail/Identity/Observability live-deployed</div></div>
+    <div class="tl-item done"><span class="tl-tag">M5</span><div class="tl-title">Data planes + domain skills</div><div class="tl-desc">DIY mock world, backend-pluggable tools, multi-account ops</div></div>
+    <div class="tl-item done"><span class="tl-tag">M6</span><div class="tl-title">Feedback-loop automation</div><div class="tl-desc">Disposition auto-feeds strategy; whitelist optimization preserves TPs</div></div>
+    <div class="tl-item done"><span class="tl-tag">M7</span><div class="tl-title">One-command delivery</div><div class="tl-desc">Makefile + sentinel export (Strands, no lock-in) + QUICKSTART</div></div>
+    <div class="tl-item done"><span class="tl-tag">M8</span><div class="tl-title">Quality CI enforcement</div><div class="tl-desc">Coverage gate, Hypothesis property tests, pre-commit, py3.13</div></div>
+    <div class="tl-item done"><span class="tl-tag">M9</span><div class="tl-title">Security-product credibility</div><div class="tl-desc">SECURITY.md, pip-audit, CodeQL, Scorecard, sandbox fuzzing, SSRF guard</div></div>
+    <div class="tl-item done"><span class="tl-tag">M10</span><div class="tl-title">Adopter experience</div><div class="tl-desc">INTEGRATIONS, COOKBOOK, API reference site, SLSA provenance + SBOM</div></div>
+    <div class="tl-item done"><span class="tl-tag">M11</span><div class="tl-title">On-platform proof</div><div class="tl-desc">Token metrics, adversarial-reviewer, Memory recall, JWT gateway, online eval, A2A Runtime</div></div>
+    <div class="tl-item done"><span class="tl-tag">M12</span><div class="tl-title">North-star closed loop</div><div class="tl-desc">End-to-end: weak→improve→pass→HITL→promote (runner-orchestrated, live-proven)</div></div>
+    <div class="tl-item done"><span class="tl-tag">M13</span><div class="tl-title">World-class depth</div><div class="tl-desc">Benchmark model, golden datasets, enterprise world, compliance mapping, connectors, autonomy controller</div></div>
+    <div class="tl-item done"><span class="tl-tag">M14</span><div class="tl-title">Adversarial hardening + detection suite</div><div class="tl-desc">8 audit rounds (100 fixes), service-model drift scan, 7-tool detection CLI, SPL/EQL</div></div>
+  </div>
+</section>
+
+<!-- Quickstart -->
+<section>
+  <div class="section-header">
+    <h2>Get Started in 60 Seconds</h2>
+  </div>
+  <div class="code-block" style="max-width:700px;margin:0 auto">
+    <span class="comment"># Install</span><br/>
+    <span class="cmd">$</span> pip install sentinel-harness<br/><br/>
+    <span class="comment"># Run the full offline test suite</span><br/>
+    <span class="cmd">$</span> make test<br/><br/>
+    <span class="comment"># Demo: all 21 offline scenarios</span><br/>
+    <span class="cmd">$</span> make demo<br/><br/>
+    <span class="comment"># Detection engineering one-liner</span><br/>
+    <span class="cmd">$</span> sentinel detection ci ./my-sigma-rules <span class="flag">--min-score 70</span><br/><br/>
+    <span class="comment"># Export to Strands (no lock-in)</span><br/>
+    <span class="cmd">$</span> sentinel export harnesses/alert-triage/harness.yaml <span class="flag">-o agent.py</span><br/><br/>
+    <span class="comment"># Deploy to AWS (one command)</span><br/>
+    <span class="cmd">$</span> make deploy
+  </div>
+</section>
+
+<!-- Architecture overview -->
+<section>
+  <div class="section-header">
+    <h2>Architecture</h2>
+    <p>Three-layer SecOps agent architecture on AgentCore primitives.</p>
+  </div>
+  <div class="arch-container" style="text-align:center">
+    <svg class="arch-svg" viewBox="0 0 900 400" xmlns="http://www.w3.org/2000/svg">
+      <!-- Background layers -->
+      <defs>
+        <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" style="stop-color:#60a5fa;stop-opacity:0.15"/>
+          <stop offset="100%" style="stop-color:#818cf8;stop-opacity:0.15"/>
+        </linearGradient>
+        <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" style="stop-color:#34d399;stop-opacity:0.1"/>
+          <stop offset="100%" style="stop-color:#60a5fa;stop-opacity:0.1"/>
+        </linearGradient>
+        <linearGradient id="g3" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" style="stop-color:#fb923c;stop-opacity:0.1"/>
+          <stop offset="100%" style="stop-color:#f87171;stop-opacity:0.1"/>
+        </linearGradient>
+      </defs>
+
+      <!-- L1 Strategy -->
+      <rect x="20" y="20" width="860" height="100" rx="12" fill="url(#g1)" stroke="#60a5fa" stroke-opacity="0.3"/>
+      <text x="40" y="50" fill="#60a5fa" font-size="12" font-weight="700">L1 STRATEGY</text>
+      <text x="40" y="72" fill="#e2e8f0" font-size="11">Alert Triage</text>
+      <text x="160" y="72" fill="#e2e8f0" font-size="11">CVE Intel</text>
+      <text x="270" y="72" fill="#e2e8f0" font-size="11">Detection Gen</text>
+      <text x="410" y="72" fill="#e2e8f0" font-size="11">Feedback Loop</text>
+      <text x="560" y="72" fill="#e2e8f0" font-size="11">Meta-Agent</text>
+      <text x="680" y="72" fill="#e2e8f0" font-size="11">Self-Improving</text>
+      <text x="40" y="100" fill="#94a3b8" font-size="10">HITL gates · Memory · Supervisor · Managed Evaluate · Regression Guard · Safety Veto</text>
+
+      <!-- L2 Simulation -->
+      <rect x="20" y="140" width="860" height="100" rx="12" fill="url(#g2)" stroke="#34d399" stroke-opacity="0.3"/>
+      <text x="40" y="170" fill="#34d399" font-size="12" font-weight="700">L2 ATTACK VALIDATION</text>
+      <text x="40" y="192" fill="#e2e8f0" font-size="11">BAS Replay</text>
+      <text x="160" y="192" fill="#e2e8f0" font-size="11">Sigma Matcher</text>
+      <text x="300" y="192" fill="#e2e8f0" font-size="11">Attack-Path Graph</text>
+      <text x="460" y="192" fill="#e2e8f0" font-size="11">Threat Hunt</text>
+      <text x="590" y="192" fill="#e2e8f0" font-size="11">Detonation (simulated)</text>
+      <text x="40" y="220" fill="#94a3b8" font-size="10">Play Mode (every step HITL-gated) · Sandbox Hooks · Detection Engineering Suite (7 tools)</text>
+
+      <!-- L3 Foundation -->
+      <rect x="20" y="260" width="860" height="100" rx="12" fill="url(#g3)" stroke="#fb923c" stroke-opacity="0.3"/>
+      <text x="40" y="290" fill="#fb923c" font-size="12" font-weight="700">L3 FOUNDATION</text>
+      <text x="40" y="312" fill="#e2e8f0" font-size="11">Gateway (JWT)</text>
+      <text x="180" y="312" fill="#e2e8f0" font-size="11">Registry (dual-gate)</text>
+      <text x="350" y="312" fill="#e2e8f0" font-size="11">Private VPC</text>
+      <text x="480" y="312" fill="#e2e8f0" font-size="11">Guardrail</text>
+      <text x="590" y="312" fill="#e2e8f0" font-size="11">Observability</text>
+      <text x="730" y="312" fill="#e2e8f0" font-size="11">IaC (CDK+TF)</text>
+      <text x="40" y="340" fill="#94a3b8" font-size="10">Cognito Identity · PrivateLink Egress · CloudWatch Metrics · Budgets Alarm · Provenance Ledger</text>
+
+      <!-- Connecting arrows (animated) -->
+      <line x1="450" y1="120" x2="450" y2="140" stroke="#60a5fa" stroke-width="1.5" stroke-dasharray="4 2">
+        <animate attributeName="stroke-dashoffset" from="6" to="0" dur="1s" repeatCount="indefinite"/>
+      </line>
+      <line x1="450" y1="240" x2="450" y2="260" stroke="#34d399" stroke-width="1.5" stroke-dasharray="4 2">
+        <animate attributeName="stroke-dashoffset" from="6" to="0" dur="1s" repeatCount="indefinite"/>
+      </line>
+
+      <!-- Bottom: AgentCore -->
+      <rect x="200" y="375" width="500" height="22" rx="6" fill="rgba(255,153,0,0.15)" stroke="#ff9900" stroke-opacity="0.4"/>
+      <text x="450" y="390" fill="#ff9900" font-size="11" text-anchor="middle" font-weight="600">Amazon Bedrock AgentCore Harness (managed loop · microVM · Memory · Gateway)</text>
+      <line x1="450" y1="360" x2="450" y2="375" stroke="#ff9900" stroke-width="1.5" stroke-dasharray="4 2">
+        <animate attributeName="stroke-dashoffset" from="6" to="0" dur="1s" repeatCount="indefinite"/>
+      </line>
+    </svg>
+  </div>
+</section>
+
+<!-- Links -->
+<section>
+  <div class="section-header">
+    <h2>Documentation</h2>
+  </div>
+  <div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(250px,1fr))">
+    <a href="https://github.com/neosun100/sentinel-harness/blob/main/docs/QUICKSTART.md" class="card fade-in" style="text-decoration:none">
+      <div class="card-icon">🚀</div><h3>Quickstart</h3><p>60-second offline path to running</p>
+    </a>
+    <a href="https://github.com/neosun100/sentinel-harness/blob/main/docs/ARCHITECTURE.md" class="card fade-in" style="text-decoration:none">
+      <div class="card-icon">🏛</div><h3>Architecture</h3><p>Three-layer design deep-dive</p>
+    </a>
+    <a href="./api/" class="card fade-in" style="text-decoration:none">
+      <div class="card-icon">📖</div><h3>API Reference</h3><p>Full pdoc-rendered module docs</p>
+    </a>
+    <a href="https://github.com/neosun100/sentinel-harness/blob/main/docs/COOKBOOK.md" class="card fade-in" style="text-decoration:none">
+      <div class="card-icon">📝</div><h3>Cookbook</h3><p>Add a tool / skill / harness / specialist</p>
+    </a>
+    <a href="https://github.com/neosun100/sentinel-harness/blob/main/docs/INTEGRATIONS.md" class="card fade-in" style="text-decoration:none">
+      <div class="card-icon">🔌</div><h3>Integrations</h3><p>Connect your SIEM, ticketing, assets</p>
+    </a>
+    <a href="https://github.com/neosun100/sentinel-harness/blob/main/docs/THREAT-MODEL.md" class="card fade-in" style="text-decoration:none">
+      <div class="card-icon">🔒</div><h3>Threat Model</h3><p>STRIDE + agent attack surface</p>
+    </a>
+    <a href="https://github.com/neosun100/sentinel-harness/blob/main/docs/COMPLIANCE.md" class="card fade-in" style="text-decoration:none">
+      <div class="card-icon">✅</div><h3>Compliance</h3><p>SOC 2 / ISO 27001 / NIST CSF mapping</p>
+    </a>
+    <a href="https://github.com/neosun100/sentinel-harness/blob/main/CHANGELOG.md" class="card fade-in" style="text-decoration:none">
+      <div class="card-icon">📋</div><h3>Changelog</h3><p>Release history & migration notes</p>
+    </a>
+  </div>
+</section>
+
+<footer>
+  <p><strong>sentinel-harness</strong> v0.4.0 · MIT-0 License · Built on <a href="https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/harness.html">Amazon Bedrock AgentCore Harness</a></p>
+  <p style="margin-top:.5rem">Created by <a href="https://github.com/neosun100">Neo</a> · <a href="https://github.com/neosun100/sentinel-harness">Source</a> · <a href="./api/">API Docs</a> · <a href="https://pypi.org/project/sentinel-harness/">PyPI</a></p>
+</footer>
+
+<script>
+// Intersection observer for fade-in animations
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+    }
+  });
+}, { threshold: 0.1 });
+
+document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+</script>
+</body>
+</html>
