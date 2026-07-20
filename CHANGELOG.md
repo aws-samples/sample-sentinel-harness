@@ -6,18 +6,36 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.4.1] — 2026-07-20
+
+### Fixed
+- **[CRITICAL] Wheel packaging** — v0.4.0's wheel silently dropped `tools/`,
+  `mockdata/`, and `sentinel_harness/connectors/`, breaking `sentinel detection
+  audit`, `sentinel mcp serve`, and 3 data-plane tools for every pip-installed user.
+  Switched from an explicit package list to `packages.find` with `namespaces=true`.
+  Added `tests/test_packaging.py` (10 assertions) as a permanent tripwire.
+- **PyPI release automation** — `release.yml` now authenticates via the
+  `PYPI_API_TOKEN` repo secret (OIDC-ready fallback), making tag-triggered releases
+  fully automatic end-to-end.
+
 ### Added
 - **MCP Server mode** (`sentinel mcp serve`) — exposes all 20 sentinel tools as a
   standards-compliant Model Context Protocol server over stdio. Any MCP-compatible
   AI agent (Claude Code, Cursor, Windsurf, custom agents) can connect and invoke the
   full detection-engineering suite, security enrichment, and SecOps automation tools
   with zero integration code. Optional dependency (`pip install sentinel-harness[mcp]`).
-- **GitHub Pages landing site** — a dark-theme, animated project homepage at
+- **Agent-authored orchestration driver** (`sentinel_harness/agent_loop.py`) — the
+  self-improving harness now drives the loop through its own `tool_use` stream; the
+  driver witness-gates promotion (agent cannot promote without a passing eval AND
+  human HITL approval), enforces a tool allowlist, and hard-caps spinning agents.
+  17 tests. Closes the north-star gap.
+- **GitHub Pages landing site** — dark-theme animated project homepage at
   https://neosun100.github.io/sentinel-harness/ with hero stats, architecture SVG,
-  milestone timeline, detection pipeline, live-evidence table, and documentation grid.
-  pdoc API reference moved to `/api/` subpath.
-- **v0.4.0 published to PyPI** — `pip install sentinel-harness` now works.
-  GitHub Release includes SBOM + SLSA provenance attestation.
+  milestone timeline, and documentation grid. API docs at `/api/`.
+- **Packaging tripwire tests** (`tests/test_packaging.py`) — 10 assertions that
+  fail the build if any required tree is dropped from the wheel config.
 
 ## [0.4.0] — 2026-07-18
 
