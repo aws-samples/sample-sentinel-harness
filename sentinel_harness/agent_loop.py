@@ -85,12 +85,14 @@ PromotionPredicate = Callable[[str, Dict[str, Any]], bool]
 
 
 def default_is_promotion(tool_name: str, tool_input: Dict[str, Any]) -> bool:
-    """The shipped promotion shape: ``harness_ops`` with ``action=create_endpoint``.
+    """The shipped promotion shapes: ``harness_ops`` with any endpoint-creating action.
 
-    ``CreateHarnessEndpoint`` is the platform's real promotion mechanism (M2), so
-    that is the call the driver witness-gates by default. Inject your own
-    predicate for a different promotion surface."""
-    return tool_name == "harness_ops" and tool_input.get("action") == "create_endpoint"
+    ``create_endpoint`` (first promotion), ``update_endpoint`` (v2+ re-promotion),
+    and ``promote_endpoint`` (idempotent create-or-update) are all promotion paths.
+    The driver witness-gates all of them. Inject your own predicate for a different
+    promotion surface."""
+    return (tool_name == "harness_ops"
+            and tool_input.get("action") in ("create_endpoint", "update_endpoint", "promote_endpoint"))
 
 
 @dataclass(frozen=True)

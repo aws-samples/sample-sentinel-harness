@@ -202,6 +202,58 @@ def get_harness_endpoint(harness_id, endpoint_name) -> dict:
     return resp["endpoint"] if "endpoint" in resp else resp
 
 
+def update_harness_endpoint(harness_id, endpoint_name, *, target_version=None,
+                            description=None, **kw) -> dict:
+    """Repoint an EXISTING endpoint at a new version — the v2+ promotion path.
+
+    CreateHarnessEndpoint on a name that already exists raises ConflictException,
+    so a self-improvement loop that promotes the same endpoint name twice (v1 then
+    an improved v2) MUST update, not re-create. Model-confirmed shape: required
+    harnessId+endpointName; optional targetVersion/description (sent only when not
+    None so an omitted optional never reaches the API as a null)."""
+    args = dict(harnessId=harness_id, endpointName=endpoint_name)
+    if target_version is not None: args["targetVersion"] = target_version
+    if description is not None: args["description"] = description
+    args.update(kw)
+    resp = _control.update_harness_endpoint(**args)
+    return resp["endpoint"] if "endpoint" in resp else resp
+
+
+def promote_harness_endpoint(harness_id, endpoint_name, *, target_version=None,
+                             description=None) -> dict:
+    """Create the endpoint, or update it if it already exists (idempotent promote).
+
+    The create-then-update-on-conflict composition every promotion caller wants:
+    first promotion creates the named endpoint; every later promotion repoints it.
+    ConflictException is the ONLY error translated into the update path — anything
+    else propagates."""
+    try:
+        return create_harness_endpoint(harness_id, endpoint_name,
+                                       target_version=target_version, description=description)
+    except _control.exceptions.ConflictException:
+        return update_harness_endpoint(harness_id, endpoint_name,
+                                       target_version=target_version, description=description)
+
+
+def list_harness_endpoints(harness_id) -> list:
+    """Return EVERY endpoint of a harness, following ``nextToken`` pagination.
+
+    Same drain-all-pages contract as ``_all_harnesses`` — reading only the first
+    page silently hides endpoints beyond it (a promotion-audit blind spot). The
+    page-count cap guards against a backend that never clears the token."""
+    out, token, guard = [], None, 0
+    while True:
+        args = dict(harnessId=harness_id)
+        if token: args["nextToken"] = token
+        resp = _control.list_harness_endpoints(**args)
+        out.extend(resp.get("endpoints", []))
+        token = resp.get("nextToken")
+        guard += 1
+        if not token or guard > 10_000:
+            break
+    return out
+
+
 def list_harness_versions(harness_id) -> list:
     """List a harness's immutable versions — the candidates an endpoint can pin."""
     return _control.list_harness_versions(harnessId=harness_id)["harnessVersions"]
