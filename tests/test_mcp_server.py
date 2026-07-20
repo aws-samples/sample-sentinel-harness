@@ -18,36 +18,58 @@ from sentinel_harness.mcp_server import _discover_tools, _invoke_tool, _tool_inp
 
 
 class TestToolDiscovery:
-    """Verify that _discover_tools finds all 20 handler modules."""
+    """Verify that _discover_tools respects the registry governance gate."""
 
-    def test_discovers_all_tools(self):
+    def test_discovers_approved_non_control_tools(self):
+        """Default mode: approved + non-control-plane tools are discovered."""
         tools = _discover_tools()
-        assert len(tools) >= 20, f"Expected >=20 tools, found {len(tools)}: {sorted(tools)}"
+        # 20 total minus 2 control-plane (harness_ops, run_evaluation) minus 1 pending (web_search) = 17
+        assert len(tools) >= 17, f"Expected >=17 tools, found {len(tools)}: {sorted(tools)}"
 
-    def test_all_tools_have_handler(self):
+    def test_control_plane_excluded_by_default(self):
+        tools = _discover_tools()
+        assert "harness_ops" not in tools, "harness_ops should be excluded by default (control-plane)"
+        assert "run_evaluation" not in tools, "run_evaluation should be excluded by default (control-plane)"
+
+    def test_pending_tool_excluded_by_default(self):
+        tools = _discover_tools()
+        assert "web_search" not in tools, "web_search should be excluded (status=pending in registry)"
+
+    def test_control_plane_exposed_with_env(self, monkeypatch):
+        monkeypatch.setenv("SENTINEL_MCP_EXPOSE_CONTROL_PLANE", "1")
+        tools = _discover_tools()
+        assert "harness_ops" in tools, "harness_ops should be exposed with SENTINEL_MCP_EXPOSE_CONTROL_PLANE=1"
+        assert "run_evaluation" in tools
+
+    def test_pending_tool_exposed_with_env(self, monkeypatch):
+        monkeypatch.setenv("SENTINEL_MCP_ALLOW_PENDING", "1")
+        tools = _discover_tools()
+        assert "web_search" in tools, "web_search should be exposed with SENTINEL_MCP_ALLOW_PENDING=1"
+
+    def test_all_exposed_tools_have_handler(self):
         tools = _discover_tools()
         for name, info in tools.items():
             assert info["module"] is not None, f"Tool {name} failed to load: {info['description']}"
             assert hasattr(info["module"], "handler"), f"Tool {name} has no handler function"
 
-    def test_all_tools_have_description(self):
+    def test_all_exposed_tools_have_description(self):
         tools = _discover_tools()
         for name, info in tools.items():
             assert info["description"], f"Tool {name} has no description"
             assert "[LOAD ERROR" not in info["description"], f"Tool {name} load error: {info['description']}"
 
-    def test_expected_tools_present(self):
+    def test_expected_approved_tools_present(self):
+        """Non-control-plane, approved tools MUST be discovered."""
         tools = _discover_tools()
-        expected = {
+        expected_safe = {
             "sigma_yara_lint", "detection_translate", "detection_dedup",
             "detection_coverage", "detection_audit", "detection_navigator",
             "detection_baseline", "enrich_ioc", "asset_lookup", "siem_query",
-            "create_ticket", "harness_ops", "run_evaluation", "ops_query",
-            "sigma_match", "nvd_lookup", "epss_kev", "web_search",
-            "whitelist_optimizer", "attack_lookup",
+            "create_ticket", "ops_query", "sigma_match", "nvd_lookup",
+            "epss_kev", "whitelist_optimizer", "attack_lookup",
         }
-        for name in expected:
-            assert name in tools, f"Expected tool {name} not discovered"
+        for name in expected_safe:
+            assert name in tools, f"Expected approved tool {name} not discovered"
 
 
 class TestToolInputSchema:

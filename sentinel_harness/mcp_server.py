@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -59,12 +60,49 @@ _TOOLS_DIR = _REPO_ROOT / "tools"
 # Minimal context stub — tools are pure/deterministic, they don't use context.
 _STUB_CONTEXT: Any = None
 
+# Control-plane tools that can create/modify/delete AWS resources or invoke
+# models (= cost). Default OFF for the MCP server; opt-in via env flag.
+_CONTROL_PLANE_TOOLS = frozenset({"harness_ops", "run_evaluation"})
+_EXPOSE_CONTROL_ENV = "SENTINEL_MCP_EXPOSE_CONTROL_PLANE"
+
+# Env flag to bypass registry governance (dev/testing escape hatch).
+_ALLOW_PENDING_ENV = "SENTINEL_MCP_ALLOW_PENDING"
+
+_TRUTHY_VALUES = {"1", "true", "yes", "on"}
+
+
+def _load_approved_set() -> frozenset:
+    """Load the set of registry-approved tool names (status=approved).
+
+    Falls back to empty (= no filtering) if the registry YAML is unreachable
+    (the MCP server should still start, not crash on a missing file)."""
+    try:
+        from .registry import load_registry
+        reg = load_registry()
+        return frozenset(
+            entry.name for entry in reg._entries.values() if entry.status == "approved"
+        )
+    except Exception:
+        return frozenset()
+
 
 def _discover_tools() -> Dict[str, Dict[str, Any]]:
-    """Walk tools/ and import each handler module. Returns {name: {module, description}}."""
+    """Walk tools/ and import each handler, filtered by registry governance.
+
+    Enforcement rules (ROADMAP iron-rule #4: a tool is live only if
+    registry-approved AND code-mapped):
+    - A tool with ``status != approved`` in ``registry/tools.yaml`` is excluded
+      unless ``SENTINEL_MCP_ALLOW_PENDING=1`` (dev escape hatch).
+    - Control-plane tools (``harness_ops``, ``run_evaluation``) are excluded
+      unless ``SENTINEL_MCP_EXPOSE_CONTROL_PLANE=1`` (explicit opt-in).
+    """
     tools: Dict[str, Dict[str, Any]] = {}
     if not _TOOLS_DIR.is_dir():
         return tools
+
+    approved = _load_approved_set()
+    allow_pending = os.environ.get(_ALLOW_PENDING_ENV, "").lower() in _TRUTHY_VALUES
+    expose_control = os.environ.get(_EXPOSE_CONTROL_ENV, "").lower() in _TRUTHY_VALUES
 
     for entry in sorted(_TOOLS_DIR.iterdir()):
         handler_path = entry / "handler.py"
@@ -72,6 +110,15 @@ def _discover_tools() -> Dict[str, Dict[str, Any]]:
             continue
 
         tool_name = entry.name
+
+        # Registry governance gate
+        if approved and tool_name not in approved and not allow_pending:
+            continue
+
+        # Control-plane tools require explicit opt-in
+        if tool_name in _CONTROL_PLANE_TOOLS and not expose_control:
+            continue
+
         try:
             spec = importlib.util.spec_from_file_location(
                 f"tools.{tool_name}.handler", str(handler_path)
