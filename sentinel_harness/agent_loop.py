@@ -61,10 +61,11 @@ Nothing here is customer- or company-specific.
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from . import autonomy
+from . import autonomy, observability
 
 # --------------------------------------------------------------------------- #
 # Injected-callable shapes (documentation — not enforced at runtime)          #
@@ -82,6 +83,53 @@ ToolHandler = Callable[[Dict[str, Any]], Dict[str, Any]]
 HitlApproveFn = Callable[[Dict[str, Any]], bool]
 # is_promotion(tool_name, tool_input) -> bool — which calls are promotion attempts.
 PromotionPredicate = Callable[[str, Dict[str, Any]], bool]
+# subject_of_eval(eval_output) / subject_of_promotion(tool_input) -> the harness
+# the call is ABOUT (or None if the payload does not identify one). The subject
+# binding is what stops a confused-deputy promotion: score harness A, promote
+# harness B.
+SubjectFn = Callable[[Dict[str, Any]], Optional[str]]
+
+# The scenario tag stamped on every telemetry line/span this driver emits.
+_TELEMETRY_SCENARIO = "agent_loop"
+
+
+def _clean_subject(value: Any) -> Optional[str]:
+    """Normalize a candidate subject id: a non-empty string or None (fail-closed).
+
+    Anything that is not a real identifier (empty/whitespace, a dict, a number)
+    is treated as ABSENT — a subject we cannot read must never satisfy the
+    subject-match gate."""
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def default_subject_of_eval(eval_output: Dict[str, Any]) -> Optional[str]:
+    """The shipped eval-subject shape: the handler's ``harness_id`` field.
+
+    Returns None when the eval output does not identify WHICH harness it scored —
+    in which case the driver fail-closes and refuses any promotion (an unbound
+    "pass" is not a witness for anything)."""
+    if not isinstance(eval_output, dict):
+        return None
+    return _clean_subject(eval_output.get("harness_id"))
+
+
+def default_subject_of_promotion(tool_input: Dict[str, Any]) -> Optional[str]:
+    """The shipped promotion-subject shapes, matching ``tools/harness_ops/handler.py``.
+
+    The harness_ops contract nests action arguments under ``params``
+    (``{"action": ..., "params": {"harness_id": ...}}``), so that is checked
+    first; a flat ``harness_id`` (the shape the offline fixtures and simpler
+    promotion surfaces use) is the fallback. None when neither carries one."""
+    if not isinstance(tool_input, dict):
+        return None
+    params = tool_input.get("params")
+    if isinstance(params, dict):
+        subject = _clean_subject(params.get("harness_id"))
+        if subject is not None:
+            return subject
+    return _clean_subject(tool_input.get("harness_id"))
 
 
 def default_is_promotion(tool_name: str, tool_input: Dict[str, Any]) -> bool:
@@ -124,6 +172,8 @@ class AgentLoopResult:
     witnessed_approval: bool       # driver saw the human approve at the HITL gate
     refused_promotions: int        # promotion attempts the driver refused
     final_gate_reason: str = ""
+    witnessed_subject: Optional[str] = None   # WHICH harness the witnessed eval scored
+    refusal_reasons: List[str] = field(default_factory=list)  # one entry per refusal
     notes: List[str] = field(default_factory=list)
 
 
@@ -135,7 +185,9 @@ def result_to_dict(result: AgentLoopResult) -> Dict[str, Any]:
         "tool_calls_used": result.tool_calls_used,
         "witnessed_pass": result.witnessed_pass,
         "witnessed_approval": result.witnessed_approval,
+        "witnessed_subject": result.witnessed_subject,
         "refused_promotions": result.refused_promotions,
+        "refusal_reasons": list(result.refusal_reasons),
         "final_gate_reason": result.final_gate_reason,
         "final_text": result.final_text,
         "trace": [
@@ -161,10 +213,14 @@ def run_agent_loop(
     hitl_tool: str = "request_promotion_approval",
     approve_fn: Optional[HitlApproveFn] = None,
     is_promotion: PromotionPredicate = default_is_promotion,
+    subject_of_eval: SubjectFn = default_subject_of_eval,
+    subject_of_promotion: SubjectFn = default_subject_of_promotion,
     threshold: float,
     incumbent_best: Optional[float] = None,
     require_strict_improvement: bool = False,
     max_tool_calls: int = 20,
+    tracer: Any = None,
+    log: Optional[Callable[[str], Any]] = None,
 ) -> AgentLoopResult:
     """Run one agent-authored improvement session, guarding every tool call.
 
@@ -189,12 +245,32 @@ def run_agent_loop(
     is_promotion:
         Predicate marking which calls are promotion attempts (default:
         ``harness_ops`` + ``action=create_endpoint``). Those execute ONLY when
-        the driver has witnessed a passing eval AND a human approval.
+        the driver has witnessed a passing eval AND a human approval AND the
+        promotion targets the SAME subject the witnessed eval scored.
+    subject_of_eval / subject_of_promotion:
+        The subject-binding seam (confused-deputy fix). ``subject_of_eval``
+        reads WHICH harness an eval output scored (default: its ``harness_id``
+        field); ``subject_of_promotion`` reads which harness a promotion call
+        targets (default: ``params.harness_id`` per the harness_ops contract,
+        flat ``harness_id`` fallback). FAIL-CLOSED: an eval that does not
+        identify its subject witnesses nothing, and a promotion whose subject
+        is absent or differs from the witnessed one is refused.
     threshold / incumbent_best / require_strict_improvement:
         The machine-gate policy, evaluated by ``autonomy.evaluate_gate`` — the
         SAME veto/guard the rest of the platform uses.
     max_tool_calls:
         Hard cap on dispatched calls (>=1). The anti-spin guarantee.
+    tracer / log:
+        OPTIONAL telemetry sinks, both default ``None`` == zero observability
+        and byte-identical behavior to an uninstrumented run (no clock, no new
+        deps). ``tracer`` is :class:`sentinel_harness.tracing.Tracer`-compatible:
+        the driver opens one session-level span plus one child span per
+        dispatched call (``sentinel.outcome`` attribute mirrors the
+        :class:`ToolCallRecord`). ``log`` is a structured-line sink fed by the
+        EXISTING ``observability`` emitters: HITL decisions
+        (:func:`observability.emit_hitl_gate`), eval scores
+        (:func:`observability.emit_eval_score`) and a final
+        ``refused_promotions`` count.
 
     Returns
     -------
@@ -207,153 +283,226 @@ def run_agent_loop(
         raise ValueError("threshold must be in [0, 1]")
 
     trace: List[ToolCallRecord] = []
+    refusal_reasons: List[str] = []
     witnessed_pass = False
     witnessed_approval = False
+    witnessed_subject: Optional[str] = None
     refused_promotions = 0
     promoted = False
     final_gate_reason = ""
     calls_used = 0
     seq = 0
 
-    try:
-        result = invoke_fn()
-    except Exception as exc:  # noqa: BLE001 — session boundary: audit, don't crash
-        return AgentLoopResult(
-            promoted=False, stopped_by="session_error", tool_calls_used=0,
-            trace=[], final_text="", witnessed_pass=False,
-            witnessed_approval=False, refused_promotions=0,
-            final_gate_reason=f"invoke failed: {exc}",
-            notes=["Session error on the first invoke — nothing executed."],
-        )
+    # Telemetry is a pure OPTIONAL overlay: with tracer/log left None the driver
+    # touches neither (no clock, no import side effects) and behaves byte-
+    # identically to an uninstrumented run.
+    def _final_telemetry() -> None:
+        """Emit the run-level counters once, at every exit path. Zero AWS."""
+        if log is not None:
+            observability.emit_metric(
+                "refused_promotions", refused_promotions,
+                log=log, scenario=_TELEMETRY_SCENARIO)
 
-    stopped_by = "end_turn"
-    while result.get("stop_reason") == "tool_use":
-        pending = result.get("tool_uses") or (
-            [result["tool_use"]] if result.get("tool_use") else []
-        )
-        if not pending:
-            # A tool_use stop with no reconstructed call — treat as done, not a spin.
-            stopped_by = "end_turn"
-            break
-
-        answers: List[Any] = []
-        hit_cap = False
-        for tu in pending:
-            if calls_used >= max_tool_calls:
-                hit_cap = True
-                # Answer the remaining gates with a refusal so the resume contract
-                # (answer EVERY pending gate) still holds while we terminate.
-                answers.append((tu, _tool_result_json(
-                    {"ok": False, "error": "tool_call_cap",
-                     "message": f"driver cap of {max_tool_calls} tool calls reached"}), "error"))
-                continue
-            calls_used += 1
-            seq += 1
-            name = tu.get("name", "")
-            tool_input = tu.get("input", {}) or {}
-            action = str(tool_input.get("action", ""))
-
-            # 1) The HITL gate — the human answers, and the driver WITNESSES it.
-            if name == hitl_tool:
-                decision = bool(approve_fn(tool_input)) if approve_fn is not None else False
-                witnessed_approval = decision
-                trace.append(ToolCallRecord(
-                    seq=seq, tool=name, action=action, outcome="hitl",
-                    detail=f"human {'APPROVED' if decision else 'REJECTED'}"))
-                answers.append((tu, _tool_result_json(
-                    {"approved": decision,
-                     "message": "approved by analyst" if decision else "rejected by analyst"})))
-                continue
-
-            # 2) Promotion attempts — witness-gated OUTSIDE the agent.
-            if is_promotion(name, tool_input):
-                if not (witnessed_pass and witnessed_approval):
-                    refused_promotions += 1
-                    missing = []
-                    if not witnessed_pass:
-                        missing.append("no witnessed passing evaluation")
-                    if not witnessed_approval:
-                        missing.append("no witnessed human approval")
-                    detail = "; ".join(missing)
-                    trace.append(ToolCallRecord(
-                        seq=seq, tool=name, action=action,
-                        outcome="refused_promotion", detail=detail))
-                    answers.append((tu, _tool_result_json(
-                        {"ok": False, "error": "promotion_refused",
-                         "message": f"driver refused promotion: {detail}. "
-                                    "Score via the evaluation tool and obtain human "
-                                    "approval before promoting."}), "error"))
-                    continue
-                # Both witnessed — fall through to real execution below.
-
-            # 3) Allowlist — unknown tools are refused with a structured error.
-            handler = dispatch.get(name)
-            if handler is None:
-                trace.append(ToolCallRecord(
-                    seq=seq, tool=name, action=action, outcome="unknown_tool",
-                    detail=f"not in dispatch allowlist {sorted(dispatch)}"))
-                answers.append((tu, _tool_result_json(
-                    {"ok": False, "error": "unknown_tool",
-                     "message": f"tool {name!r} is not available"}), "error"))
-                continue
-
-            # 4) Execute the deterministic handler.
-            try:
-                out = handler(tool_input)
-            except Exception as exc:  # noqa: BLE001 — a handler bug must not kill the session
-                trace.append(ToolCallRecord(
-                    seq=seq, tool=name, action=action, outcome="handler_error",
-                    detail=f"{type(exc).__name__}: {exc}"))
-                answers.append((tu, _tool_result_json(
-                    {"ok": False, "error": "handler_error",
-                     "message": f"{type(exc).__name__}: {exc}"}), "error"))
-                continue
-
-            outcome = "executed"
-            detail = ""
-            # 5) The eval tool's ACTUAL return updates the witnessed gate state.
-            if name == eval_tool and isinstance(out, dict):
-                gate = autonomy.evaluate_gate(
-                    out, threshold=threshold, incumbent_best=incumbent_best,
-                    require_strict_improvement=require_strict_improvement,
-                )
-                witnessed_pass = gate["promotable_pre_human"]
-                final_gate_reason = gate["reason"]
-                detail = ("gate PASSED" if witnessed_pass else "gate failed") + f": {gate['reason']}"
-            elif is_promotion(name, tool_input):
-                promoted = True
-                detail = "promotion executed (witnessed pass + approval)"
-
-            trace.append(ToolCallRecord(
-                seq=seq, tool=name, action=action, outcome=outcome, detail=detail))
-            answers.append((tu, _tool_result_json(out)))
-
-        try:
-            result = resume_fn(answers)
-        except Exception as exc:  # noqa: BLE001 — session boundary: audit, don't crash
-            stopped_by = "session_error"
-            final_gate_reason = final_gate_reason or f"resume failed: {exc}"
-            break
-
-        if hit_cap:
-            stopped_by = "cap"
-            break
-
-    return AgentLoopResult(
-        promoted=promoted,
-        stopped_by=stopped_by,
-        tool_calls_used=calls_used,
-        trace=trace,
-        final_text=str(result.get("text", "")),
-        witnessed_pass=witnessed_pass,
-        witnessed_approval=witnessed_approval,
-        refused_promotions=refused_promotions,
-        final_gate_reason=final_gate_reason,
-        notes=[
-            "Agent-authored: every step came from the agent's tool_use stream; "
-            "the driver only dispatched and guarded (witness-gated promotion, "
-            "allowlist, hard cap).",
-            "The witnessed eval score comes from the handler's actual return, "
-            "never the agent's claim.",
-        ],
+    session_cm = (
+        tracer.span(
+            "agent_loop.session",
+            **{"sentinel.scenario": _TELEMETRY_SCENARIO,
+               "sentinel.threshold": threshold,
+               "sentinel.max_tool_calls": max_tool_calls})
+        if tracer is not None else nullcontext(None)
     )
+    with session_cm:
+        try:
+            result = invoke_fn()
+        except Exception as exc:  # noqa: BLE001 — session boundary: audit, don't crash
+            _final_telemetry()
+            return AgentLoopResult(
+                promoted=False, stopped_by="session_error", tool_calls_used=0,
+                trace=[], final_text="", witnessed_pass=False,
+                witnessed_approval=False, refused_promotions=0,
+                final_gate_reason=f"invoke failed: {exc}",
+                notes=["Session error on the first invoke — nothing executed."],
+            )
+
+        stopped_by = "end_turn"
+        while result.get("stop_reason") == "tool_use":
+            pending = result.get("tool_uses") or (
+                [result["tool_use"]] if result.get("tool_use") else []
+            )
+            if not pending:
+                # A tool_use stop with no reconstructed call — treat as done, not a spin.
+                stopped_by = "end_turn"
+                break
+
+            answers: List[Any] = []
+            hit_cap = False
+            for tu in pending:
+                if calls_used >= max_tool_calls:
+                    hit_cap = True
+                    # Answer the remaining gates with a refusal so the resume contract
+                    # (answer EVERY pending gate) still holds while we terminate.
+                    answers.append((tu, _tool_result_json(
+                        {"ok": False, "error": "tool_call_cap",
+                         "message": f"driver cap of {max_tool_calls} tool calls reached"}), "error"))
+                    continue
+                calls_used += 1
+                seq += 1
+                name = tu.get("name", "")
+                tool_input = tu.get("input", {}) or {}
+                action = str(tool_input.get("action", ""))
+
+                call_cm = (
+                    tracer.span(
+                        f"agent_loop.call.{name}",
+                        **{"sentinel.seq": seq, "sentinel.tool": name,
+                           "sentinel.action": action})
+                    if tracer is not None else nullcontext(None)
+                )
+                with call_cm as call_span:
+                    record: Optional[ToolCallRecord] = None
+                    answer: Any = None
+
+                    # 1) The HITL gate — the human answers, and the driver WITNESSES it.
+                    if name == hitl_tool:
+                        decision = bool(approve_fn(tool_input)) if approve_fn is not None else False
+                        witnessed_approval = decision
+                        record = ToolCallRecord(
+                            seq=seq, tool=name, action=action, outcome="hitl",
+                            detail=f"human {'APPROVED' if decision else 'REJECTED'}")
+                        answer = (tu, _tool_result_json(
+                            {"approved": decision,
+                             "message": "approved by analyst" if decision else "rejected by analyst"}))
+                        if log is not None:
+                            observability.emit_hitl_gate(
+                                _TELEMETRY_SCENARIO, name, log=log,
+                                decision="approved" if decision else "rejected", seq=seq)
+
+                    # 2) Promotion attempts — witness-gated OUTSIDE the agent, and
+                    #    subject-bound: the promotion must target the SAME harness the
+                    #    witnessed eval actually scored (confused-deputy fix).
+                    elif is_promotion(name, tool_input):
+                        promo_subject = subject_of_promotion(tool_input)
+                        missing = []
+                        if not witnessed_pass:
+                            missing.append("no witnessed passing evaluation")
+                        if not witnessed_approval:
+                            missing.append("no witnessed human approval")
+                        if witnessed_pass and witnessed_subject is None:
+                            # FAIL-CLOSED: a pass that named no subject witnesses nothing.
+                            missing.append("eval did not identify its subject")
+                        if witnessed_subject is not None:
+                            if promo_subject is None:
+                                missing.append(
+                                    "promotion did not identify its subject (no harness_id)")
+                            elif promo_subject != witnessed_subject:
+                                missing.append(
+                                    f"subject mismatch: witnessed eval scored "
+                                    f"{witnessed_subject!r} but promotion targets "
+                                    f"{promo_subject!r}")
+                        if missing:
+                            refused_promotions += 1
+                            detail = "; ".join(missing)
+                            refusal_reasons.append(detail)
+                            record = ToolCallRecord(
+                                seq=seq, tool=name, action=action,
+                                outcome="refused_promotion", detail=detail)
+                            answer = (tu, _tool_result_json(
+                                {"ok": False, "error": "promotion_refused",
+                                 "message": f"driver refused promotion: {detail}. "
+                                            "Score via the evaluation tool and obtain human "
+                                            "approval before promoting."}), "error")
+                        # All witnessed and subject-bound — fall through to execution.
+
+                    if record is None:
+                        # 3) Allowlist — unknown tools are refused with a structured error.
+                        handler = dispatch.get(name)
+                        if handler is None:
+                            record = ToolCallRecord(
+                                seq=seq, tool=name, action=action, outcome="unknown_tool",
+                                detail=f"not in dispatch allowlist {sorted(dispatch)}")
+                            answer = (tu, _tool_result_json(
+                                {"ok": False, "error": "unknown_tool",
+                                 "message": f"tool {name!r} is not available"}), "error")
+                        else:
+                            # 4) Execute the deterministic handler.
+                            try:
+                                out = handler(tool_input)
+                            except Exception as exc:  # noqa: BLE001 — a handler bug must not kill the session
+                                record = ToolCallRecord(
+                                    seq=seq, tool=name, action=action, outcome="handler_error",
+                                    detail=f"{type(exc).__name__}: {exc}")
+                                answer = (tu, _tool_result_json(
+                                    {"ok": False, "error": "handler_error",
+                                     "message": f"{type(exc).__name__}: {exc}"}), "error")
+                            else:
+                                outcome = "executed"
+                                detail = ""
+                                # 5) The eval tool's ACTUAL return updates the witnessed
+                                #    gate state — including WHICH subject it scored.
+                                if name == eval_tool and isinstance(out, dict):
+                                    gate = autonomy.evaluate_gate(
+                                        out, threshold=threshold, incumbent_best=incumbent_best,
+                                        require_strict_improvement=require_strict_improvement,
+                                    )
+                                    witnessed_pass = gate["promotable_pre_human"]
+                                    # Bind the witness to its subject; an eval that names
+                                    # no subject leaves it None (fail-closed at promotion).
+                                    witnessed_subject = (
+                                        subject_of_eval(out) if witnessed_pass else None)
+                                    final_gate_reason = gate["reason"]
+                                    detail = (("gate PASSED" if witnessed_pass else "gate failed")
+                                              + f": {gate['reason']}")
+                                    if log is not None:
+                                        observability.emit_eval_score(
+                                            _TELEMETRY_SCENARIO, "aggregate",
+                                            out.get("score", 0.0), witnessed_pass, log=log,
+                                            subject=witnessed_subject, seq=seq)
+                                elif is_promotion(name, tool_input):
+                                    promoted = True
+                                    detail = ("promotion executed (witnessed pass + approval, "
+                                              f"subject {witnessed_subject!r})")
+
+                                record = ToolCallRecord(
+                                    seq=seq, tool=name, action=action,
+                                    outcome=outcome, detail=detail)
+                                answer = (tu, _tool_result_json(out))
+
+                    if call_span is not None:
+                        call_span.attributes["sentinel.outcome"] = record.outcome
+
+                trace.append(record)
+                answers.append(answer)
+
+            try:
+                result = resume_fn(answers)
+            except Exception as exc:  # noqa: BLE001 — session boundary: audit, don't crash
+                stopped_by = "session_error"
+                final_gate_reason = final_gate_reason or f"resume failed: {exc}"
+                break
+
+            if hit_cap:
+                stopped_by = "cap"
+                break
+
+        _final_telemetry()
+        return AgentLoopResult(
+            promoted=promoted,
+            stopped_by=stopped_by,
+            tool_calls_used=calls_used,
+            trace=trace,
+            final_text=str(result.get("text", "")),
+            witnessed_pass=witnessed_pass,
+            witnessed_approval=witnessed_approval,
+            witnessed_subject=witnessed_subject,
+            refused_promotions=refused_promotions,
+            refusal_reasons=refusal_reasons,
+            final_gate_reason=final_gate_reason,
+            notes=[
+                "Agent-authored: every step came from the agent's tool_use stream; "
+                "the driver only dispatched and guarded (witness-gated promotion, "
+                "subject binding, allowlist, hard cap).",
+                "The witnessed eval score comes from the handler's actual return, "
+                "never the agent's claim; promotion must target the SAME subject "
+                "that eval scored.",
+            ],
+        )

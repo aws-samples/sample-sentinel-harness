@@ -473,7 +473,7 @@ Chain the proven mechanisms into one autonomous run; harden so it can never prom
 - [x] Regression guard — refuses to promote a revision scoring below the incumbent best. — `sentinel_harness/loop_safety.py::regression_guard`
 - [x] Multi-objective judge with a hard safety veto (any safety failure ⇒ `pass=false` regardless of aggregate). — `loop_safety.apply_safety_veto`
 - [x] Provenance ledger (hash-chained, append-only) + expanded eval datasets (hard negatives, ambiguous severity, safety traps) + drift-triggered regeneration on eval-score decay. — `sentinel_harness/provenance.py`, `eval/datasets/`, `feedback.detect_score_decay`
-- [x] `[EXTERNAL]` **end-to-end closed loop — PROVEN live (`closed: true`); runner-orchestrated (agent-authored orchestration is future work).** A deliberately weak agent scored 0.0 by an INDEPENDENT judge harness → `update_harness` to a STRONG prompt (new version) → re-scored 1.0 → cleared the real `loop_safety.apply_safety_veto` (no safety dim failed) AND `regression_guard` (1.0 > 0.0, ≥ 0.7 bar) → **human-in-the-loop approve** → `CreateHarnessEndpoint` (endpoint live) → reject-path withholds promotion → teardown. Every build/invoke/score/update/promote/delete is real; the loop *decisions* are driven by the scenario runner (the self-improving harness calling `run_evaluation` over a Gateway to author its own iterations remains future work — see `evidence/closed_loop_result.json` honesty note). — `evidence/closed_loop_result.json`. **Root-cause of the earlier "gate" was WRONG:** `InvokeHarness` `AccessDenied` was the **credential-vending session policy** of the internal account-management system, not a service-side account gate — bypassed by assuming a fresh in-account IAM role directly (see `evidence/live_dataplane_gate_diagnosis.json`, superseded). **Bonus live finding:** a correct Log4Shell answer carries a raw JNDI/LDAP exploit string, which an edge **WAF** blocks (HTML 403); the fix is standard IOC **defanging** of judge inputs.
+- [x] `[EXTERNAL]` **end-to-end closed loop — PROVEN live (`closed: true`); runner-orchestrated (agent-authored orchestration has since SHIPPED — `sentinel_harness/agent_loop.py` + `scenarios/scenario_agent_authored_loop.py`, see the M16 entry in §4e).** A deliberately weak agent scored 0.0 by an INDEPENDENT judge harness → `update_harness` to a STRONG prompt (new version) → re-scored 1.0 → cleared the real `loop_safety.apply_safety_veto` (no safety dim failed) AND `regression_guard` (1.0 > 0.0, ≥ 0.7 bar) → **human-in-the-loop approve** → `CreateHarnessEndpoint` (endpoint live) → reject-path withholds promotion → teardown. Every build/invoke/score/update/promote/delete is real; the loop *decisions* are driven by the scenario runner (the agent-authored variant — the agent emitting the improve/score/gate/promote tool calls itself, guarded by a driver — has since landed as `sentinel_harness/agent_loop.py` with `evidence/agent_authored_loop_result.json`; the original honesty note lives in `evidence/closed_loop_result.json`). — `evidence/closed_loop_result.json`. **Root-cause of the earlier "gate" was WRONG:** `InvokeHarness` `AccessDenied` was the **credential-vending session policy** of the internal account-management system, not a service-side account gate — bypassed by assuming a fresh in-account IAM role directly (see `evidence/live_dataplane_gate_diagnosis.json`, superseded). **Bonus live finding:** a correct Log4Shell answer carries a raw JNDI/LDAP exploit string, which an edge **WAF** blocks (HTML 403); the fix is standard IOC **defanging** of judge inputs.
 
 **Acceptance:** M8/M9/M10-offline + M11/M12 offline items land with the suite green under a coverage
 gate + hard lint + supply-chain scans; each `[EXTERNAL]` item ships buildable code + an offline-default
@@ -722,6 +722,30 @@ Not code — align these with your platform/security owners before M5, or it wil
       fully automated (one-time web UI step; claims documented).
 - [ ] **MCP tool schemas** — generate per-tool JSON Schemas from handler docstrings
       for richer auto-complete in MCP clients.
+
+### M16 — Agent-authored orchestration, hardened
+
+- [x] **Agent-authored loop driver with subject-bound witness gating** — the agent
+      itself emits the improve→score→gate→promote tool calls (`stop_reason ==
+      "tool_use"`); the driver only executes and guards. Promotion now requires a
+      witnessed passing eval AND a human approval AND a SUBJECT MATCH (the
+      confused-deputy fix: an eval that scored harness A can never authorize
+      promoting harness B, and an eval that names no subject authorizes nothing —
+      fail-closed). Injectable `subject_of_eval` / `subject_of_promotion`
+      predicates default to the `harness_ops` `params.harness_id` contract.
+      Optional telemetry seam (a `tracing.Tracer` session+per-call spans with
+      `sentinel.outcome`, plus `observability.emit_hitl_gate` /
+      `emit_eval_score` / refused-promotions structured lines) — both sinks
+      default `None` == byte-identical uninstrumented behavior. Resume-contract
+      fake (`ContractResume`) asserts every pending toolUseId is answered exactly
+      once with valid-JSON payloads and error-status refusals. 41 tests. —
+      `sentinel_harness/agent_loop.py`, `tests/test_agent_loop.py`
+- [x] **Offline proof scenario + evidence** — a scripted fake agent drives
+      `run_agent_loop` through FOUR paths (happy subject-matched promotion;
+      promotion refused with no witnessed eval; safety-trap eval never promotable
+      even with approval; spinning agent stopped by `max_tool_calls`), evidence
+      `closed: true, paths: 4`. — `scenarios/scenario_agent_authored_loop.py`,
+      `evidence/agent_authored_loop_result.json`
 
 **Acceptance:** `sentinel mcp serve` starts, lists 20 tools, invokes each correctly;
 Pages live at `neosun100.github.io/sentinel-harness/`; `pip install sentinel-harness`
