@@ -35,12 +35,35 @@ Implemented modifiers (the widely-used subset):
   - ``startswith`` : field value starts with the given substring.
   - ``endswith``   : field value ends with the given substring.
   - ``re``         : the given value is a regex searched against the field.
+  - ``cidr``       : rule value is a network (``10.0.0.0/8``); field is an IP
+                     that must fall inside it. A non-IP field never matches.
+  - ``base64``     : encode the PATTERN as base64 and substring-match the
+                     encoded form against the (already base64) field value.
+  - ``base64offset``: like ``base64`` but matches the pattern encoded at byte
+                     offsets 0/1/2 so it is found mid-stream regardless of
+                     alignment (Sigma's standard 3-offset expansion).
+  - ``windash``    : match a command-line flag token spelled with either a
+                     ``-`` or a ``/`` dash variant (e.g. ``-enc`` or ``/enc``).
+  - ``gt`` / ``gte`` / ``lt`` / ``lte`` : numeric comparison. A non-numeric
+                     field or expected value never matches and records a caveat.
+  - ``exists``     : value ``true`` matches when the field is PRESENT (any
+                     value, incl. None); value ``false`` matches when ABSENT.
+  - ``cased``      : case-SENSITIVE exact match (overrides the default
+                     case-insensitive comparison). Composable with contains/
+                     startswith/endswith.
   - ``all``        : the value is a LIST and EVERY element must match (AND).
                      Composable, e.g. ``field|contains|all: [a, b]``.
   - (plain)        : equality. A LIST value means OR (any element matches).
 Value comparison is CASE-INSENSITIVE by default (Sigma's default behavior).
 A field that is ABSENT from the log event makes that key fail to match — no
-crash. A selection matches only if ALL of its keys match (AND across keys).
+crash. ``field: null`` is the exception: it matches when the field is ABSENT
+or its value is None. A selection matches only if ALL of its keys match (AND
+across keys).
+
+Unknown modifiers do NOT silently degrade to equality. Any modifier the engine
+cannot handle records a caveat and forces the whole match to be inconclusive
+(``matched: False`` with a populated ``caveats`` list), so a BAS blind-spot
+verdict never counts an un-evaluable rule as "covered".
 
 Condition expression (over selection names):
   - ``and`` / ``or`` / ``not`` with parentheses.
@@ -70,14 +93,23 @@ Output contract (on success)
     "matched": True | False,          # did the rule fire on this event?
     "matched_selections": ["sel_a"],  # selections that individually matched
     "condition": "sel_a and not sel_b",
+    "caveats": [                      # empty when the rule was fully evaluable
+        {"field": "Count", "modifier": "gt", "reason": "non_numeric_value"},
+        {"field": "X", "modifier": "frobnicate", "reason": "unsupported_modifier"},
+    ],
 }
+When ``caveats`` is non-empty the match is INCONCLUSIVE: ``matched`` is forced
+False and callers (e.g. BAS blind-spot analysis) must exclude the rule from the
+covered / blind-spot verdict rather than trust the boolean.
 On bad input:
 {"ok": False, "error": "validation_error", "message": "..."}
 """
 
 from __future__ import annotations
 
+import base64
 import importlib.util
+import ipaddress
 import os
 import re
 from typing import Any, Dict, List, Tuple
@@ -260,32 +292,152 @@ def _validate(event: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 # --------------------------------------------------------------------------
 # Value / field matching
 # --------------------------------------------------------------------------
-def _as_text(value: Any) -> str:
-    """Normalize a scalar log value to a lowercase string for comparison.
+def _as_text(value: Any, cased: bool = False) -> str:
+    """Normalize a scalar log/rule value to a string for comparison.
 
-    Sigma matching is case-insensitive by default, so we lowercase here. Bools
-    are rendered as ``true``/``false`` to match how they appear in YAML rules.
+    Sigma matching is case-insensitive by default, so we lowercase unless the
+    ``cased`` modifier is in effect. Bools are rendered as ``true``/``false``
+    to match how they appear in YAML rules.
     """
     if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value).lower()
+        text = "true" if value else "false"
+    else:
+        text = str(value)
+    return text if cased else text.lower()
 
 
-def _match_one_value(field_value: Any, modifier: str, expected: Any) -> bool:
+def _to_number(value: Any) -> Tuple[bool, float]:
+    """Coerce a scalar to a float for numeric comparison.
+
+    Returns ``(ok, number)``. Bools are rejected (``ok=False``) because a
+    numeric Sigma comparison against a boolean is almost always a rule mistake,
+    and silently treating True as 1 would hide it.
+    """
+    if isinstance(value, bool):
+        return False, 0.0
+    if isinstance(value, (int, float)):
+        return True, float(value)
+    try:
+        return True, float(str(value).strip())
+    except (TypeError, ValueError):
+        return False, 0.0
+
+
+def _coerce_bool(value: Any) -> bool:
+    """Interpret a Sigma ``exists`` operand as a boolean presence requirement."""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes")
+
+
+def _base64_variants(pattern: str, with_offsets: bool) -> List[str]:
+    """Return the base64 encoding(s) to substring-match against the field.
+
+    ``with_offsets`` False -> the single straight base64 of the pattern.
+
+    True (base64offset) -> the three encodings of the pattern prefixed with
+    0/1/2 pad bytes, each trimmed to ONLY the base64 characters whose every
+    source byte belongs to the pattern (dropping chars contaminated by the
+    leading pad bytes and by the unknown byte that trails the pattern
+    mid-stream). Keeping exactly the "pure pattern" characters guarantees that
+    at least one variant is a substring of the field's base64 no matter what
+    byte alignment the pattern lands on inside a larger blob — the property
+    blind-spot detection relies on (never miss a real match).
+    """
+    raw = pattern.encode("utf-8")
+    if not with_offsets:
+        return [base64.b64encode(raw).decode("ascii")]
+
+    length = len(raw)
+    variants: List[str] = []
+    for pad in range(3):
+        enc = base64.b64encode(b" " * pad + raw).decode("ascii")
+        start = None
+        end = None
+        for pos, ch in enumerate(enc):
+            if ch == "=":  # padding chars carry no pure pattern bits
+                break
+            # base64 char `pos` encodes bits of source bytes [first, last].
+            first = (6 * pos) // 8
+            last = (6 * pos + 5) // 8
+            if all(pad <= b < pad + length for b in range(first, last + 1)):
+                if start is None:
+                    start = pos
+                end = pos + 1
+        variants.append(enc[start:end] if start is not None else "")
+    return variants
+
+
+def _windash_variants(token: str) -> List[str]:
+    """Return the dash-variant spellings of a command-line flag token.
+
+    Windows accepts both ``-flag`` and ``/flag``; Sigma's ``windash`` modifier
+    matches either. We generate the token with all dashes flipped to slashes
+    and vice-versa so a rule written one way still catches the other.
+    """
+    variants = {token, token.replace("-", "/"), token.replace("/", "-")}
+    return list(variants)
+
+
+def _match_one_value(
+    field_value: Any,
+    modifier: str,
+    expected: Any,
+    cased: bool,
+    field: str,
+    caveats: List[Dict[str, Any]],
+) -> bool:
     """Match a single log field value against one expected value + modifier.
 
     ``field_value`` is the value present in the log event (never a "missing"
-    sentinel — absence is handled by the caller). ``modifier`` is one of
-    "", "contains", "startswith", "endswith", "re". Comparison is
-    case-insensitive, except regex which is compiled with re.IGNORECASE.
+    sentinel — absence is handled by the caller). Numeric/CIDR modifiers that
+    receive un-comparable operands record a caveat and return False rather than
+    crashing or silently degrading to equality.
     """
     if modifier == "re":
-        # Regex is matched against the ORIGINAL (non-lowercased) string using
-        # IGNORECASE, so character classes behave as authors expect.
-        return re.search(str(expected), str(field_value), re.IGNORECASE) is not None
+        flags = 0 if cased else re.IGNORECASE
+        return re.search(str(expected), str(field_value), flags) is not None
 
-    fv = _as_text(field_value)
-    ev = _as_text(expected)
+    if modifier == "cidr":
+        try:
+            network = ipaddress.ip_network(str(expected), strict=False)
+        except ValueError:
+            caveats.append({"field": field, "modifier": modifier, "reason": "invalid_cidr_value"})
+            return False
+        try:
+            addr = ipaddress.ip_address(str(field_value).strip())
+        except ValueError:
+            return False  # non-IP field value => no match (not a rule caveat)
+        return addr in network
+
+    if modifier in ("base64", "base64offset"):
+        # Base64 is case-SENSITIVE by nature; compare against the raw field text.
+        haystack = str(field_value)
+        for variant in _base64_variants(str(expected), modifier == "base64offset"):
+            if variant and variant in haystack:
+                return True
+        return False
+
+    if modifier == "windash":
+        fv = _as_text(field_value, cased)
+        return any(_as_text(v, cased) in fv for v in _windash_variants(str(expected)))
+
+    if modifier in ("gt", "gte", "lt", "lte"):
+        ok_f, fv_num = _to_number(field_value)
+        ok_e, ev_num = _to_number(expected)
+        if not (ok_f and ok_e):
+            caveats.append({"field": field, "modifier": modifier, "reason": "non_numeric_value"})
+            return False
+        if modifier == "gt":
+            return fv_num > ev_num
+        if modifier == "gte":
+            return fv_num >= ev_num
+        if modifier == "lt":
+            return fv_num < ev_num
+        return fv_num <= ev_num
+
+    fv = _as_text(field_value, cased)
+    ev = _as_text(expected, cased)
     if modifier == "contains":
         return ev in fv
     if modifier == "startswith":
@@ -296,12 +448,31 @@ def _match_one_value(field_value: Any, modifier: str, expected: Any) -> bool:
     return fv == ev
 
 
-def _match_key(field_spec: str, expected: Any, log_event: Dict[str, Any]) -> bool:
+# Modifiers that select HOW a value is compared (at most one applies per key).
+_VALUE_MODIFIERS = (
+    "contains", "startswith", "endswith", "re", "cidr",
+    "base64", "base64offset", "windash", "gt", "gte", "lt", "lte",
+)
+# Modifiers that flag a mode rather than select a comparison operator.
+_FLAG_MODIFIERS = ("all", "cased", "exists")
+_KNOWN_MODIFIERS = frozenset(_VALUE_MODIFIERS + _FLAG_MODIFIERS)
+
+
+def _match_key(
+    field_spec: str,
+    expected: Any,
+    log_event: Dict[str, Any],
+    caveats: List[Dict[str, Any]],
+) -> bool:
     """Evaluate one ``field|modifier -> expected`` entry against the event.
 
     - The field name is the part before the first ``|``; remaining pipe
       segments are modifiers (e.g. ``field|contains|all``).
-    - A field ABSENT from ``log_event`` never matches (returns False, no raise).
+    - An UNKNOWN modifier records an ``unsupported_modifier`` caveat and fails
+      the key (never silently degrades to equality).
+    - ``exists`` checks field presence regardless of value.
+    - ``field: null`` matches when the field is ABSENT or its value is None.
+    - A field ABSENT from ``log_event`` otherwise never matches (no raise).
     - ``all`` means the expected LIST must ALL match (AND); otherwise a list
       value means OR (any element matches).
     """
@@ -309,14 +480,21 @@ def _match_key(field_spec: str, expected: Any, log_event: Dict[str, Any]) -> boo
     field = parts[0]
     modifiers = [p.strip().lower() for p in parts[1:] if p.strip()]
 
-    if field not in log_event:
-        return False  # absent field => this key does not match (no crash)
-    field_value = log_event[field]
+    unknown = [m for m in modifiers if m not in _KNOWN_MODIFIERS]
+    if unknown:
+        for m in unknown:
+            caveats.append({"field": field, "modifier": m, "reason": "unsupported_modifier"})
+        return False  # inconclusive key => cannot claim a match
+
+    # ``exists`` is presence-only and ignores the field's value.
+    if "exists" in modifiers:
+        return (field in log_event) == _coerce_bool(expected)
 
     require_all = "all" in modifiers
+    cased = "cased" in modifiers
     value_modifier = ""
     for m in modifiers:
-        if m in ("contains", "startswith", "endswith", "re"):
+        if m in _VALUE_MODIFIERS:
             value_modifier = m
             break
 
@@ -326,20 +504,28 @@ def _match_key(field_spec: str, expected: Any, log_event: Dict[str, Any]) -> boo
     else:
         expected_values = [expected]
 
+    if field not in log_event:
+        # An absent field can only satisfy an explicit ``null`` (no value
+        # modifier); everything else fails to match without crashing.
+        return value_modifier == "" and any(ev is None for ev in expected_values)
+    field_value = log_event[field]
+
+    def _one(ev: Any) -> bool:
+        # ``field: null`` matches a present-but-None value too.
+        if ev is None and value_modifier == "":
+            return field_value is None
+        return _match_one_value(field_value, value_modifier, ev, cased, field, caveats)
+
     if require_all:
-        # Every expected element must match (list AND).
-        return all(
-            _match_one_value(field_value, value_modifier, ev)
-            for ev in expected_values
-        )
-    # Default: any expected element matches (list OR / plain equality).
-    return any(
-        _match_one_value(field_value, value_modifier, ev)
-        for ev in expected_values
-    )
+        return all(_one(ev) for ev in expected_values)  # list AND
+    return any(_one(ev) for ev in expected_values)  # list OR / plain equality
 
 
-def _match_selection(selection: Any, log_event: Dict[str, Any]) -> bool:
+def _match_selection(
+    selection: Any,
+    log_event: Dict[str, Any],
+    caveats: List[Dict[str, Any]],
+) -> bool:
     """Evaluate one selection against the log event.
 
     A selection is normally a mapping of field->value; ALL keys must match
@@ -349,13 +535,17 @@ def _match_selection(selection: Any, log_event: Dict[str, Any]) -> bool:
     raising, keeping the matcher robust against odd rule shapes.
     """
     if isinstance(selection, list):
-        return any(_match_selection(sub, log_event) for sub in selection)
+        # Evaluate every sub-map (no short-circuit) so a caveat in a later
+        # sub-map is still recorded even once an earlier one has matched.
+        return any([_match_selection(sub, log_event, caveats) for sub in selection])
     if not isinstance(selection, dict) or not selection:
         return False
-    return all(
-        _match_key(str(field_spec), expected, log_event)
+    # Materialize before all() so a failing early key does not hide a caveat
+    # that a later key would have recorded.
+    return all([
+        _match_key(str(field_spec), expected, log_event, caveats)
         for field_spec, expected in selection.items()
-    )
+    ])
 
 
 # --------------------------------------------------------------------------
@@ -524,10 +714,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         condition_str = str(condition)
 
     selection_names = [k for k in detection if k != "condition"]
+    caveats: List[Dict[str, Any]] = []
     matched_selections = [
         name
         for name in selection_names
-        if _match_selection(detection[name], log_event)
+        if _match_selection(detection[name], log_event, caveats)
     ]
 
     evaluator = _ConditionEvaluator(selection_names, set(matched_selections))
@@ -538,11 +729,19 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # match result — surface it instead of returning a misleading bool.
         return {"ok": False, "error": "validation_error", "message": str(exc)}
 
+    # Any caveat means the rule could not be fully evaluated (unsupported
+    # modifier, non-numeric comparison, bad CIDR). The boolean is then
+    # meaningless, so we force it False and let callers exclude the rule from
+    # the covered / blind-spot verdict rather than trust an un-evaluable match.
+    if caveats:
+        matched = False
+
     return {
         "ok": True,
         "matched": bool(matched),
         "matched_selections": matched_selections,
         "condition": condition_str,
+        "caveats": caveats,
     }
 
 
