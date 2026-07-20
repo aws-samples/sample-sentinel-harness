@@ -60,12 +60,39 @@ _NAME_RE = re.compile(r"^[0-9a-zA-Z]([-]?[0-9a-zA-Z]){0,47}$")
 # target names (49-100 chars, or a trailing hyphen) before any AWS call.
 _TARGET_NAME_RE = re.compile(r"^([0-9a-zA-Z][-]?){1,100}$")
 
+# Pagination runaway guard, mirroring core._all_harnesses: a backend that never
+# clears nextToken must not spin forever. 10k pages is far beyond any real account.
+_MAX_PAGES = 10_000
+
 # Terminal statuses from the GetGateway status enum. READY is success; a DELETING
 # gateway can NEVER become READY, so it is terminal for a readiness wait too (else
 # wait_gateway_ready polls futilely until timeout and raises a misleading
 # TimeoutError instead of surfacing the real state). CREATING/UPDATING are transient.
 _FAILED_STATUSES = frozenset({"FAILED", "UPDATE_UNSUCCESSFUL"})
 _TERMINAL_NOT_READY = _FAILED_STATUSES | {"DELETING", "DELETE_UNSUCCESSFUL"}
+
+
+def _drain_pages(op, items_key: str = "items", **base_args) -> list:
+    """Drain EVERY page of a paginated control-plane list call.
+
+    Same drain-all-pages contract as ``core._all_harnesses`` — reading only the
+    first page silently hides resources beyond it, so cleanup/audit orphaned them
+    (cost + governance leak). ``op`` is the bound client method (e.g.
+    ``_control.list_gateways``); ``base_args`` are forwarded on every page and
+    ``nextToken`` is threaded through. The page-count cap (:data:`_MAX_PAGES`)
+    guards against a backend that never clears the token."""
+    out, token, guard = [], None, 0
+    while True:
+        args = dict(base_args)
+        if token:
+            args["nextToken"] = token
+        resp = op(**args)
+        out.extend(resp.get(items_key, []))
+        token = resp.get("nextToken")
+        guard += 1
+        if not token or guard >= _MAX_PAGES:  # no more pages (or runaway guard)
+            break
+    return out
 
 
 def _validate_name(name: str) -> str:
@@ -327,6 +354,91 @@ def create_gateway_target(gateway_id, name, target_config, *,
     return _control.create_gateway_target(**args)
 
 
+# ---------------------------------------------------------- target lifecycle / query
+def list_gateway_targets(gateway_id) -> list:
+    """List EVERY target attached to a gateway, following ``nextToken`` pagination.
+
+    Model-grounded (botocore ``bedrock-agentcore-control`` ListGatewayTargets):
+    input requires ``gatewayIdentifier`` (optional ``maxResults`` / ``nextToken``);
+    output is ``items`` + ``nextToken``. Each item carries ``targetId`` / ``name`` /
+    ``status`` (enum includes CREATING / UPDATING / READY / FAILED / SYNCHRONIZING /
+    *_PENDING_AUTH / *_UNSUCCESSFUL) plus ``targetType`` / ``listingMode`` /
+    ``lastSynchronizedAt``. Drains all pages — the first-page-only bug that
+    ``core._all_harnesses`` fixed for harnesses would otherwise orphan targets
+    beyond page 1 during cleanup."""
+    return _drain_pages(_control.list_gateway_targets, gatewayIdentifier=gateway_id)
+
+
+def delete_gateway_target(gateway_id, target_id) -> dict:
+    """Delete one target from a gateway.
+
+    Model-grounded: DeleteGatewayTarget requires ``gatewayIdentifier`` +
+    ``targetId`` (both, and nothing else); the response carries ``gatewayArn`` /
+    ``targetId`` / ``status`` / ``statusReasons``. Targets must be deleted before
+    their gateway — :func:`cleanup_gateways` does this automatically."""
+    return _control.delete_gateway_target(gatewayIdentifier=gateway_id, targetId=target_id)
+
+
+def update_gateway_target(gateway_id, target_id, target_config, *,
+                          name=None, description=None,
+                          credential_provider_configs=None, **kw) -> dict:
+    """Update an existing gateway target.
+
+    **``target_config`` is a FULL REPLACEMENT, not a patch**: the service model
+    marks ``targetConfiguration`` as a REQUIRED member of UpdateGatewayTarget
+    (required: ``gatewayIdentifier`` + ``targetId`` + ``targetConfiguration``), so
+    every update must resend the complete envelope — there is no way to send a
+    partial delta. Fetch the current config first (``GetGatewayTarget`` /
+    :func:`list_gateway_targets`) if you only mean to tweak one field.
+
+    The service also rejects updates while the target is in a pending-authorization
+    state (``CREATE_PENDING_AUTH`` / ``UPDATE_PENDING_AUTH`` /
+    ``SYNCHRONIZE_PENDING_AUTH``) — wait for that to settle first.
+
+    Optional members forwarded only when given: ``name`` (validated locally like
+    create), ``description``, ``credentialProviderConfigurations``."""
+    args: dict = dict(
+        gatewayIdentifier=gateway_id,
+        targetId=target_id,
+        targetConfiguration=target_config,
+    )
+    if name is not None:
+        args["name"] = _validate_target_name(name)
+    if description:
+        args["description"] = description
+    if credential_provider_configs is not None:
+        args["credentialProviderConfigurations"] = credential_provider_configs
+    args.update(kw)
+    return _control.update_gateway_target(**args)
+
+
+def synchronize_gateway_targets(gateway_id, target_ids) -> list:
+    """Re-fetch the latest tool definitions from target endpoints (DYNAMIC targets).
+
+    This is how a ``listingMode="DYNAMIC"`` :func:`mcp_server_target` picks up
+    tools the remote MCP server added/changed since attach — without it the
+    gateway keeps serving the stale tool listing.
+
+    Model-grounded: SynchronizeGatewayTargets requires ``gatewayIdentifier`` +
+    ``targetIdList``; the list is capped at EXACTLY ONE targetId per call
+    (model metadata ``min: 1, max: 1``), so a single string is accepted and
+    wrapped, and a multi-id list raises locally instead of as a server-side
+    ValidationException. You cannot synchronize a target in a pending-auth state.
+    Returns the response ``targets`` list."""
+    if isinstance(target_ids, str):
+        target_ids = [target_ids]
+    target_ids = list(target_ids)
+    if len(target_ids) != 1:
+        raise ValueError(
+            f"synchronize_gateway_targets takes exactly ONE targetId per call "
+            f"(the service model caps targetIdList at min=1/max=1), got {len(target_ids)}."
+        )
+    resp = _control.synchronize_gateway_targets(
+        gatewayIdentifier=gateway_id, targetIdList=target_ids
+    )
+    return resp.get("targets", [])
+
+
 # ---------------------------------------------------------------- target builders
 def lambda_mcp_target(lambda_arn, tool_schema=None, *, inline_tools=None) -> dict:
     """Build a ``targetConfiguration`` for a Lambda exposed as MCP tools.
@@ -393,23 +505,48 @@ def mcp_server_target(endpoint, *, tool_schema=None, listing_mode=None) -> dict:
 
 # ---------------------------------------------------------------- teardown / query
 def delete_gateway(gateway_id):
-    """Delete a Gateway by id. Delete its targets first if the service requires it
-    (a gateway with live targets may reject deletion)."""
+    """Delete a Gateway by id. Delete its targets first
+    (:func:`delete_gateway_target`) — a gateway with live targets rejects
+    deletion. :func:`cleanup_gateways` handles that ordering automatically."""
     return _control.delete_gateway(gatewayIdentifier=gateway_id)
 
 
 def list_gateways() -> list:
-    """List all gateways. Returns the ``items`` list (NOT ``gateways`` — that is the
-    service's response key), each carrying ``gatewayId`` / ``name`` / ``status``."""
-    return _control.list_gateways().get("items", [])
+    """List ALL gateways, following ``nextToken`` pagination. Returns the ``items``
+    list (NOT ``gateways`` — that is the service's response key), each carrying
+    ``gatewayId`` / ``name`` / ``status``. Drains all pages — reading only the
+    first page silently hid gateways beyond it, so ``cleanup_gateways`` orphaned
+    billed resources (the same cost + governance bug ``core._all_harnesses``
+    fixed for harnesses)."""
+    return _drain_pages(_control.list_gateways)
 
 
 def cleanup_gateways(prefix: str) -> list:
     """Delete every gateway whose name starts with ``prefix`` (best-effort teardown).
-    Returns the names deleted. Mirrors ``core.cleanup`` for harnesses."""
+    Returns the names deleted. Mirrors ``core.cleanup`` for harnesses.
+
+    Each gateway's targets are deleted FIRST (the service rejects deleting a
+    gateway with live targets, which used to warning-skip the gateway and orphan
+    the billed resource). Target deletion is best-effort per target: a failure is
+    surfaced as a WARNING and we still attempt the gateway delete, so one stuck
+    target cannot silently abort the rest of the teardown."""
     deleted = []
     for g in list_gateways():
         if g.get("name", "").startswith(prefix):
+            # Targets must go before the gateway. Best-effort per target: surface
+            # the error, keep going — the gateway delete below will fail loudly
+            # (and be warning-logged) if a live target actually remains.
+            try:
+                targets = list_gateway_targets(g["gatewayId"])
+            except Exception as e:  # noqa: BLE001 — best-effort teardown, keep going
+                _log.warning("cleanup: could not list targets of %s: %s", g.get("name"), e)
+                targets = []
+            for t in targets:
+                try:
+                    delete_gateway_target(g["gatewayId"], t["targetId"])
+                except Exception as e:  # noqa: BLE001 — best-effort teardown, keep going
+                    _log.warning("cleanup: could not delete target %s of gateway %s: %s",
+                                 t.get("name") or t.get("targetId"), g.get("name"), e)
             try:
                 delete_gateway(g["gatewayId"])
                 deleted.append(g["name"])

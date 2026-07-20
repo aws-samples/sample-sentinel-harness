@@ -17,6 +17,8 @@ from .gateway import (  # noqa: F401
     cognito_jwt_authorizer, lambda_interceptor, policy_engine_config,
     INTERCEPTION_POINTS, POLICY_ENGINE_MODES,
     delete_gateway, list_gateways, cleanup_gateways,
+    list_gateway_targets, delete_gateway_target, update_gateway_target,
+    synchronize_gateway_targets,
 )
 from .factory import (  # noqa: F401
     provision_fleet, teardown_fleet, FactoryError, ENV_TAG_KEY,
