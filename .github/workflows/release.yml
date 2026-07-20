@@ -40,7 +40,7 @@ jobs:
       # actions/checkout v7.0.0
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       # actions/setup-python v6.3.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
       - name: Install (mirrors ci.yml toolchain)
@@ -70,7 +70,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
       # actions/setup-python v6.3.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
 
@@ -116,7 +116,7 @@ jobs:
 
       - name: Create GitHub Release
         # softprops/action-gh-release v3.0.1 (Node 24)
-        uses: softprops/action-gh-release@2bb465e97f322d3cb2a965294d483e0d26a67aa9
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b
         with:
           body_path: release-notes.md
           files: |
@@ -160,6 +160,6 @@ jobs:
         # ever configured on PyPI for this repo+workflow, drop the `password` line
         # and the action falls back to tokenless OIDC (id-token: write is already
         # granted above).
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
