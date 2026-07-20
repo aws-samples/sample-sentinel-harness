@@ -252,7 +252,7 @@ Borrowed patterns (see [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md)): supervisor→s
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Delivered milestones (M0–M12) and what's next |
 | [**API reference (live)**](https://neosun100.github.io/sentinel-harness/) | Rendered `sentinel_harness` API docs (pdoc → GitHub Pages) |
 | [`CHANGELOG.md`](CHANGELOG.md) | Versioned change history |
-| [`docs/RELEASING.md`](docs/RELEASING.md) | The tag-driven release runbook (SBOM · SLSA provenance · PyPI OIDC) |
+| [`docs/RELEASING.md`](docs/RELEASING.md) | The tag-driven release runbook (SBOM · SLSA provenance · PyPI publish) |
 | [`docs/RELEASE-v0.4.0.md`](docs/RELEASE-v0.4.0.md) | The v0.4.0 release notes — detection-engineering suite + 100-defect hardening |
 | [`docs/RELEASE-v0.2.0.md`](docs/RELEASE-v0.2.0.md) | The v0.2.0 release notes (highlights, by-the-numbers, honest limits) |
 

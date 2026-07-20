@@ -17,7 +17,7 @@ signs, and publishes.
 6. Create the **GitHub Release** with the artifacts + the SBOM attached.
 
 **`pypi-publish` job** (only when the tag is **not** a prerelease — no hyphen)
-7. Publish to PyPI via `pypa/gh-action-pypi-publish` over **OIDC Trusted Publishing** — no stored token.
+7. Publish to PyPI via `pypa/gh-action-pypi-publish` authenticated with the **`PYPI_API_TOKEN` repo secret** (a project-scoped PyPI token). PyPI offers no API to register an OIDC trusted publisher (Web-UI + 2FA only), so the token path is what keeps releases fully automated; the job stays OIDC-ready — configure a trusted publisher on PyPI and drop the `password` line to go tokenless.
 
 ## Release checklist
 
@@ -51,7 +51,8 @@ git push origin vX.Y.Z        # → release.yml fires
 | Prerequisite | Status | How |
 |---|---|---|
 | GitHub Pages source = "GitHub Actions" | ✅ done | set via `gh api -X POST repos/<owner>/<repo>/pages -f build_type=workflow` |
-| PyPI **trusted publisher** for this repo+workflow | ⚠️ **required before first PyPI publish** | configure once on PyPI (project → Publishing → add a GitHub Actions trusted publisher for `release.yml`). Until then the `pypi-publish` job fails by design (a release is not "done" until the OIDC identity is accepted). |
+| `PYPI_API_TOKEN` repo secret | ✅ done | project-scoped PyPI token set via `gh secret set PYPI_API_TOKEN` (value read from a local env file, never committed). Rotate on PyPI → re-run the same command. |
+| PyPI **trusted publisher** (optional upgrade) | ⏳ optional | PyPI has no API for this (Web-UI + 2FA only). Configure once on PyPI (project → Publishing → GitHub Actions publisher for `release.yml`, environment `pypi`), then delete the `password:` line in `release.yml` to go tokenless OIDC. |
 
 ## Verifying a release
 

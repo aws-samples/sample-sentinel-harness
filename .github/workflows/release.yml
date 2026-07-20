@@ -11,9 +11,11 @@ name: release
 #   - SLSA provenance    : actions/attest-build-provenance signs the built artifacts
 #                          (keyless, Sigstore) so their origin (this repo/workflow/commit)
 #                          is cryptographically verifiable with `gh attestation verify`.
-#   - PyPI OIDC publish  : pypa/gh-action-pypi-publish exchanges a short-lived OIDC token
-#                          for the upload — NO API token stored in the repo. Requires a
-#                          PyPI "trusted publisher" configured for this repo+workflow.
+#   - PyPI publish       : pypa/gh-action-pypi-publish with the PYPI_API_TOKEN repo
+#                          secret (project-scoped). PyPI has no API to register a
+#                          trusted publisher (Web-UI + 2FA only), so the token path
+#                          keeps releases fully automated; the job stays OIDC-ready
+#                          (drop `password` once a trusted publisher is configured).
 
 on:
   push:
@@ -132,7 +134,7 @@ jobs:
           if-no-files-found: error
 
   pypi-publish:
-    name: PyPI Trusted Publishing (OIDC)
+    name: PyPI publish (API token; OIDC-ready)
     needs: build
     runs-on: ubuntu-latest
     # Only publish real releases to PyPI, never pre-releases (…-rc/-a/-b tags).
@@ -150,8 +152,14 @@ jobs:
           name: dist
           path: dist
 
-      - name: Publish to PyPI (OIDC, tokenless)
-        # Requires a PyPI trusted publisher configured for this repo + this workflow.
-        # Until then this job fails loudly rather than silently skipping — that is the
-        # intended gate (a release is not "done" until PyPI accepts the OIDC identity).
+      - name: Publish to PyPI (API token)
+        # Authenticates with the PYPI_API_TOKEN repo secret (a project-scoped PyPI
+        # token). OIDC Trusted Publishing was the original design, but PyPI offers
+        # no API to register a trusted publisher (Web-UI-only + 2FA), so the token
+        # path is what keeps releases fully automated. If a trusted publisher is
+        # ever configured on PyPI for this repo+workflow, drop the `password` line
+        # and the action falls back to tokenless OIDC (id-token: write is already
+        # granted above).
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
