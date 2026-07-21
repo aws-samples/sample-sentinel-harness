@@ -67,4 +67,4 @@ try:
 
     __version__ = _pkg_version("sentinel-harness")
 except PackageNotFoundError:  # not installed (bare source checkout)
-    __version__ = "0.5.0"
+    __version__ = "0.5.1"

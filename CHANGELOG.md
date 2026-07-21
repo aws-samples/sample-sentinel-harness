@@ -8,6 +8,27 @@ All notable changes to this project are documented here. The format is based on
 
 _Nothing yet._
 
+## [0.5.1] — 2026-07-21
+
+**M17 backlog complete (12/12): detection depth + protocol coverage.**
+
+### Added
+- **FP-proneness heuristics** — 5 deterministic noise indicators in `sigma_yara_lint`
+  (WARNING class, separate from errors/warnings); rules with >=2 fp_warnings
+  classified as `fp_prone` in `detection_audit` (capped -10 health-score deduction).
+  16 new tests.
+- **MCP protocol round-trip tests** — real SDK in-memory transport exercising the
+  full initialize → list_tools → call_tool protocol layer; validates governance
+  filtering, bare-arguments fallback, unknown-tool error path. 7 async tests.
+- **sigma_match modifiers** — cidr, base64/base64offset, windash, gt/gte/lt/lte,
+  exists, cased, null semantics; unknown modifiers now emit caveats instead of
+  silent equality. 43 table-driven tests.
+
+### Changed
+- MCP input schema made permissive (`event` key optional) so bare-arguments work
+  through the protocol layer.
+- `[test]` extra now includes `mcp`, `anyio`, `pytest-anyio` for protocol tests.
+
 ## [0.5.0] — 2026-07-20
 
 **M17 delivery: platform distribution, security hardening, architecture completion.**
