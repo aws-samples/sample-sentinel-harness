@@ -37,11 +37,11 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout v7.0.0
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Initialize CodeQL
         # github/codeql-action/init v3.37.0
-        uses: github/codeql-action/init@02c5e83432fe5497fd85b873b6c9f16a8578e1d9
+        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81
         with:
           language: ${{ matrix.language }}
           queries: security-and-quality
@@ -49,10 +49,10 @@ jobs:
       - name: Autobuild
         # github/codeql-action/autobuild v3.37.0 (interpreted languages need no build,
         # but autobuild is a no-op that keeps the flow uniform across the matrix)
-        uses: github/codeql-action/autobuild@02c5e83432fe5497fd85b873b6c9f16a8578e1d9
+        uses: github/codeql-action/autobuild@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81
 
       - name: Perform CodeQL Analysis
         # github/codeql-action/analyze v3.37.0
-        uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9
+        uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81
         with:
           category: "/language:${{ matrix.language }}"
