@@ -134,6 +134,26 @@ dashboard while catching nothing.
 | **INV-TRANSLATE-2** | A predicate withheld from a field-aware query surfaces in `notes` — a partial translation must announce that it is partial, never read as full coverage. | `detection_translate._translate` | `test_r10_semantic_gates.py::TestFieldAwareNotesSurfaceWithheldPredicates` |
 | **INV-TRANSLATE-3** | Faithful modifiers (`contains`/`startswith`/`endswith`/plain) are unaffected by the withholding, and EQL plain equality stays case-insensitive (`cmd.exe` matches `CMD.EXE`). The fix must not over-withhold. | `detection_translate._translate` | `test_r10_semantic_gates.py::TestFaithfulTranslationsStillWork` |
 
+## INV-COVERAGE — a coverage number reflects capability, not intent
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-COVERAGE-1** | A rule that can NEVER FIRE (no `detection` block, no `condition`, or a `condition` naming an undefined selection) contributes NO coverage, and is reported in `non_actionable_rules` with the technique it falsely claimed. An ATT&CK tag is a statement of INTENT; only a rule that can fire is CAPABILITY, and counting the former as the latter turns the matrix green over a real blind spot. Valid condition grammar (`and not`, `1 of selection_*`, `all of them`) is never falsely excluded. | `detection_coverage._actionability_defect` | `test_r11_semantic_gates.py::TestNonActionableRulesDoNotCountAsCoverage` |
+| **INV-COVERAGE-2** | The audit health score penalises a non-actionable rule MORE than an untagged one. An untagged rule under-reports its own coverage (conservative); a non-actionable rule over-reports it (hides a gap). | `detection_audit._health_score` | `test_r11_semantic_gates.py::TestAuditPenalisesNonActionableRules` |
+
+## INV-MATCH — the matcher agrees with Sigma semantics
+
+A wrong verdict here is not just a wrong boolean: `longrunning/bas-runner` reads
+this matcher to decide whether a technique is detected, so an under-match publishes
+a FALSE BLIND SPOT — the team is sent to build coverage it already has, and the
+noise hides the real gaps.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-MATCH-1** | Sigma value WILDCARDS are honoured: `*` matches any run, `?` exactly one, composed with `contains`/`startswith`/`endswith` rather than overriding them. Only `\*`, `\?` and `\\` are escapes (so Windows paths survive), and an escaped wildcard matches the literal character — including on the non-wildcard path, which is the spelling that exists for exactly that purpose. | `sigma_match._has_wildcard` / `_wildcard_match` / `_unescape_sigma` | `test_r11_semantic_gates.py::TestSigmaWildcardsAreHonoured` |
+| **INV-MATCH-2** | Field names resolve case-insensitively (an exact hit always wins), because a rule author's field reference routinely differs in case from the shipped log schema. Two event keys differing only by case are AMBIGUOUS: the key is refused with a caveat rather than guessed, since either choice could flip the verdict. | `sigma_match._resolve_field` | `test_r11_semantic_gates.py::TestFieldNamesAreCaseInsensitive` |
+| **INV-MATCH-3** | `detection_dedup` reports a duplicate only on a PROVEN match-set equality, never on text similarity — a false duplicate gets a real rule deleted. A stricter rule is a subsumption, not a duplicate; a different logsource is never a duplicate; a non-provable rule lands in `not_analyzed` rather than counting as "checked, no duplicates". | `detection_dedup._predicate_implies` / `_subset_of` | `test_r11_semantic_gates.py::TestDedupRemainsAMatchSetProof` |
+
 ## INV-STREAM — the InvokeHarness stream parser protects the resume contract
 
 | ID | Invariant | Owner | Enforced by |

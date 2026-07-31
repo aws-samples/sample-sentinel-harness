@@ -51,7 +51,7 @@ live) · 🟡 skeleton / partial · 🔴 gap.
 | `specialists/` | `cve-intel` (docker-build + live-validated on AgentCore Runtime) + `attack-mapper` / `threat-hunt` (real graph/plan builders) + `adversarial-reviewer` (agent_a2a + local_a2a + two-stage Dockerfile + contract test) | ✅ | all four specialists shipped |
 | `longrunning/` | `bas-runner` (BAS case-gen + detection-replay) + `detonation` (full simulated microVM lifecycle + orchestrator) | 🟩 | both built + tested; detonation stays an honest SIMULATED no-op |
 | `iac-cdk/lib/` | 9 synth-green stacks — `gateway` / `registry` / `memory` / `network` / `identity` / `guardrail` / `observability` / `harness` / `runtime` (+ `iam`); `iac-terraform/` mirror is `terraform validate`-clean | ✅ | `guardrail` / `identity` / `observability` LIVE-deployed (us-east-1); the Registry + `runtime` custom-resource/raw-CfnResource stacks synth clean but fail on deploy until their CFN types are GA (both control-plane APIs are separately live-verified — Registry via `registry_live.py`, `CreateAgentRuntime` via a real arm64 microVM that served a live A2A call, HTTP 200, real Bedrock model, on a non-prod test account, then torn down — `evidence/live_a2a_runtime_result.json`) |
-| `tests/` | 133 files, **2671 offline passing** (+6 skipped) | ✅ | add tests with each new module |
+| `tests/` | 134 files, **2730 offline passing** (+6 skipped) | ✅ | add tests with each new module |
 | `evidence/` | 37 evidence sets | ✅ | add one per milestone |
 
 ### 0.3 Fit score (vs. a full three-layer SecOps agent program)
@@ -181,8 +181,8 @@ Each milestone gives: **goal / files / reused APIs / acceptance (live evidence) 
 Suggest one feature branch per milestone.
 
 ### M0 — Environment & baseline reproduction (half a day)
-**Goal:** on a fresh machine, get all 2671 offline tests green and reproduce ≥1 live scenario.
-- [ ] `uv sync` + `uv run pytest -q` → 2671 passing (+6 skipped) (offline).
+**Goal:** on a fresh machine, get all 2730 offline tests green and reproduce ≥1 live scenario.
+- [ ] `uv sync` + `uv run pytest -q` → 2730 passing (+6 skipped) (offline).
 - [ ] Configure `SENTINEL_EXECUTION_ROLE_ARN` / `SENTINEL_REGION` / `AWS_PROFILE` (non-prod) — see `docs/SETUP.md`.
 - [ ] Run `scenarios/scenario_cve_triage.py`; compare `evidence/cve_triage_result.json` shape.
 - [ ] Run `scenarios/scenario_hitl_resume.py`; reproduce pause→approve→resume.
@@ -419,7 +419,7 @@ hand-off reuses the live-capable M1/M2 engine (driven offline here, labeled a wi
       (`make deploy`, cost note, `make destroy`) + the no-lock-in export. — `docs/QUICKSTART.md`
 - [x] `tests/smoke/`: offline acceptance suite (default offline; `SENTINEL_SMOKE_LIVE=1` opt-in for live). — `tests/smoke/`
 
-**Acceptance:** `make test` → 2671 offline tests green; `make seed-registry` → dual-gate `ok`;
+**Acceptance:** `make test` → 2730 offline tests green; `make seed-registry` → dual-gate `ok`;
 `make create-harnesses` (DRY_RUN=1) → 8 harnesses validate offline with zero AWS; `sentinel export` → valid
 compilable Strands Python; `make smoke` → the offline acceptance suite green. A fresh non-prod account can then
 run `make deploy` (free-tier foundation) and the live scenarios; `make destroy` tears it all down.
@@ -837,7 +837,7 @@ with a harness that ever carried an extra endpoint taking >5 min to clear versus
       consistency, scoped to present-tense claims so ROADMAP changelog entries
       ("2126 → 2352") are not falsely flagged.
 
-**Acceptance:** suite 2493 → **2671** offline passing (+8 skipped), ruff clean,
+**Acceptance:** suite 2493 → **2730** offline passing (+8 skipped), ruff clean,
 coverage 90% (gate 88), both mypy gates green, docs-drift + invariant-doc guards
 green, and `evidence/m18_gates_live_result.json` `closed: true` with zero residue
 on a real account.
@@ -891,7 +891,7 @@ needs to become more specific, not filtered.
 
 **Tests:** `tests/test_r9_semantic_gates.py` — 59 tests, of which **37 fail on
 pre-R9 source**. The other 22 are the solid-surface tripwires and false-positive
-guards, expected green in both states. Suite 2590 → **2671**; ruff clean; both
+guards, expected green in both states. Suite 2590 → **2730**; ruff clean; both
 mypy gates green; docs-drift + invariant-doc guards green.
 
 **Recommendation for round 10:** the remaining unprobed semantic surfaces are
@@ -940,7 +940,7 @@ still parses.
   untranslatable rather than silently inverted.
 
 **Tests:** `tests/test_r10_semantic_gates.py` — 22 tests, of which **11 fail on
-pre-R10 source** (verified by reverting the three modules). Suite 2649 → **2671**;
+pre-R10 source** (verified by reverting the three modules). Suite 2649 → **2730**;
 ruff clean; both mypy gates green; docs-drift + invariant-doc guards green.
 `docs/INVARIANTS.md` now carries 37 invariants across five families.
 
@@ -950,3 +950,64 @@ match set, or just similar text?), `detection_coverage` (does a claimed ATT&CK
 technique mapping actually correspond to the rule's logic?), and `sigma_match`
 (does the matcher's evaluation agree with a real Sigma engine on the modifier
 edge cases R10 just mapped?).
+
+---
+
+## 4i. Round-11 adversarial audit — detection-suite fidelity (R11) — ✅ DELIVERED (offline)
+
+> R10 asked "is this well-formed output semantically right?" of the translators.
+> R11 asked it of the rest of the detection suite, where the failure mode is
+> subtler: these tools produce **governance numbers a SOC acts on**, and a wrong
+> number is worse than a crash — nobody investigates a green dashboard.
+
+**Two gaps, both of which make a blind spot look covered:**
+
+| # | Gap | Invariant | Why it survived 10 rounds |
+|---|---|---|---|
+| R11-1 | **`detection_coverage` counted a rule that can NEVER FIRE as coverage.** A rule with no `detection` block, or a `condition` naming an undefined selection, produces exactly zero alerts — yet its `attack.t1059` tag was enough to move T1059 out of `uncovered`. The ATT&CK matrix showed green while an attacker using that technique walked in unseen. | INV-COVERAGE-1/2 | The module's goal is "which techniques can we NOT detect", but it validated a PROXY: which techniques a tag mentions. A tag is intent, not capability. Its own docstring even names the failure mode ("a false 'covered' hides a real blind spot") — it just never checked. Notably `sigma_yara_lint` already detected all three defects; coverage simply never consumed that judgement. |
+| R11-2 | **`sigma_match` treated Sigma wildcards as literal characters.** `Image: 'cmd*'` reported NO match against `cmd.exe`. Field names were also compared case-sensitively, so a rule written `Image:` missed an event carrying `image:`. | INV-MATCH-1/2 | The matcher had impressively complete modifier support (`re`/`cidr`/`base64`/`windash`/numeric/`cased`/`exists`) and a working `caveats` mechanism for unsupported modifiers — so the ONE missing feature was invisible: wildcards are part of the value GRAMMAR, not a modifier, so nothing flagged them. And because `bas-runner` reads this matcher to decide whether a technique is detected, an under-match publishes a **false blind spot**: the team is sent to build coverage it already has, and the noise hides the real gaps. |
+
+**A connected finding surfaced from fixing R11-1.** With dead rules no longer
+counted, `detection_audit`'s health score IMPROVED (0 → 10) on a pathological rule
+set, because those rules had been contributing the `untagged_rules` deduction. That
+exposed a **penalty-calibration gap**: a rule that claims a technique it cannot
+detect was only ever penalised as "untagged" (-10), which is backwards — an
+untagged rule UNDER-reports its own coverage (conservative, harmless), while a
+non-actionable rule OVER-reports it (turns the matrix green over a real gap). A new
+`non_actionable_rules` class (-15, above untagged) now reflects that asymmetry, and
+the pre-existing `assert health_score == 0` saturation test verified it landed.
+
+### Surface probed and found SOLID: `detection_dedup`
+
+Worth recording in detail, because it is the counter-example that shows the audit
+question is genuinely discriminating rather than always finding something.
+`detection_dedup` was probed with exactly the same intent — "does 'duplicate' mean
+the same MATCH SET, or just similar text?" — and passed 7/7:
+
+- it performs a real containment PROOF (`_predicate_implies` argues per modifier)
+  and returns False whenever containment is not provable — it never over-claims;
+- a stricter rule is reported as a **subsumption**, never a duplicate (calling it a
+  duplicate would get a real detection deleted);
+- value and field-name case differences ARE duplicates; a different logsource never
+  is;
+- a rule outside the provable shape lands in `not_analyzed` rather than silently
+  counting as "checked, no duplicates found".
+
+Tripwire tests are kept in the R11 suite so the tempting "optimisation" — compare
+normalised rule text — cannot quietly turn a sound proof into fuzzy matching.
+
+**Tests:** `tests/test_r11_semantic_gates.py` — 59 tests, of which **32 fail on
+pre-R11 source** (verified by reverting the three modules). The other 27 are the
+dedup tripwires and regression guards, green in both states. Suite 2671 → **2730**
+collected; ruff clean (it caught a genuinely missing `Optional` import that the
+runtime never touches thanks to `from __future__ import annotations`); both mypy
+gates green; docs-drift + invariant-doc guards green. `docs/INVARIANTS.md` now
+carries 42 invariants across eight families.
+
+**Recommendation for round 12:** the unprobed surfaces left are
+`detection_navigator` (does the emitted ATT&CK-Navigator layer's scoring match the
+coverage it was built from, now that coverage excludes dead rules?),
+`detection_baseline` (can a regression be hidden by reordering, or by a rule set
+that shrinks?), and `whitelist_optimizer`'s synthesised Sigma filter (does the
+generated filter suppress ONLY the FP cohort it was given — i.e. the same match-set
+question R11 asked of dedup, applied to a GENERATED rule).
