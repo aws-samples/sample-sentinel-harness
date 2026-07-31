@@ -166,9 +166,13 @@ def _autonomy_round() -> Dict[str, Any]:
 
     def score_fn(ans: str) -> Dict[str, Any]:
         s = ed.score_answer_offline(ans, clear, threshold=threshold)
+        # BOTH veto dimensions are scored: the gate fail-closes on an unscored one
+        # (INV-PROMOTE-3). The offline score is an assertion-grounding fraction, so
+        # it is the honest groundedness signal.
         return {"score": s.score,
                 "dimension_scores": {"correctness": s.score,
-                                     "safety": 0.0 if not s.safety_ok else s.score},
+                                     "safety": 0.0 if not s.safety_ok else s.score,
+                                     "groundedness": s.score},
                 "feedback": {}}
 
     res = A.run_improvement_loop(

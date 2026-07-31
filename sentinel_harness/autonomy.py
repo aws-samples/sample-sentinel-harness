@@ -155,19 +155,39 @@ def evaluate_gate(
     threshold: float,
     incumbent_best: Optional[float],
     require_strict_improvement: bool = False,
+    require_safety_dims: bool = True,
 ) -> Dict[str, Any]:
     """Combine the safety veto + pass bar + regression guard for one candidate. PURE.
 
-    Returns ``{"passed_bar", "safety_ok", "failed_safety", "regression_ok",
-    "promotable_pre_human", "reason"}``. ``promotable_pre_human`` is True iff every
-    machine gate passed (the human gate is applied separately by the loop). Reusing
-    ``loop_safety`` keeps this the SAME veto/guard the rest of the platform uses."""
+    Returns ``{"passed_bar", "safety_ok", "failed_safety", "missing_safety",
+    "regression_ok", "promotable_pre_human", "reason"}``.
+    ``promotable_pre_human`` is True iff every machine gate passed (the human gate
+    is applied separately by the loop). Reusing ``loop_safety`` keeps this the SAME
+    veto/guard the rest of the platform uses.
+
+    FAIL-CLOSED ON MISSING SAFETY DATA (``require_safety_dims``, default True):
+    a judge that never scored ``safety`` / ``groundedness`` — a truncated LLM
+    response, a schema-less judge, or a dimension name this platform does not
+    recognize — has NOT cleared the candidate. Silence is not a pass. Without this,
+    a bare ``{"score": 0.95}`` verdict promoted an agent whose safety was never
+    assessed at all (the aggregate alone satisfied every other gate).
+    :func:`loop_safety.missing_safety_dimensions` reports the gap and it is treated
+    exactly like an explicit safety failure. Pass ``require_safety_dims=False``
+    ONLY for a caller that deliberately scores no safety dimension (e.g. a
+    non-security capability check) — never for the SecOps promotion path.
+    See ``docs/INVARIANTS.md`` (INV-PROMOTE-3)."""
     agg = _score_value(score)
     dims = _dimension_scores(score)
 
     veto = loop_safety.apply_safety_veto(dims, aggregate=agg, threshold=threshold)
-    safety_ok = not veto["vetoed"]
     passed_bar = veto["aggregate_passed"]
+
+    missing_safety: List[str] = (
+        loop_safety.missing_safety_dimensions(dims, threshold=threshold)
+        if require_safety_dims else []
+    )
+    # Absence is treated exactly like an explicit failure: both mean "not cleared".
+    safety_ok = (not veto["vetoed"]) and not missing_safety
 
     guard = loop_safety.regression_guard(
         incumbent_best, agg, min_pass=threshold,
@@ -180,8 +200,14 @@ def evaluate_gate(
         reason = "all machine gates passed (safety ok, cleared bar, no regression)"
     else:
         parts = []
-        if not safety_ok:
+        if veto["vetoed"]:
             parts.append(veto["reason"])
+        if missing_safety:
+            parts.append(
+                f"safety data missing: dimension(s) {missing_safety} were never "
+                "scored (or unreadable) — a judge's silence is not a pass "
+                "(fail-closed)"
+            )
         if not passed_bar:
             parts.append(f"aggregate {agg:.4g} below bar {threshold:.4g}")
         if not regression_ok:
@@ -191,6 +217,7 @@ def evaluate_gate(
         "passed_bar": passed_bar,
         "safety_ok": safety_ok,
         "failed_safety": veto["failed_safety"],
+        "missing_safety": missing_safety,
         "regression_ok": regression_ok,
         "promotable_pre_human": promotable,
         "reason": reason,
@@ -210,6 +237,7 @@ def run_improvement_loop(
     incumbent_best: Optional[float] = None,
     approve_fn: Optional[ApproveFn] = None,
     require_strict_improvement: bool = False,
+    require_safety_dims: bool = True,
 ) -> LoopResult:
     """Drive one candidate through score → revise-until-passing → gated promotion.
 
@@ -258,6 +286,7 @@ def run_improvement_loop(
         gate = evaluate_gate(
             last_score, threshold=threshold, incumbent_best=incumbent_best,
             require_strict_improvement=require_strict_improvement,
+            require_safety_dims=require_safety_dims,
         )
         last_gate = gate
 
