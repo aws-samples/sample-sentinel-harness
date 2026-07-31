@@ -164,7 +164,12 @@ def test_every_invariant_row_names_an_owner_and_a_test():
     for line in _doc_text().splitlines():
         if not re.match(r"\|\s*\*\*INV-", line):
             continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        # Split on UNESCAPED pipes only: an invariant description may contain a
+        # literal `\|` (e.g. a Sigma `field|base64` modifier), which is NOT a
+        # column separator. A naive split("|") would shard that row into extra
+        # cells and mis-flag it.
+        cells = [c.strip().replace(r"\|", "|")
+                 for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
         # id | invariant | owner | enforced by
         if len(cells) < 4 or not cells[2] or not cells[3]:
             offenders.append(cells[0] if cells else line)

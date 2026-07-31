@@ -51,7 +51,7 @@ live) · 🟡 skeleton / partial · 🔴 gap.
 | `specialists/` | `cve-intel` (docker-build + live-validated on AgentCore Runtime) + `attack-mapper` / `threat-hunt` (real graph/plan builders) + `adversarial-reviewer` (agent_a2a + local_a2a + two-stage Dockerfile + contract test) | ✅ | all four specialists shipped |
 | `longrunning/` | `bas-runner` (BAS case-gen + detection-replay) + `detonation` (full simulated microVM lifecycle + orchestrator) | 🟩 | both built + tested; detonation stays an honest SIMULATED no-op |
 | `iac-cdk/lib/` | 9 synth-green stacks — `gateway` / `registry` / `memory` / `network` / `identity` / `guardrail` / `observability` / `harness` / `runtime` (+ `iam`); `iac-terraform/` mirror is `terraform validate`-clean | ✅ | `guardrail` / `identity` / `observability` LIVE-deployed (us-east-1); the Registry + `runtime` custom-resource/raw-CfnResource stacks synth clean but fail on deploy until their CFN types are GA (both control-plane APIs are separately live-verified — Registry via `registry_live.py`, `CreateAgentRuntime` via a real arm64 microVM that served a live A2A call, HTTP 200, real Bedrock model, on a non-prod test account, then torn down — `evidence/live_a2a_runtime_result.json`) |
-| `tests/` | 132 files, **2649 offline passing** (+6 skipped) | ✅ | add tests with each new module |
+| `tests/` | 133 files, **2671 offline passing** (+6 skipped) | ✅ | add tests with each new module |
 | `evidence/` | 37 evidence sets | ✅ | add one per milestone |
 
 ### 0.3 Fit score (vs. a full three-layer SecOps agent program)
@@ -181,8 +181,8 @@ Each milestone gives: **goal / files / reused APIs / acceptance (live evidence) 
 Suggest one feature branch per milestone.
 
 ### M0 — Environment & baseline reproduction (half a day)
-**Goal:** on a fresh machine, get all 2649 offline tests green and reproduce ≥1 live scenario.
-- [ ] `uv sync` + `uv run pytest -q` → 2649 passing (+6 skipped) (offline).
+**Goal:** on a fresh machine, get all 2671 offline tests green and reproduce ≥1 live scenario.
+- [ ] `uv sync` + `uv run pytest -q` → 2671 passing (+6 skipped) (offline).
 - [ ] Configure `SENTINEL_EXECUTION_ROLE_ARN` / `SENTINEL_REGION` / `AWS_PROFILE` (non-prod) — see `docs/SETUP.md`.
 - [ ] Run `scenarios/scenario_cve_triage.py`; compare `evidence/cve_triage_result.json` shape.
 - [ ] Run `scenarios/scenario_hitl_resume.py`; reproduce pause→approve→resume.
@@ -419,7 +419,7 @@ hand-off reuses the live-capable M1/M2 engine (driven offline here, labeled a wi
       (`make deploy`, cost note, `make destroy`) + the no-lock-in export. — `docs/QUICKSTART.md`
 - [x] `tests/smoke/`: offline acceptance suite (default offline; `SENTINEL_SMOKE_LIVE=1` opt-in for live). — `tests/smoke/`
 
-**Acceptance:** `make test` → 2649 offline tests green; `make seed-registry` → dual-gate `ok`;
+**Acceptance:** `make test` → 2671 offline tests green; `make seed-registry` → dual-gate `ok`;
 `make create-harnesses` (DRY_RUN=1) → 8 harnesses validate offline with zero AWS; `sentinel export` → valid
 compilable Strands Python; `make smoke` → the offline acceptance suite green. A fresh non-prod account can then
 run `make deploy` (free-tier foundation) and the live scenarios; `make destroy` tears it all down.
@@ -837,7 +837,7 @@ with a harness that ever carried an extra endpoint taking >5 min to clear versus
       consistency, scoped to present-tense claims so ROADMAP changelog entries
       ("2126 → 2352") are not falsely flagged.
 
-**Acceptance:** suite 2493 → **2649** offline passing (+8 skipped), ruff clean,
+**Acceptance:** suite 2493 → **2671** offline passing (+8 skipped), ruff clean,
 coverage 90% (gate 88), both mypy gates green, docs-drift + invariant-doc guards
 green, and `evidence/m18_gates_live_result.json` `closed: true` with zero residue
 on a real account.
@@ -891,7 +891,7 @@ needs to become more specific, not filtered.
 
 **Tests:** `tests/test_r9_semantic_gates.py` — 59 tests, of which **37 fail on
 pre-R9 source**. The other 22 are the solid-surface tripwires and false-positive
-guards, expected green in both states. Suite 2590 → **2649**; ruff clean; both
+guards, expected green in both states. Suite 2590 → **2671**; ruff clean; both
 mypy gates green; docs-drift + invariant-doc guards green.
 
 **Recommendation for round 10:** the remaining unprobed semantic surfaces are
@@ -899,3 +899,54 @@ mypy gates green; docs-drift + invariant-doc guards green.
 `exporter`'s generated-code fidelity, and the detection-suite translators
 (`detection_translate`'s SPL/EQL emitters got an injection audit in M14, but not a
 SEMANTIC one — e.g. does a translated rule preserve the original's match set?).
+
+---
+
+## 4h. Round-10 adversarial audit — SEMANTIC gaps in output fidelity (R10) — ✅ DELIVERED (offline)
+
+> R9 audited governance surfaces. R10 asked the same question — "was the invariant
+> ever asked?" — of three places where a **well-formed output can be semantically
+> wrong**: the Sigma→SIEM translators, the InvokeHarness stream parser, and the
+> Strands exporter.
+
+**Three gaps, and the headline is a false NEGATIVE** — the worst kind for a
+detection, because it reads as coverage while catching nothing:
+
+| # | Gap | Invariant | Why it survived 9 rounds |
+|---|---|---|---|
+| R10-1 | **A lossy modifier was translated to a plaintext field match on Splunk/Elastic, changing the match set to a DISJOINT one.** `CommandLine\|base64: 'whoami'` (matches `base64('whoami')` = `d2hvYW1p`) became Splunk `CommandLine="whoami"` (matches the plaintext). A rule written to catch OBFUSCATED commands was silently turned into one that only catches un-obfuscated ones. `\|re` had the same shape (regex → literal). And the caveat named the wrong targets — "no YARA/Suricata equivalent" on an SPL translation. | INV-TRANSLATE-1/2/3 | The M14 audit checked the translators for output INJECTION (can a value break the grammar?) and found real bugs — but never for match-set FIDELITY (does the rule still match the same events?). Different question. The literal was even labelled "best effort", which is honest on a byte scanner and a false negative on a field-aware query — the same word covering two different truths. |
+| R10-2 | **A repeated `toolUseId` in the stream produced two pending gates**, so the resume would emit two `toolResult`s for one id — which the Bedrock protocol rejects, corrupting the session. | INV-STREAM-1 | The parser was audited for DROPPING gates (M18 fixed parallel-gate loss) but never for DUPLICATING one. The fix is symmetric to that one. |
+| R10-3 | **The exporter listed HITL safety gates among ordinary tools** and initialised `tools=[]`. An adopter wiring the business tools would naturally skip the `request_*_approval` gate — shipping an agent that acts without the approval the harness required, with nothing calling it out. | INV-EXPORT-1 | `export` is honestly a SKELETON (documented as such), so "it drops tools" is not a bug — but nobody asked whether it distinguishes a SAFETY GATE from a business tool. It did not. |
+
+The fixes are scoped, not blanket: byte-scanner targets (YARA/Suricata) keep the
+labelled best-effort literal — there a byte substring IS the honest approximation;
+only the field-aware targets withhold it. Faithful modifiers
+(contains/startswith/endswith/plain, and EQL's case-insensitive equality) are
+untouched. The stream dedupe keeps distinct parallel ids. The exporter adds the
+guardrail marking only when a gate is present, and the generated module always
+still parses.
+
+### Surfaces probed and found SOLID (recorded for round 11)
+
+- **The stream parser's other edge cases** — an out-of-order `delta` before its
+  `start` is ignored, a `contentBlockStart` with no name creates no phantom gate,
+  and a stream-level error is surfaced in the `error` field rather than swallowed
+  into `text`. All correct.
+- **The exporter's injection hardening** — a control char or `\n` in a tool name
+  stays an inert comment; the executable `ALLOWED_TOOLS` uses safe `repr`. The
+  generated module parses for every tool combination tried.
+- **The translator's escaping and negation handling** (M14 + R9 work) — untrusted
+  values cannot break the target grammar, and a `not` in the condition is flagged
+  untranslatable rather than silently inverted.
+
+**Tests:** `tests/test_r10_semantic_gates.py` — 22 tests, of which **11 fail on
+pre-R10 source** (verified by reverting the three modules). Suite 2649 → **2671**;
+ruff clean; both mypy gates green; docs-drift + invariant-doc guards green.
+`docs/INVARIANTS.md` now carries 37 invariants across five families.
+
+**Recommendation for round 11:** the remaining unprobed semantic surfaces are the
+detection-suite's OTHER stages — `detection_dedup` (does "duplicate" mean the same
+match set, or just similar text?), `detection_coverage` (does a claimed ATT&CK
+technique mapping actually correspond to the rule's logic?), and `sigma_match`
+(does the matcher's evaluation agree with a real Sigma engine on the modifier
+edge cases R10 just mapped?).

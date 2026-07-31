@@ -122,6 +122,32 @@ escapes.
 
 ---
 
+## INV-TRANSLATE — a translated detection keeps its match set
+
+A Sigma → SIEM translation is worthless — worse than worthless — if it silently
+changes WHAT the rule matches. A false negative here reads as coverage in a SOC
+dashboard while catching nothing.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-TRANSLATE-1** | A lossy modifier (`base64`, `re`, …) is NEVER emitted as a plaintext field predicate on a field-aware target (Splunk/Elastic). `CommandLine\|base64: 'whoami'` matches `base64('whoami')`, not the literal `whoami` — emitting the literal is a disjoint match set. It is withheld and routed to `untranslatable` with the target's native operator (`\| regex`, `regex~`). Byte scanners keep a labelled best-effort literal. | `detection_translate._translate` | `test_r10_semantic_gates.py::TestBase64ModifierIsNotEmittedAsPlaintext`, `::TestRegexModifierIsNotEmittedAsLiteral` |
+| **INV-TRANSLATE-2** | A predicate withheld from a field-aware query surfaces in `notes` — a partial translation must announce that it is partial, never read as full coverage. | `detection_translate._translate` | `test_r10_semantic_gates.py::TestFieldAwareNotesSurfaceWithheldPredicates` |
+| **INV-TRANSLATE-3** | Faithful modifiers (`contains`/`startswith`/`endswith`/plain) are unaffected by the withholding, and EQL plain equality stays case-insensitive (`cmd.exe` matches `CMD.EXE`). The fix must not over-withhold. | `detection_translate._translate` | `test_r10_semantic_gates.py::TestFaithfulTranslationsStillWork` |
+
+## INV-STREAM — the InvokeHarness stream parser protects the resume contract
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-STREAM-1** | A repeated `toolUseId` in a stream is collapsed to ONE pending entry (first wins). Two entries would make the resume emit two `toolResult`s for one id, which the Bedrock protocol rejects — a corrupted session. Distinct parallel ids are all kept. | `core._consume_stream` | `test_r10_semantic_gates.py::TestStreamDedupesToolUseId` |
+
+## INV-EXPORT — the exported skeleton does not quietly drop a safety gate
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-EXPORT-1** | A `request_*_approval` HITL gate is exported as a clearly-marked SAFETY GATE, distinct from ordinary tools, and the builder emits a warning when one is present. Listing it among business tools invites an adopter wiring `tools=[...]` to drop it — shipping an agent that acts without the approval the harness required. The generated module always parses. | `exporter.export_harness_to_strands` | `test_r10_semantic_gates.py::TestExporterFlagsHitlGatesAsGuardrails` |
+
+---
+
 ## INV-DOC — the docs cannot drift
 
 | ID | Invariant | Owner | Enforced by |
