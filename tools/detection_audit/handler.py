@@ -32,6 +32,7 @@ drive the score negative and the weighting is auditable:
   - duplicate rule pairs .............. up to -15
   - untagged rules .................... up to -10  (un-attributable coverage)
   - lint warnings + invalid ATT&CK tags up to -5
+  - non-actionable rules .............. up to -15  (claim coverage, cannot fire)
 The per-class deduction is ``weight * min(1, count / basis)`` so it saturates; the
 score is clamped to ``[0, 100]`` and ROUNDED (deterministic). It is a triage aid,
 not a compliance verdict — the raw counts and per-rule detail are always included.
@@ -51,7 +52,7 @@ Output contract (on success)
   "health_score": 0..100,
   "totals": {"invalid_rules", "rules_with_warnings", "duplicate_pairs",
              "subsumptions", "overlaps", "uncovered_techniques",
-             "untagged_rules", "invalid_tags"},
+             "untagged_rules", "invalid_tags", "non_actionable_rules"},
   "lint": {"invalid": [{"rule", "errors"}], "warnings": [{"rule", "warnings"}]},
   "dedup": {<detection_dedup result minus ok>},
   "coverage": {<detection_coverage result minus ok>} | None,
@@ -117,6 +118,12 @@ _SCORE_WEIGHTS = {
     "untagged_rules": (10, 10),
     "lint_and_tag_noise": (5, 10),
     "fp_prone_rules": (10, 5),
+    # A rule that CLAIMS an ATT&CK technique but can never fire (no detection
+    # block / no condition / condition naming an undefined selection) is worse than
+    # an untagged rule: an untagged rule under-reports its own coverage, while this
+    # one makes the matrix show green over a real blind spot. Weighted alongside the
+    # blind-spot class it manufactures, and saturating on a handful.
+    "non_actionable_rules": (15, 5),
 }
 
 
@@ -130,6 +137,7 @@ def _health_score(totals: Dict[str, int], coverage_ran: bool) -> int:
     score -= _deduct("lint_and_tag_noise",
                      totals["rules_with_warnings"] + totals["invalid_tags"])
     score -= _deduct("fp_prone_rules", totals.get("fp_prone_rules", 0))
+    score -= _deduct("non_actionable_rules", totals.get("non_actionable_rules", 0))
     return max(0, min(100, round(score)))
 
 
@@ -156,7 +164,7 @@ def _empty_coverage(techniques: Optional[List[str]]) -> Dict[str, Any]:
     return {"ok": True, "rule_count": 0,
             "target_count": len(uncovered) if techniques is not None else None,
             "covered": [], "uncovered": uncovered, "untagged_rules": [],
-            "invalid_tags": [],
+            "invalid_tags": [], "non_actionable_rules": [],
             "coverage_ratio": (0.0 if techniques else None),
             "summary": "0 analyzable rule(s)."}
 
@@ -229,6 +237,10 @@ def _analyze(rules: List[Any], techniques: Optional[List[str]]) -> Dict[str, Any
         "untagged_rules": len(cov_res["untagged_rules"]),
         "invalid_tags": len(cov_res["invalid_tags"]),
         "fp_prone_rules": len(fp_prone),
+        # Rules coverage EXCLUDED because they can never fire (see
+        # detection_coverage's non_actionable_rules). `.get` keeps this tolerant of
+        # an older coverage result shape.
+        "non_actionable_rules": len(cov_res.get("non_actionable_rules") or []),
     }
     score = _health_score(totals, coverage_ran)
 
