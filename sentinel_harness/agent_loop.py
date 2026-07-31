@@ -31,6 +31,14 @@ the enforcement point:
   and (2) a human approval via the HITL gate. An agent that "skips ahead" gets a
   structured refusal as its tool result — visible to the agent, recorded in the
   trace — never a silent success.
+- **BOTH witnesses are subject-bound.** A human approval is consent for ONE
+  harness — the one the analyst was shown. The driver therefore binds the
+  approval to a subject (the gate payload's ``harness_id`` when it names one,
+  otherwise the subject witnessed at the moment of approval) and refuses a
+  promotion whose target differs. Without this, an agent could get approval for
+  harness A, silently re-evaluate harness B, and promote B on A's consent — the
+  approval half of the confused-deputy hole (``docs/INVARIANTS.md``
+  INV-PROMOTE-2).
 - **The eval score is read from the HANDLER's return, never the agent's words.**
   The agent cannot claim a score; only the ``run_evaluation`` handler's actual
   output updates the witnessed gate state.
@@ -132,6 +140,22 @@ def default_subject_of_promotion(tool_input: Dict[str, Any]) -> Optional[str]:
     return _clean_subject(tool_input.get("harness_id"))
 
 
+def default_subject_of_approval(tool_input: Dict[str, Any]) -> Optional[str]:
+    """WHICH harness the human was actually asked to approve.
+
+    The approval a human gives is consent for ONE specific harness — the one the
+    gate's payload named and the analyst read. Reusing that consent for a
+    different harness is a confused-deputy escalation, so the driver binds it the
+    same way it binds an eval (see ``docs/INVARIANTS.md`` INV-PROMOTE-2).
+
+    Reads the same shapes as :func:`default_subject_of_promotion` (nested
+    ``params.harness_id`` first, then a flat ``harness_id``). Returns None when the
+    gate payload does not name a harness; the driver then falls back to the subject
+    it had already witnessed AT THE MOMENT of approval — which is what the analyst
+    was reviewing — rather than leaving the approval unbound."""
+    return default_subject_of_promotion(tool_input)
+
+
 def default_is_promotion(tool_name: str, tool_input: Dict[str, Any]) -> bool:
     """The shipped promotion shapes: ``harness_ops`` with any endpoint-creating action.
 
@@ -173,6 +197,7 @@ class AgentLoopResult:
     refused_promotions: int        # promotion attempts the driver refused
     final_gate_reason: str = ""
     witnessed_subject: Optional[str] = None   # WHICH harness the witnessed eval scored
+    approved_subject: Optional[str] = None    # WHICH harness the human consented to
     refusal_reasons: List[str] = field(default_factory=list)  # one entry per refusal
     notes: List[str] = field(default_factory=list)
 
@@ -186,6 +211,7 @@ def result_to_dict(result: AgentLoopResult) -> Dict[str, Any]:
         "witnessed_pass": result.witnessed_pass,
         "witnessed_approval": result.witnessed_approval,
         "witnessed_subject": result.witnessed_subject,
+        "approved_subject": result.approved_subject,
         "refused_promotions": result.refused_promotions,
         "refusal_reasons": list(result.refusal_reasons),
         "final_gate_reason": result.final_gate_reason,
@@ -215,6 +241,7 @@ def run_agent_loop(
     is_promotion: PromotionPredicate = default_is_promotion,
     subject_of_eval: SubjectFn = default_subject_of_eval,
     subject_of_promotion: SubjectFn = default_subject_of_promotion,
+    subject_of_approval: SubjectFn = default_subject_of_approval,
     threshold: float,
     incumbent_best: Optional[float] = None,
     require_strict_improvement: bool = False,
@@ -247,14 +274,17 @@ def run_agent_loop(
         ``harness_ops`` + ``action=create_endpoint``). Those execute ONLY when
         the driver has witnessed a passing eval AND a human approval AND the
         promotion targets the SAME subject the witnessed eval scored.
-    subject_of_eval / subject_of_promotion:
+    subject_of_eval / subject_of_promotion / subject_of_approval:
         The subject-binding seam (confused-deputy fix). ``subject_of_eval``
         reads WHICH harness an eval output scored (default: its ``harness_id``
         field); ``subject_of_promotion`` reads which harness a promotion call
         targets (default: ``params.harness_id`` per the harness_ops contract,
-        flat ``harness_id`` fallback). FAIL-CLOSED: an eval that does not
-        identify its subject witnesses nothing, and a promotion whose subject
-        is absent or differs from the witnessed one is refused.
+        flat ``harness_id`` fallback); ``subject_of_approval`` reads which
+        harness the HUMAN was asked to approve (same shapes, falling back to
+        the subject witnessed at the moment of approval). FAIL-CLOSED: an eval
+        that does not identify its subject witnesses nothing; a promotion whose
+        subject is absent or differs from the witnessed one is refused; and an
+        approval given for one harness can never authorize promoting another.
     threshold / incumbent_best / require_strict_improvement:
         The machine-gate policy, evaluated by ``autonomy.evaluate_gate`` — the
         SAME veto/guard the rest of the platform uses.
@@ -287,6 +317,10 @@ def run_agent_loop(
     witnessed_pass = False
     witnessed_approval = False
     witnessed_subject: Optional[str] = None
+    approved_subject: Optional[str] = None   # WHICH harness the human consented to
+    # True while an approval is waiting to bind to a same-turn parallel eval's
+    # subject (see the HITL branch). Never authorizes a promotion on its own.
+    approval_pending_bind = False
     refused_promotions = 0
     promoted = False
     final_gate_reason = ""
@@ -366,9 +400,31 @@ def run_agent_loop(
                     if name == hitl_tool:
                         decision = bool(approve_fn(tool_input)) if approve_fn is not None else False
                         witnessed_approval = decision
+                        # BIND the approval to a subject: what the gate payload named,
+                        # else whatever subject was witnessed at THIS moment (what the
+                        # analyst was reviewing). A rejection binds nothing.
+                        #
+                        # When the payload names nothing AND no eval has been witnessed
+                        # YET, leave the binding PENDING rather than None: the agent may
+                        # have emitted the gate and the eval as PARALLEL tool calls in
+                        # one turn, in which case the eval lands microseconds later in
+                        # this same loop and is the subject the approval belongs to.
+                        # Resolved after the turn's gates are drained (see below).
+                        # Fail-closed either way: an unresolved pending binding
+                        # authorizes nothing.
+                        if decision:
+                            named = subject_of_approval(tool_input)
+                            approved_subject = named or witnessed_subject
+                            approval_pending_bind = (
+                                approved_subject is None and named is None)
+                        else:
+                            approved_subject = None
+                            approval_pending_bind = False
                         record = ToolCallRecord(
                             seq=seq, tool=name, action=action, outcome="hitl",
-                            detail=f"human {'APPROVED' if decision else 'REJECTED'}")
+                            detail=(f"human {'APPROVED' if decision else 'REJECTED'}"
+                                    + (f" (subject {approved_subject!r})"
+                                       if decision and approved_subject else "")))
                         answer = (tu, _tool_result_json(
                             {"approved": decision,
                              "message": "approved by analyst" if decision else "rejected by analyst"}))
@@ -398,6 +454,19 @@ def run_agent_loop(
                                 missing.append(
                                     f"subject mismatch: witnessed eval scored "
                                     f"{witnessed_subject!r} but promotion targets "
+                                    f"{promo_subject!r}")
+                        # The APPROVAL must also cover this subject. A human consented
+                        # to ONE harness; reusing that consent for another is the
+                        # confused-deputy escalation (approve A, re-eval B, promote B).
+                        if witnessed_approval:
+                            if approved_subject is None:
+                                missing.append(
+                                    "approval is not bound to any subject "
+                                    "(no harness identified at the gate)")
+                            elif promo_subject is not None and promo_subject != approved_subject:
+                                missing.append(
+                                    f"approval subject mismatch: human approved "
+                                    f"{approved_subject!r} but promotion targets "
                                     f"{promo_subject!r}")
                         if missing:
                             refused_promotions += 1
@@ -449,6 +518,15 @@ def run_agent_loop(
                                     # no subject leaves it None (fail-closed at promotion).
                                     witnessed_subject = (
                                         subject_of_eval(out) if witnessed_pass else None)
+                                    # Resolve an approval that arrived as a PARALLEL
+                                    # gate in this same turn, before any eval had been
+                                    # witnessed: it belongs to the subject this eval
+                                    # just scored. Only ever binds ONCE (the flag
+                                    # clears), so a later eval of a DIFFERENT harness
+                                    # can never silently re-target an old approval.
+                                    if approval_pending_bind and witnessed_subject:
+                                        approved_subject = witnessed_subject
+                                        approval_pending_bind = False
                                     final_gate_reason = gate["reason"]
                                     detail = (("gate PASSED" if witnessed_pass else "gate failed")
                                               + f": {gate['reason']}")
@@ -473,6 +551,14 @@ def run_agent_loop(
                 trace.append(record)
                 answers.append(answer)
 
+            # A same-turn parallel bind that never found its eval expires HERE, at the
+            # turn boundary. Letting it live into the next turn would re-open the very
+            # hole this closes: approve with an empty payload in turn 1, evaluate a
+            # DIFFERENT harness in turn 2, and the stale pending flag would bind the
+            # human's consent to a harness they never saw. Unbound == authorizes
+            # nothing (fail-closed).
+            approval_pending_bind = False
+
             try:
                 result = resume_fn(answers)
             except Exception as exc:  # noqa: BLE001 — session boundary: audit, don't crash
@@ -494,6 +580,7 @@ def run_agent_loop(
             witnessed_pass=witnessed_pass,
             witnessed_approval=witnessed_approval,
             witnessed_subject=witnessed_subject,
+            approved_subject=approved_subject,
             refused_promotions=refused_promotions,
             refusal_reasons=refusal_reasons,
             final_gate_reason=final_gate_reason,
@@ -503,6 +590,6 @@ def run_agent_loop(
                 "subject binding, allowlist, hard cap).",
                 "The witnessed eval score comes from the handler's actual return, "
                 "never the agent's claim; promotion must target the SAME subject "
-                "that eval scored.",
+                "that eval scored AND the same subject the human approved.",
             ],
         )
