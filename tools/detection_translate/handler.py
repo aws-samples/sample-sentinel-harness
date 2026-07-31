@@ -90,6 +90,29 @@ _FAITHFUL_MODIFIERS = {"contains", "startswith", "endswith", None}
 # Modifiers we cannot faithfully carry to YARA/Suricata content matching.
 _LOSSY_MODIFIERS = {"re", "base64", "base64offset", "cidr", "gt", "gte", "lt", "lte"}
 
+# A lossy modifier is lossy in DIFFERENT ways per target, and emitting a literal
+# content match for it is only "honest best effort" on a BYTE scanner (YARA /
+# Suricata), where every match is a byte-substring anyway and the note says so.
+# On a FIELD-AWARE query language (Splunk SPL / Elastic EQL) a literal
+# `field="value"` asserts a concrete field SEMANTICS that the modifier does not
+# have — and the failure is a false NEGATIVE, the worst kind for a detection:
+#
+#   |base64: 'whoami'  really means "the field contains base64(whoami) = 'd2hvYW1p'".
+#            Emitting `CommandLine="whoami"` matches the PLAINTEXT — a set that does
+#            not intersect the intended one. A rule written to catch OBFUSCATED
+#            commands is silently turned into one that only catches un-obfuscated
+#            ones.
+#   |re: '^cmd.*'      is a regex. Emitting `Image="^cmd.*"` matches the literal
+#            characters ^, c, m, d, * — again a disjoint set.
+#
+# So for SPL/EQL these are NOT emitted as a bogus field predicate: they are routed
+# to `untranslatable` with a target-specific note (SPL `| regex`, EQL `regex~`) so
+# the engineer writes the faithful form by hand instead of shipping a rule that
+# looks like coverage and is not. Byte-scanner targets keep the labelled
+# best-effort literal.
+_FIELD_AWARE_TARGETS = {"splunk", "elastic"}
+_BYTE_SCANNER_TARGETS = {"yara", "suricata"}
+
 _VALID_TARGETS = {"yara", "suricata", "splunk", "elastic"}
 
 
@@ -432,9 +455,15 @@ def _translate(sigma_text: str, targets: List[str]) -> Dict[str, Any]:
     if not isinstance(detection, dict):
         raise _TranslateError("sigma rule has no 'detection' mapping")
 
-    predicates: List[tuple] = []
+    # `faithful` predicates are emitted for EVERY target. `lossy` predicates are
+    # emitted ONLY for byte-scanner targets (as a labelled best-effort literal);
+    # field-aware targets refuse them rather than assert a wrong field semantics.
+    faithful: List[tuple] = []
+    lossy: List[tuple] = []
     untranslatable: List[str] = []
     notes: List[str] = []
+    # Which lossy modifiers were seen (drives the per-target guidance note).
+    lossy_seen: set = set()
     for sel, field, modifier, modifiers, value in _iter_predicates(detection):
         # A null/absent Sigma value ('field:' with no value) or a non-string
         # scalar has no faithful literal content equivalent — a Sigma null means
@@ -462,15 +491,24 @@ def _translate(sigma_text: str, targets: List[str]) -> Dict[str, Any]:
                 f"human must reconstruct the AND grouping."
             )
         if modifier in _LOSSY_MODIFIERS:
-            # Emit a best-effort content match for the value but flag it loudly.
+            # Lossy in DIFFERENT ways per target (see _FIELD_AWARE_TARGETS). On a
+            # byte scanner a labelled literal is honest best-effort; on a field-
+            # aware query it would assert a wrong field semantics (a false
+            # negative), so it is emitted there only as a hand-off, never as a
+            # bogus predicate.
+            lossy_seen.add(modifier)
             untranslatable.append(
                 f"{sel}.{field}|{modifier} = {value!r}: '{modifier}' has no faithful "
-                f"YARA/Suricata content equivalent — emitted as a literal content "
-                f"match; a human MUST verify the semantics."
+                f"content equivalent. For a byte scanner (YARA/Suricata) it is emitted "
+                f"as a labelled literal to verify by hand; for a field-aware query "
+                f"(Splunk/Elastic) it is NOT emitted — a literal there would assert a "
+                f"wrong field match (a false negative). Model it with the target's "
+                f"native operator (SPL `| regex`, EQL `regex~`, or a base64 decode at "
+                f"search time)."
             )
-            predicates.append((sel, field, modifier, value))
+            lossy.append((sel, field, modifier, value))
         elif modifier in _FAITHFUL_MODIFIERS:
-            predicates.append((sel, field, modifier, value))
+            faithful.append((sel, field, modifier, value))
         else:
             untranslatable.append(
                 f"{sel}.{field}|{modifier} = {value!r}: unknown modifier "
@@ -479,15 +517,32 @@ def _translate(sigma_text: str, targets: List[str]) -> Dict[str, Any]:
 
     _classify_condition(str(detection.get("condition", "")), untranslatable, notes)
 
+    # Byte scanners get faithful + a best-effort literal for the lossy ones.
+    byte_scanner_predicates = faithful + lossy
+    # Field-aware targets get ONLY the faithful predicates; the lossy ones are
+    # withheld (routed to untranslatable above) so the emitted query never claims a
+    # match set it does not have.
+    field_aware_predicates = faithful
+
+    def _lossy_field_note(target_op: str) -> None:
+        if lossy:
+            notes.append(
+                f"{sorted(lossy_seen)} modifier(s) were WITHHELD from this field-aware "
+                f"query (not emitted as a literal, which would be a false negative). "
+                f"Re-add them with {target_op}; see the untranslatable list."
+            )
+
     translations: Dict[str, str] = {}
     if "yara" in targets:
-        translations["yara"] = _emit_yara(title, predicates, notes)
+        translations["yara"] = _emit_yara(title, byte_scanner_predicates, notes)
     if "suricata" in targets:
-        translations["suricata"] = _emit_suricata(title, predicates, notes)
+        translations["suricata"] = _emit_suricata(title, byte_scanner_predicates, notes)
     if "splunk" in targets:
-        translations["splunk"] = _emit_splunk(title, predicates, notes)
+        _lossy_field_note("SPL `| regex <field>=\"...\"`")
+        translations["splunk"] = _emit_splunk(title, field_aware_predicates, notes)
     if "elastic" in targets:
-        translations["elastic"] = _emit_elastic(title, predicates, notes)
+        _lossy_field_note("EQL `regex~ \"...\"`")
+        translations["elastic"] = _emit_elastic(title, field_aware_predicates, notes)
 
     return {
         "ok": True,
