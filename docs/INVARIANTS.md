@@ -154,6 +154,32 @@ noise hides the real gaps.
 | **INV-MATCH-2** | Field names resolve case-insensitively (an exact hit always wins), because a rule author's field reference routinely differs in case from the shipped log schema. Two event keys differing only by case are AMBIGUOUS: the key is refused with a caveat rather than guessed, since either choice could flip the verdict. | `sigma_match._resolve_field` | `test_r11_semantic_gates.py::TestFieldNamesAreCaseInsensitive` |
 | **INV-MATCH-3** | `detection_dedup` reports a duplicate only on a PROVEN match-set equality, never on text similarity — a false duplicate gets a real rule deleted. A stricter rule is a subsumption, not a duplicate; a different logsource is never a duplicate; a non-provable rule lands in `not_analyzed` rather than counting as "checked, no duplicates". | `detection_dedup._predicate_implies` / `_subset_of` | `test_r11_semantic_gates.py::TestDedupRemainsAMatchSetProof` |
 
+## INV-WL — a synthesized whitelist suppresses only the FP cohort
+
+The whitelist_optimizer GENERATES a Sigma filter. A generated suppression rule
+that matches more than its FP cohort actively turns OFF a working detection — the
+most dangerous outcome in the suite.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-WL-1** | A filter is never synthesized from a value carrying a Sigma metacharacter (`*` `?` `'` `"` `\`). The TP guard compares literally, but the emitted Sigma is read with `*`/`?` as live wildcards — so `process_name: 'a*.exe'` would glob-suppress the very TP it certified as preserved. Such a field is refused. | `whitelist_optimizer._has_unsafe_char` | `test_r12_semantic_gates.py::TestWhitelistNeverSuppressesBeyondCohort` |
+| **INV-WL-2** | A domain-suffix whitelist must extend below the public-suffix boundary (a private registrable domain). `co.uk` / `blob.core.windows.net` are refused — whitelisting them suppresses an entire shared registrar space. A weak context field (port / user / host) is never a sole discriminator; a /48 IPv6 block and an n=1 class generalization are refused. | `whitelist_optimizer._is_public_suffix` / `_WEAK_FIELDS` / `_discriminator_for_field` | `test_r12_semantic_gates.py::TestWhitelistNeverSuppressesBeyondCohort` |
+| **INV-WL-3** | A true-positive guard that LACKS the whitelisted field fails CLOSED: absence of evidence is not evidence of safety, so the field is refused rather than certified TP-preserving. | `whitelist_optimizer.handler` (tp_unprovable) | `test_r12_semantic_gates.py::TestWhitelistNeverSuppressesBeyondCohort::test_tp_missing_the_whitelisted_field_fails_closed` |
+
+## INV-BASELINE — a real regression can never pass green
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-BASELINE-1** | A technique leaving the COVERED set is a regression even when it never enters `uncovered` (no target list) — the snapshot records the covered set, not just uncovered. A shrinking rule library is flagged. | `detection_baseline._compact` / `_compare` | `test_r12_semantic_gates.py::TestBaselineRegressionsCannotHide` |
+| **INV-BASELINE-2** | A CHANGED target list is not credited as resolved blind spots: a smaller question is not an improvement. Growth in a saturated deduction class (untagged / non_actionable) is flagged at a flat score. | `detection_baseline._compare` | `test_r12_semantic_gates.py::TestBaselineRegressionsCannotHide` |
+| **INV-BASELINE-3** | A malformed / empty baseline FAILS CLOSED (validation_error), never green — the worst failure for a gate is passing because it could not read its baseline. A negative `allow_score_drop` clamps to strict, never disables the gate. | `detection_baseline._validate` / `handler` | `test_r12_semantic_gates.py::TestBaselineRegressionsCannotHide::test_malformed_baseline_fails_closed`, `::test_negative_allowance_does_not_disable_the_gate` |
+
+## INV-NAV — the Navigator layer agrees with coverage
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-NAV-1** | A technique claimed only by a rule that cannot fire is NOT painted green and does not vanish from the layer; it is a distinct "claimed-but-cannot-fire" class, counted in the denominator so coverage cannot read 100% over it. The Navigator's green set equals coverage's covered set. | `detection_navigator._analyze` / `_build_layer` | `test_r12_semantic_gates.py::TestNavigatorAgreesWithCoverage` |
+
 ## INV-STREAM — the InvokeHarness stream parser protects the resume contract
 
 | ID | Invariant | Owner | Enforced by |

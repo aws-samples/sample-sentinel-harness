@@ -51,7 +51,7 @@ live) · 🟡 skeleton / partial · 🔴 gap.
 | `specialists/` | `cve-intel` (docker-build + live-validated on AgentCore Runtime) + `attack-mapper` / `threat-hunt` (real graph/plan builders) + `adversarial-reviewer` (agent_a2a + local_a2a + two-stage Dockerfile + contract test) | ✅ | all four specialists shipped |
 | `longrunning/` | `bas-runner` (BAS case-gen + detection-replay) + `detonation` (full simulated microVM lifecycle + orchestrator) | 🟩 | both built + tested; detonation stays an honest SIMULATED no-op |
 | `iac-cdk/lib/` | 9 synth-green stacks — `gateway` / `registry` / `memory` / `network` / `identity` / `guardrail` / `observability` / `harness` / `runtime` (+ `iam`); `iac-terraform/` mirror is `terraform validate`-clean | ✅ | `guardrail` / `identity` / `observability` LIVE-deployed (us-east-1); the Registry + `runtime` custom-resource/raw-CfnResource stacks synth clean but fail on deploy until their CFN types are GA (both control-plane APIs are separately live-verified — Registry via `registry_live.py`, `CreateAgentRuntime` via a real arm64 microVM that served a live A2A call, HTTP 200, real Bedrock model, on a non-prod test account, then torn down — `evidence/live_a2a_runtime_result.json`) |
-| `tests/` | 134 files, **2730 offline passing** (+6 skipped) | ✅ | add tests with each new module |
+| `tests/` | 135 files, **2775 offline passing** (+6 skipped) | ✅ | add tests with each new module |
 | `evidence/` | 37 evidence sets | ✅ | add one per milestone |
 
 ### 0.3 Fit score (vs. a full three-layer SecOps agent program)
@@ -181,8 +181,8 @@ Each milestone gives: **goal / files / reused APIs / acceptance (live evidence) 
 Suggest one feature branch per milestone.
 
 ### M0 — Environment & baseline reproduction (half a day)
-**Goal:** on a fresh machine, get all 2730 offline tests green and reproduce ≥1 live scenario.
-- [ ] `uv sync` + `uv run pytest -q` → 2730 passing (+6 skipped) (offline).
+**Goal:** on a fresh machine, get all 2775 offline tests green and reproduce ≥1 live scenario.
+- [ ] `uv sync` + `uv run pytest -q` → 2775 passing (+6 skipped) (offline).
 - [ ] Configure `SENTINEL_EXECUTION_ROLE_ARN` / `SENTINEL_REGION` / `AWS_PROFILE` (non-prod) — see `docs/SETUP.md`.
 - [ ] Run `scenarios/scenario_cve_triage.py`; compare `evidence/cve_triage_result.json` shape.
 - [ ] Run `scenarios/scenario_hitl_resume.py`; reproduce pause→approve→resume.
@@ -419,7 +419,7 @@ hand-off reuses the live-capable M1/M2 engine (driven offline here, labeled a wi
       (`make deploy`, cost note, `make destroy`) + the no-lock-in export. — `docs/QUICKSTART.md`
 - [x] `tests/smoke/`: offline acceptance suite (default offline; `SENTINEL_SMOKE_LIVE=1` opt-in for live). — `tests/smoke/`
 
-**Acceptance:** `make test` → 2730 offline tests green; `make seed-registry` → dual-gate `ok`;
+**Acceptance:** `make test` → 2775 offline tests green; `make seed-registry` → dual-gate `ok`;
 `make create-harnesses` (DRY_RUN=1) → 8 harnesses validate offline with zero AWS; `sentinel export` → valid
 compilable Strands Python; `make smoke` → the offline acceptance suite green. A fresh non-prod account can then
 run `make deploy` (free-tier foundation) and the live scenarios; `make destroy` tears it all down.
@@ -837,7 +837,7 @@ with a harness that ever carried an extra endpoint taking >5 min to clear versus
       consistency, scoped to present-tense claims so ROADMAP changelog entries
       ("2126 → 2352") are not falsely flagged.
 
-**Acceptance:** suite 2493 → **2730** offline passing (+8 skipped), ruff clean,
+**Acceptance:** suite 2493 → **2775** offline passing (+8 skipped), ruff clean,
 coverage 90% (gate 88), both mypy gates green, docs-drift + invariant-doc guards
 green, and `evidence/m18_gates_live_result.json` `closed: true` with zero residue
 on a real account.
@@ -891,7 +891,7 @@ needs to become more specific, not filtered.
 
 **Tests:** `tests/test_r9_semantic_gates.py` — 59 tests, of which **37 fail on
 pre-R9 source**. The other 22 are the solid-surface tripwires and false-positive
-guards, expected green in both states. Suite 2590 → **2730**; ruff clean; both
+guards, expected green in both states. Suite 2590 → **2775**; ruff clean; both
 mypy gates green; docs-drift + invariant-doc guards green.
 
 **Recommendation for round 10:** the remaining unprobed semantic surfaces are
@@ -940,7 +940,7 @@ still parses.
   untranslatable rather than silently inverted.
 
 **Tests:** `tests/test_r10_semantic_gates.py` — 22 tests, of which **11 fail on
-pre-R10 source** (verified by reverting the three modules). Suite 2649 → **2730**;
+pre-R10 source** (verified by reverting the three modules). Suite 2649 → **2775**;
 ruff clean; both mypy gates green; docs-drift + invariant-doc guards green.
 `docs/INVARIANTS.md` now carries 37 invariants across five families.
 
@@ -998,7 +998,7 @@ normalised rule text — cannot quietly turn a sound proof into fuzzy matching.
 
 **Tests:** `tests/test_r11_semantic_gates.py` — 59 tests, of which **32 fail on
 pre-R11 source** (verified by reverting the three modules). The other 27 are the
-dedup tripwires and regression guards, green in both states. Suite 2671 → **2730**
+dedup tripwires and regression guards, green in both states. Suite 2671 → **2775**
 collected; ruff clean (it caught a genuinely missing `Optional` import that the
 runtime never touches thanks to `from __future__ import annotations`); both mypy
 gates green; docs-drift + invariant-doc guards green. `docs/INVARIANTS.md` now
@@ -1011,3 +1011,54 @@ coverage it was built from, now that coverage excludes dead rules?),
 that shrinks?), and `whitelist_optimizer`'s synthesised Sigma filter (does the
 generated filter suppress ONLY the FP cohort it was given — i.e. the same match-set
 question R11 asked of dedup, applied to a GENERATED rule).
+
+---
+
+## 4j. Round-12 adversarial audit — generated-rule & gate fidelity (R12) — ✅ DELIVERED (offline, workflow-driven)
+
+> R11 asked "does this governance NUMBER reflect capability?". R12 pushed the same
+> match-set question into three tools that GENERATE a rule or GATE on a comparison,
+> where a wrong answer actively degrades the detection posture. Run as a **fan-out
+> workflow**: three parallel probes, each finding **adversarially re-reproduced**
+> (default-REFUTE verifier, must run the probe) before it survived — 20 agents, 14
+> findings CONFIRMED-by-reproduction, 3 refuted, then each reproduced independently
+> by hand before fixing.
+
+**The headline is the most dangerous class in the suite: a synthesized suppression
+that turns OFF a real detection.**
+
+| # | Gap | Invariant | Why it survived 11 rounds |
+|---|---|---|---|
+| R12-1 | **whitelist_optimizer synthesized a filter that suppressed MORE than the FP cohort — including the TP it certified as preserved.** Its guard `_clause_matches` compares with Python `==`/`endswith`, but the Sigma filter it EMITS is read by any engine (incl. this repo's own matcher) with `*`/`?` as live wildcards. `process_name: 'a*.exe'` was certified "preserving 1 true-positive" while the deployed filter globbed away `attack.exe` (that TP), `agent.exe`, `abc.exe`. Same class via a public-suffix domain (`co.uk`), a weak field (`dst_port`), a TP missing the whitelisted field (guard vacuously satisfied), an n=1 over-generalization, a single-quote YAML break, and a /48 IPv6 block. | INV-WL-1/2/3 | The module was impressively self-aware — its comments warn verbatim that the emitted Sigma "MUST match EXACTLY what `_clause_matches` certifies" — but the check was written against the LITERAL semantics on both sides, so it never noticed the emitted side is interpreted as a glob. The repo had even fixed this same TP-safety class twice before (CHANGELOG domain_suffix apex, bare-suffix), on the FP-leak side; this was the strictly-worse detection-deletion side. |
+| R12-2 | **detection_baseline let a real regression pass green.** A shrinking library reported an "improvement" (score rose while coverage dropped); a trimmed target list relabelled real blind spots "resolved"; an empty/malformed baseline FAILED OPEN (health defaulted to 0, so everything scored an improvement). | INV-BASELINE-1/2/3 | It snapshotted six fields and diffed only the uncovered/invalid/dup SETS + the scalar score. Coverage that dropped without a target list never entered `uncovered`; the covered SET was never snapshotted; and the malformed-baseline path had no fail-closed guard. |
+| R12-3 | **detection_navigator disagreed with the round-11 coverage fix.** A technique claimed only by a rule that cannot fire vanished from the layer, which then asserted 100% coverage over a real blind spot. | INV-NAV-1 | Navigator faithfully delegated to coverage for `covered`/`uncovered` — but R11 added a THIRD class (`non_actionable_rules`) that navigator did not consume, so the newest coverage output and the layer silently diverged the moment R11 shipped. |
+
+The fixes are scoped, not blanket: whitelist_optimizer still synthesizes the
+classic CDN-subdomain whitelist and n=1 EXACT matches; baseline still passes a
+genuine improvement; navigator still reports 100% on a clean rule set. A private
+registrable suffix is allowed where a public suffix is refused, and the fix set was
+validated end-to-end by replaying emitted filters through the repo's OWN Sigma
+engine (`tools/sigma_match`) to confirm the deployed match set, not just the
+certified one.
+
+### The 3 refuted findings
+
+The adversarial verifier REFUTED three probes (kept out of the fix set): a
+`| count(...) by ...` aggregation rule painted as a blind spot (coverage's
+documented, correct treatment — an aggregation is not a simple detection),
+`allow_score_drop` sign handling at one boundary (behaviour defensible), and one
+inventory-mode percentage claim whose causal story did not hold. Recording them so
+round 13 does not re-litigate settled ground.
+
+**Tests:** `tests/test_r12_semantic_gates.py` — 45 tests, of which **36 fail on
+pre-R12 source** (verified by reverting the three modules). The other 9 are the
+happy-path and fail-closed regression guards. Suite 2730 → **2775** collected; ruff
+clean; both mypy gates green; docs-drift + invariant-doc guards green.
+`docs/INVARIANTS.md` now carries 47 invariants across eleven families.
+
+**Recommendation for round 13:** the detection suite is now well-covered; the
+unprobed match-set surfaces left are `detection_translate`'s REVERSE direction (if
+any), `sigma_yara_lint`'s FP-proneness heuristic (does "FP-prone" correlate with a
+real over-broad match, or just rule shape?), and the `connectors/` SIEM translators
+(does a Splunk/Elastic/QRadar query translation preserve the mock backend's result
+set — the R10 question applied to the live-seam adapters).
