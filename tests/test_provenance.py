@@ -328,5 +328,10 @@ def test_non_entry_type_raises(tmp_path):
 def test_all_promotion_decisions_accepted(tmp_path):
     ledger = tmp_path / "ledger.jsonl"
     for d in prov.PROMOTION_DECISIONS:
-        prov.record_run(_entry(promotion_decision=d), ledger_path=ledger)
+        # 'promoted' requires an approver (INV-GOV-5): the record asserts a human
+        # cleared the HITL gate, so "promoted by nobody" is self-contradictory.
+        # 'rejected'/'held' legitimately have none yet.
+        approver = "analyst-1" if d == "promoted" else None
+        prov.record_run(_entry(promotion_decision=d, approver=approver),
+                        ledger_path=ledger)
     assert prov.verify_ledger(ledger) == len(prov.PROMOTION_DECISIONS)

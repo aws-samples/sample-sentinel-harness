@@ -19,10 +19,29 @@ hide a bad promotion. So each record carries:
                      ``record_hash`` itself, including ``seq`` and ``prev_hash``).
 
 This turns the file into a tamper-evident chain: editing any field of any record,
-inserting/deleting a record, or reordering records all break either a
-``record_hash`` or the ``prev_hash`` linkage, and :func:`verify_ledger` will
-raise. Appending a new valid record is the *only* mutation that keeps the chain
-consistent — hence "append-only".
+inserting/deleting a record from the MIDDLE, or reordering records all break
+either a ``record_hash`` or the ``prev_hash`` linkage, and :func:`verify_ledger`
+will raise. Appending a new valid record is the *only* mutation that keeps the
+chain consistent — hence "append-only".
+
+What a hash chain CANNOT do by itself: resist TRUNCATION
+--------------------------------------------------------
+A chain proves internal consistency — each record is bound to its position and
+its predecessor — but it knows nothing about **how long it is supposed to be**.
+Delete the LAST record (or the last N, or the whole file) and what remains is
+still a perfectly valid chain: cryptographically there is no way to tell "there
+were only ever 2 records" from "there were 3 and one was deleted". Truncation is
+also the most natural way to hide a bad promotion, since the record you want gone
+is the most recent one.
+
+Defence therefore needs an anchor OUTSIDE the chain. :func:`write_anchor` stores
+the record count plus the tail ``record_hash`` in a sidecar file, and
+:func:`verify_ledger` cross-checks it: a truncated ledger no longer matches the
+anchor's count/tail and raises. The anchor is only as strong as its own storage —
+an attacker who can rewrite both files can rewrite both — so for real governance
+put it somewhere the ledger writer cannot reach (an S3 object-lock bucket, a
+separate audit account, a signed external log). That trade-off is deliberate and
+documented rather than silently absent; see ``docs/INVARIANTS.md`` INV-GOV-4.
 
 Why deterministic + offline
 ----------------------------
@@ -174,6 +193,23 @@ def _entry_to_content(entry: LedgerEntry | dict[str, Any], timestamp: str) -> di
     if not isinstance(data["score_trajectory"], list):
         raise ProvenanceError("score_trajectory must be a list")
 
+    # A 'promoted' record asserts that a human cleared the HITL gate and
+    # CreateHarnessEndpoint ran (see PROMOTION_DECISIONS). A promotion with no
+    # approver is therefore self-contradictory: the ledger's whole purpose is to
+    # answer "who authorized this?" after an incident, and a record that says
+    # "promoted by nobody" answers it with silence. 'rejected' / 'held' runs
+    # legitimately have no approver yet, so the requirement is scoped to
+    # 'promoted' only (INV-GOV-5).
+    if decision == "promoted":
+        approver = data.get("approver")
+        if not isinstance(approver, str) or not approver.strip():
+            raise ProvenanceError(
+                "promotion_decision='promoted' requires a non-empty 'approver' — a "
+                "promotion record with no approver cannot answer 'who authorized "
+                "this?', which is the ledger's reason to exist. Use 'held' for a "
+                "candidate that passed but is still awaiting sign-off."
+            )
+
     for f in ("intake_source", "normalized_request", "emitted_spec_summary"):
         if not isinstance(data[f], str) or not data[f].strip():
             raise ProvenanceError(f"{f} must be a non-empty string")
@@ -272,15 +308,102 @@ def load_ledger(
     return records
 
 
-def verify_ledger(ledger_path: str | os.PathLike[str] | None = None) -> int:
+def anchor_path_for(ledger_path: str | os.PathLike[str] | None = None) -> Path:
+    """The sidecar anchor path for a ledger (``<ledger>.anchor.json``)."""
+    path = Path(ledger_path) if ledger_path is not None else DEFAULT_LEDGER_PATH
+    return path.with_suffix(path.suffix + ".anchor.json")
+
+
+def write_anchor(ledger_path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    """Record the ledger's LENGTH and TAIL hash outside the chain (anti-truncation).
+
+    A hash chain cannot detect its own truncation (see the module docstring), so
+    the count + tail digest are stored in a sidecar. :func:`verify_ledger` then
+    refuses a ledger that has fewer records than the anchor claims, or whose tail
+    no longer matches.
+
+    Call this after each :func:`record_run` (or at the end of a batch). Returns the
+    anchor dict that was written. For real governance the anchor belongs in storage
+    the ledger writer cannot rewrite — see INV-GOV-4."""
+    records = load_ledger(ledger_path, verify=False)
+    _verify_records(records)
+    anchor = {
+        "record_count": len(records),
+        "tail_hash": records[-1]["record_hash"] if records else GENESIS_HASH,
+    }
+    apath = anchor_path_for(ledger_path)
+    apath.parent.mkdir(parents=True, exist_ok=True)
+    with open(apath, "w", encoding="utf-8") as fh:
+        fh.write(_canonical(anchor) + "\n")
+    return anchor
+
+
+def read_anchor(ledger_path: str | os.PathLike[str] | None = None) -> dict[str, Any] | None:
+    """Load the sidecar anchor, or ``None`` when no anchor has been written.
+
+    ``None`` means "unanchored", which is NOT the same as "verified": a caller that
+    needs the truncation guarantee must check that an anchor exists (see
+    :func:`verify_ledger`'s ``require_anchor``)."""
+    apath = anchor_path_for(ledger_path)
+    if not apath.exists():
+        return None
+    try:
+        with open(apath, "r", encoding="utf-8") as fh:
+            obj = json.load(fh)
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ProvenanceError(f"anchor file {apath} is unreadable: {exc}") from exc
+    if not isinstance(obj, dict) or "record_count" not in obj or "tail_hash" not in obj:
+        raise ProvenanceError(f"anchor file {apath} is malformed: {obj!r}")
+    return obj
+
+
+def verify_ledger(
+    ledger_path: str | os.PathLike[str] | None = None,
+    *,
+    require_anchor: bool = False,
+) -> int:
     """Verify the on-disk ledger is a consistent append-only chain.
 
     Returns the number of records on success; raises :class:`ProvenanceError` on
     the first inconsistency (missing chain field, non-monotonic ``seq``, broken
     ``prev_hash`` linkage, or a ``record_hash`` that doesn't match the content —
-    i.e. a tampered field)."""
+    i.e. a tampered field).
+
+    TRUNCATION: when a sidecar anchor exists (see :func:`write_anchor`) it is
+    cross-checked, and a ledger that shrank below the anchored count — or whose
+    tail hash changed — raises. This is the ONLY way the chain detects that its
+    most recent records were deleted. ``require_anchor=True`` additionally refuses
+    a ledger with no anchor at all, which is the posture an auditor wants: an
+    unanchored ledger carries no truncation guarantee, and silence must not read
+    as a pass (the same fail-closed reasoning as INV-PROMOTE-3)."""
     records = load_ledger(ledger_path, verify=False)
     _verify_records(records)
+
+    anchor = read_anchor(ledger_path)
+    if anchor is None:
+        if require_anchor:
+            raise ProvenanceError(
+                f"no anchor found at {anchor_path_for(ledger_path)} — an unanchored "
+                "ledger cannot be checked for truncation (call write_anchor after "
+                "each record_run)"
+            )
+        return len(records)
+
+    anchored_count = anchor["record_count"]
+    if len(records) < anchored_count:
+        raise ProvenanceError(
+            f"ledger TRUNCATED: {len(records)} records on disk but the anchor "
+            f"recorded {anchored_count} — {anchored_count - len(records)} record(s) "
+            "were deleted from the tail (a hash chain alone cannot detect this)"
+        )
+    if anchored_count > 0:
+        # The anchored tail must still be present at its recorded position; a
+        # rewritten history that happens to be the same LENGTH is caught here.
+        if records[anchored_count - 1]["record_hash"] != anchor["tail_hash"]:
+            raise ProvenanceError(
+                f"ledger REWRITTEN: the record at seq={anchored_count - 1} no longer "
+                f"matches the anchored tail hash — history was replaced, not appended"
+            )
     return len(records)
 
 

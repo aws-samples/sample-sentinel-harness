@@ -208,6 +208,7 @@ def cognito_jwt_authorizer(discovery_url, *, allowed_audience=None,
     rather than as a server-side ValidationException."""
     if not discovery_url:
         raise ValueError("cognito_jwt_authorizer requires a discovery_url (OIDC .well-known URL).")
+    _validate_discovery_url(discovery_url)
     # Truthiness, not identity: an empty list ([]) is as much "unset" as None, so
     # allowed_audience=[] must not slip through and emit an empty allowedAudience.
     if bool(allowed_audience) == bool(allowed_clients):
@@ -220,12 +221,81 @@ def cognito_jwt_authorizer(discovery_url, *, allowed_audience=None,
     if allowed_audience:
         if isinstance(allowed_audience, str):
             allowed_audience = [allowed_audience]
-        inner["allowedAudience"] = list(allowed_audience)
+        inner["allowedAudience"] = _validate_claim_values(allowed_audience, "allowed_audience")
     else:
         if isinstance(allowed_clients, str):
             allowed_clients = [allowed_clients]
-        inner["allowedClients"] = list(allowed_clients)
+        inner["allowedClients"] = _validate_claim_values(allowed_clients, "allowed_clients")
     return {"customJWTAuthorizer": inner}
+
+
+def _validate_discovery_url(url) -> None:
+    """Refuse an OIDC discovery URL that is not HTTPS to a real host.
+
+    WHY this is load-bearing and not cosmetic: the discovery document is what tells
+    the gateway **which public keys sign a valid token**. Fetch it over plaintext
+    HTTP and anyone on the path can substitute their own JWKS, after which they
+    mint tokens the gateway accepts — the authorizer looks fully configured while
+    authenticating the attacker. A metadata-IP or link-local target is the same
+    class of problem from inside the VPC.
+
+    Only the local, statically-checkable properties are enforced here (scheme +
+    host shape); the runtime egress policy still owns where DNS resolves."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    if not isinstance(url, str):
+        raise ValueError(f"discovery_url must be a string, got {type(url).__name__}")
+    parts = urlsplit(url)
+    if parts.scheme.lower() != "https":
+        raise ValueError(
+            f"discovery_url must be https, got {parts.scheme or 'no'} scheme in {url!r}. "
+            "The OIDC discovery document determines the token-signing keys: over "
+            "plaintext HTTP an on-path attacker can swap the JWKS and mint tokens the "
+            "gateway will accept."
+        )
+    host = parts.hostname
+    if not host:
+        raise ValueError(f"discovery_url has no host component: {url!r}")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return  # a DNS name — resolution is the egress policy's concern
+    if ip.is_link_local or ip.is_loopback or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+        raise ValueError(
+            f"discovery_url targets the non-routable/metadata address {host!r}; an "
+            "identity provider must be a real, externally-verifiable endpoint"
+        )
+
+
+def _validate_claim_values(values, arg_name: str) -> list:
+    """Reject empty/whitespace/wildcard entries in an allowedAudience/allowedClients list.
+
+    These lists ARE the authorization boundary: the gateway accepts a token whose
+    ``aud`` / ``client_id`` claim matches an entry. A ``"*"`` entry reads like the
+    wildcard it looks like (and matches the repo's ironclad rule #1 against
+    ``allowedTools: ['*']``), while an empty string silently widens the set for any
+    token whose claim is absent or empty. Both produce a config that LOOKS
+    restrictive in review and is not — so they fail loudly here rather than
+    server-side or, worse, never."""
+    out = []
+    for v in values:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(
+                f"{arg_name} contains an empty/blank entry ({v!r}); every entry must be "
+                "a concrete client id or audience — a blank entry silently widens the "
+                "authorization boundary"
+            )
+        if "*" in v:
+            raise ValueError(
+                f"{arg_name} entry {v!r} contains a wildcard. This list IS the auth "
+                "boundary; it must be an explicit allowlist (same rule as allowedTools, "
+                "never ['*'])."
+            )
+        out.append(v)
+    if not out:
+        raise ValueError(f"{arg_name} must contain at least one concrete entry")
+    return out
 
 
 # ---------------------------------------------------------- request/response hardening

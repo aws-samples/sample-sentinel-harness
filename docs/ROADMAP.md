@@ -51,7 +51,7 @@ live) · 🟡 skeleton / partial · 🔴 gap.
 | `specialists/` | `cve-intel` (docker-build + live-validated on AgentCore Runtime) + `attack-mapper` / `threat-hunt` (real graph/plan builders) + `adversarial-reviewer` (agent_a2a + local_a2a + two-stage Dockerfile + contract test) | ✅ | all four specialists shipped |
 | `longrunning/` | `bas-runner` (BAS case-gen + detection-replay) + `detonation` (full simulated microVM lifecycle + orchestrator) | 🟩 | both built + tested; detonation stays an honest SIMULATED no-op |
 | `iac-cdk/lib/` | 9 synth-green stacks — `gateway` / `registry` / `memory` / `network` / `identity` / `guardrail` / `observability` / `harness` / `runtime` (+ `iam`); `iac-terraform/` mirror is `terraform validate`-clean | ✅ | `guardrail` / `identity` / `observability` LIVE-deployed (us-east-1); the Registry + `runtime` custom-resource/raw-CfnResource stacks synth clean but fail on deploy until their CFN types are GA (both control-plane APIs are separately live-verified — Registry via `registry_live.py`, `CreateAgentRuntime` via a real arm64 microVM that served a live A2A call, HTTP 200, real Bedrock model, on a non-prod test account, then torn down — `evidence/live_a2a_runtime_result.json`) |
-| `tests/` | 131 files, **2590 offline passing** (+6 skipped) | ✅ | add tests with each new module |
+| `tests/` | 132 files, **2649 offline passing** (+6 skipped) | ✅ | add tests with each new module |
 | `evidence/` | 37 evidence sets | ✅ | add one per milestone |
 
 ### 0.3 Fit score (vs. a full three-layer SecOps agent program)
@@ -181,8 +181,8 @@ Each milestone gives: **goal / files / reused APIs / acceptance (live evidence) 
 Suggest one feature branch per milestone.
 
 ### M0 — Environment & baseline reproduction (half a day)
-**Goal:** on a fresh machine, get all 2590 offline tests green and reproduce ≥1 live scenario.
-- [ ] `uv sync` + `uv run pytest -q` → 2590 passing (+6 skipped) (offline).
+**Goal:** on a fresh machine, get all 2649 offline tests green and reproduce ≥1 live scenario.
+- [ ] `uv sync` + `uv run pytest -q` → 2649 passing (+6 skipped) (offline).
 - [ ] Configure `SENTINEL_EXECUTION_ROLE_ARN` / `SENTINEL_REGION` / `AWS_PROFILE` (non-prod) — see `docs/SETUP.md`.
 - [ ] Run `scenarios/scenario_cve_triage.py`; compare `evidence/cve_triage_result.json` shape.
 - [ ] Run `scenarios/scenario_hitl_resume.py`; reproduce pause→approve→resume.
@@ -419,7 +419,7 @@ hand-off reuses the live-capable M1/M2 engine (driven offline here, labeled a wi
       (`make deploy`, cost note, `make destroy`) + the no-lock-in export. — `docs/QUICKSTART.md`
 - [x] `tests/smoke/`: offline acceptance suite (default offline; `SENTINEL_SMOKE_LIVE=1` opt-in for live). — `tests/smoke/`
 
-**Acceptance:** `make test` → 2590 offline tests green; `make seed-registry` → dual-gate `ok`;
+**Acceptance:** `make test` → 2649 offline tests green; `make seed-registry` → dual-gate `ok`;
 `make create-harnesses` (DRY_RUN=1) → 8 harnesses validate offline with zero AWS; `sentinel export` → valid
 compilable Strands Python; `make smoke` → the offline acceptance suite green. A fresh non-prod account can then
 run `make deploy` (free-tier foundation) and the live scenarios; `make destroy` tears it all down.
@@ -837,7 +837,7 @@ with a harness that ever carried an extra endpoint taking >5 min to clear versus
       consistency, scoped to present-tense claims so ROADMAP changelog entries
       ("2126 → 2352") are not falsely flagged.
 
-**Acceptance:** suite 2493 → **2590** offline passing (+8 skipped), ruff clean,
+**Acceptance:** suite 2493 → **2649** offline passing (+8 skipped), ruff clean,
 coverage 90% (gate 88), both mypy gates green, docs-drift + invariant-doc guards
 green, and `evidence/m18_gates_live_result.json` `closed: true` with zero residue
 on a real account.
@@ -845,3 +845,57 @@ on a real account.
 **Standing recommendation:** run a **round 9 adversarial audit aimed at semantic
 gaps** — rounds 3–8 hunted "the code is wrong"; every M18 defect was "the
 invariant was never asked". Different question, different findings.
+
+---
+
+## 4g. Round-9 adversarial audit — SEMANTIC gaps (R9) — ✅ DELIVERED (offline)
+
+> Rounds 3–8 asked **"is the code wrong?"** and found 96 defects. M18 showed that
+> a different question — **"was the invariant ever asked?"** — finds a different
+> class of defect entirely. Round 9 put that question to the surfaces M18 did not
+> touch: gateway auth, the feedback thresholds, the provenance ledger, and
+> registry/loader governance.
+
+**Six more gaps of the same shape** — a contract stated in prose that the
+mechanism does not deliver:
+
+| # | Gap | Invariant | Why it survived 8 audit rounds |
+|---|---|---|---|
+| R9-1 | **A hash chain cannot detect its own TRUNCATION.** The module promised "inserting/deleting a record ... will raise" — true for the middle, structurally impossible for the tail. Deleting the last record left a perfectly valid shorter chain, and the last record is exactly what someone hiding a bad promotion wants gone. Emptying or deleting the file also passed silently. | INV-GOV-4 | The mechanism was sound; the CLAIM exceeded it. Every test asserted tamper-in-place, which the chain does catch. |
+| R9-2 | **`promotion_decision='promoted'` was accepted with `approver=None`** — a governance record asserting "promoted by nobody", answering the one question the ledger exists to answer with silence. | INV-GOV-5 | `approver` is legitimately optional for `rejected`/`held`, and the optionality was never scoped by decision. |
+| R9-3 | **The OIDC `discovery_url` was unvalidated** — any string, including `http://`. That document determines the token-SIGNING KEYS: over plaintext an on-path attacker swaps the JWKS and mints tokens the gateway accepts, while the authorizer looks fully configured. | INV-GOV-6 | The builder carefully validated the audience/clients XOR (with a real live-tested gotcha in the comment) and never questioned the URL beyond non-empty. |
+| R9-4 | **`allowed_clients=["*"]` was accepted verbatim.** That list IS the auth boundary; the repo's ironclad rule #1 forbids `allowedTools: ['*']` for exactly this reason, but the same reasoning was never applied to whose TOKEN is accepted. | INV-GOV-7 | Rule #1 was written about tools, so nobody transferred it to claims. |
+| R9-5 | **A near-miss HITL gate name injected nothing, silently.** `allowedTools: ["request_publish_approval "]` — a trailing space, invisible in YAML — wired NO gate while remaining in allowedTools. The config read as "this harness has a publish gate" in review; the gate did not exist. | INV-GOV-8 | Exact-match lookup is correct behaviour for a lookup; nobody asked what a near miss should do. Worst failure mode for a HITL control: looks present, is absent. |
+| R9-6 | **A suppression task was emitted with nothing safe to suppress.** When every FP indicator was also a TP indicator, the true-positive guard correctly stripped them all — and the task went out with `fp_indicators: []`. The comment said it would emit "only if there is still noise left to suppress"; the condition it checked was `fp_count > 0`. | INV-GOV-9 | The TP guard (the hard part) was right and well-tested; the emptiness of its OUTPUT was never asserted. |
+
+R9-6's fix surfaced a follow-on: suppressing that rule's alert **cohort** is not a
+safe fallback either (those alerts fired on exactly the indicators we refused to
+allowlist), and with the whitelist task correctly withheld the rule produced **no
+task at all** — silence about a rule firing 75% noise. A
+`rule_regeneration / noisy_but_unsuppressable` branch now covers it: the rule
+needs to become more specific, not filtered.
+
+### Surfaces probed and found SOLID (recorded so round 10 does not redo them)
+
+- **The registry dual gate.** `deprecated`-with-code is refused AND reported as
+  drift; a case mismatch fails on both sides; an invalid `status` fails at load
+  rather than degrading silently to "not approved".
+- **The feedback true-positive guard.** An indicator seen on a real detection is
+  never proposed for suppression, and withheld indicators are surfaced, not
+  dropped.
+- **`policy_engine_config`.** Defaults to `ENFORCE`; an invalid mode raises (a
+  guardrail that silently degraded to observe-only would be a false sense of
+  protection).
+- **`loader`'s `allowedTools` shape checks.** The bare-scalar and `'*'` cases were
+  already closed, with the reasoning in the comments.
+
+**Tests:** `tests/test_r9_semantic_gates.py` — 59 tests, of which **37 fail on
+pre-R9 source**. The other 22 are the solid-surface tripwires and false-positive
+guards, expected green in both states. Suite 2590 → **2649**; ruff clean; both
+mypy gates green; docs-drift + invariant-doc guards green.
+
+**Recommendation for round 10:** the remaining unprobed semantic surfaces are
+`core.invoke`'s stream-parsing edge cases (partial/interleaved tool_use blocks),
+`exporter`'s generated-code fidelity, and the detection-suite translators
+(`detection_translate`'s SPL/EQL emitters got an injection audit in M14, but not a
+SEMANTIC one — e.g. does a translated rule preserve the original's match set?).

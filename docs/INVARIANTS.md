@@ -112,7 +112,13 @@ escapes.
 |---|---|---|---|
 | **INV-GOV-1** | A tool is live only if it is BOTH registry-approved AND code-mapped (the dual gate). | `registry.ToolRegistry.resolve` | `test_registry.py` |
 | **INV-GOV-2** | `allowedTools` is always an explicit list — never `['*']`. | harness YAML + `loader` | `test_config_validation.py` |
-| **INV-GOV-3** | The provenance ledger is append-only and hash-chained; any edit to a record or its linkage fails verification. | `provenance.verify_ledger` | `test_provenance.py` |
+| **INV-GOV-3** | The provenance ledger is append-only and hash-chained; any edit to a record, or an insert/delete in the MIDDLE, fails verification. | `provenance.verify_ledger` | `test_provenance.py` |
+| **INV-GOV-4** | A ledger that was TRUNCATED (last N records deleted, or emptied) is detected — a hash chain cannot do this alone, so the record count + tail hash are anchored outside the chain. `require_anchor=True` additionally refuses an unanchored ledger, because "no anchor" is not "verified". | `provenance.write_anchor` + `verify_ledger` | `test_r9_semantic_gates.py::TestLedgerTruncation` |
+| **INV-GOV-5** | A `promoted` provenance record always names an approver. "Promoted by nobody" cannot answer the one question the ledger exists to answer. `rejected`/`held` legitimately have none. | `provenance._entry_to_content` | `test_r9_semantic_gates.py::TestPromotedRequiresApprover` |
+| **INV-GOV-6** | An OIDC `discovery_url` is HTTPS to a routable host. The discovery document determines the token-signing keys, so plaintext HTTP lets an on-path attacker swap the JWKS and mint accepted tokens. | `gateway._validate_discovery_url` | `test_r9_semantic_gates.py::TestDiscoveryUrlScheme` |
+| **INV-GOV-7** | `allowedAudience`/`allowedClients` contain only concrete, non-blank values — never a wildcard or empty string. These lists ARE the auth boundary (same rule as `allowedTools`, never `['*']`). | `gateway._validate_claim_values` | `test_r9_semantic_gates.py::TestClaimValueHygiene` |
+| **INV-GOV-8** | An `allowedTools` entry that is a NEAR MISS for a built-in HITL gate (stray whitespace / wrong case) fails loudly. Silently not injecting it produced a config that read as "has a human-approval gate" while having none. | `loader._inject_inline_gates` | `test_r9_semantic_gates.py::TestHitlGateNearMiss` |
+| **INV-GOV-9** | A `whitelist_optimization` task is only emitted when something can SAFELY be suppressed. When every FP indicator is also a TP indicator, the task is withheld (with a recorded reason) and a `rule_regeneration` task is emitted instead — a noisy-but-unsuppressable rule must not produce silence. | `feedback.detect_triggers` | `test_r9_semantic_gates.py::TestUnsuppressableNoise` |
 
 ---
 
