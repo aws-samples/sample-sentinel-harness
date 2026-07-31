@@ -77,7 +77,7 @@ jobs:
         run: coverage report --fail-under=88
 
   mypy:
-    name: mypy (lenient type gate)
+    name: mypy (strict on security modules, lenient elsewhere)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -109,6 +109,27 @@ jobs:
             sentinel_harness/loader.py \
             sentinel_harness/registry.py \
             sentinel_harness/registry_live.py
+
+      - name: Type-check SECURITY-CRITICAL modules under --strict
+        # WHY a second, STRICTER job: these are the modules that decide whether an
+        # agent reaches production and what a sandboxed agent may execute. The M18
+        # audit found four defects here — every one of them in a module that the
+        # lenient gate above did not even cover. An implicit-Optional or an
+        # untyped dict is exactly how "did the judge score safety at all?" became
+        # an unasked question (see docs/INVARIANTS.md).
+        #
+        # --follow-imports=silent keeps the strictness scoped to THESE files: the
+        # lenient modules they import are still analysed for types, but their own
+        # (not-yet-strict) errors are not reported here. Ratchet by moving a file
+        # from the lenient list above into this one.
+        run: |
+          mypy --strict --ignore-missing-imports --follow-imports=silent \
+            sentinel_harness/loop_safety.py \
+            sentinel_harness/autonomy.py \
+            sentinel_harness/agent_loop.py \
+            sentinel_harness/sandbox_hooks.py \
+            sentinel_harness/provenance.py \
+            sentinel_harness/feedback.py
 
   iac:
     name: iac (cdk synth + stack tests)
