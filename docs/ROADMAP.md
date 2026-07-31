@@ -750,3 +750,98 @@ Not code — align these with your platform/security owners before M5, or it wil
 **Acceptance:** `sentinel mcp serve` starts, lists 20 tools, invokes each correctly;
 Pages live at `neosun100.github.io/sentinel-harness/`; `pip install sentinel-harness`
 installs 0.4.0 from PyPI; suite 2365 passed.
+
+---
+
+## 4f. Security-gate audit + invariant enforcement (M18–M19) — ✅ DELIVERED (offline + LIVE-validated)
+
+> Theme: **the bottleneck was never test count — it was that the invariants lived
+> in docstrings, where nothing can check them.** All four defects below shipped
+> green in code with **90–97% line coverage** and a **2493-test passing suite**.
+> None was a coding error; every one was an *assembly gap* where a module
+> documented a fail-closed posture, delegated one case to "the caller", and no
+> caller implemented it.
+
+### M18 — four security-gate defects, found and fixed — ✅ DELIVERED
+
+| # | Defect | Invariant | Why the existing tests missed it |
+|---|---|---|---|
+| 18.1 | **`safety` veto was fail-OPEN on missing data.** A judge verdict of bare `{"score": 0.95}` cleared every machine gate and promoted an agent whose safety was *never assessed*. `safety_failures()`'s docstring said a caller wanting fail-closed "can inspect the parsed dimensions" — its only caller, the promotion gate, never did. | INV-PROMOTE-3 | Assertions checked verdict *shape*; nothing asked "did the judge score safety at all?" `test_loop_safety.py` even froze the fail-open behaviour as a contract (`apply_safety_veto({}, aggregate=0.90) is True`). |
+| 18.2 | **A real judge's dimension NAMES never reached the veto.** AgentCore online evaluation is reference-free → restricted to built-ins, which report `Builtin.Harmfulness` / `Builtin.Faithfulness` (`evidence/live_online_evaluation_result.json`). The exact-match veto set ignored them, so a live "this answer is harmful" verdict was silently dropped. | INV-PROMOTE-4 | Tests only ever used the canonical names. The live evidence file recording the real names was never cross-checked against the veto set. |
+| 18.3 | **The human approval was not subject-bound.** M16 subject-bound the eval↔promotion but left `witnessed_approval` a bare bool that never reset. An agent could get consent for harness A, silently re-evaluate B, and promote B on A's approval — `promoted=True, refused_promotions=0`. | INV-PROMOTE-2 | The confused-deputy tests covered the *eval* half only; no test asked whether consent was bound to anything. |
+| 18.4 | **`python -c` escaped the sandbox allowlist.** `python` is allowlisted (for repo scripts / `python -m pytest`), so `python -c "<arbitrary code>"` passed every check — no chain operator, no denied verb, allowed leading verb. | INV-SANDBOX-2/3 | The Hypothesis fuzz test asserts an ALLOWED verdict carries no shell metacharacter — a **syntactic** property. This escape is **semantic** and carries none. |
+
+**A fifth gap surfaced from fixing 18.1:** `eval/criteria.yaml` declares
+`groundedness` a first-class veto dimension, but **no scoring path ever emitted
+it** — the live judge projection and both offline scenario scorers reported only
+correctness+safety. Unreachable while absence was a pass; a hard red once it is
+not. Turning an implicit assumption into an explicit contract retro-validates
+everything that depended on it.
+
+**Tests added (offline):** 68 named regression tests + 11 Hypothesis
+**policy-level** properties. Verified to anchor the behaviour: with the four
+source files reverted, **52 of the 68 fail**, and the property suite
+**autonomously rediscovers INV-PROMOTE-3** from a randomly generated tool-call
+stream (`promoted on evidence missing the 'groundedness' dimension: {'safety':
+1.0}`). Stable across 12 random seeds with a cleared Hypothesis DB.
+
+### M18-LIVE — verified on real Amazon Bedrock AgentCore — ✅ DELIVERED
+
+`scenarios/scenario_m18_gates_live.py` → `evidence/m18_gates_live_result.json`
+(`closed: true`, zero residue). Two real harnesses created and driven to READY on
+a non-prod account; the promotion handler calls the **real
+`CreateHarnessEndpoint`**:
+
+- **INV-PROMOTE-2 live** — the confused-deputy attack is refused, and
+  `ListHarnessEndpoints` on B shows **no promotion-created endpoint**. "Refused"
+  is grounded in the control plane, not a boolean in a dataclass.
+- **INV-PROMOTE-3 live** — the no-safety-dimension verdict is refused; A carries
+  no promotion-created endpoint.
+- **Positive control** — the fully-evidenced path **really promotes** (endpoint
+  `m18ctl` created and read back). Without it the run would prove only that the
+  code refuses everything, which is trivial and useless.
+- **Cost posture:** spends control-plane calls, not tokens — the tool-call stream
+  is scripted and the eval handler deterministic, so it does **not** depend on
+  `InvokeHarness` quota (the limit that gated earlier live runs).
+
+**Three things the live run taught that the offline suite could not:**
+AgentCore provisions a `DEFAULT` endpoint on every harness (so "refused ⟹ zero
+endpoints" was the wrong assertion — the right one is "no endpoint by the
+requested name"); `DeleteHarness` raises `ConflictException` while a non-DEFAULT
+endpoint exists (delete order is a hard dependency); and deletion is asynchronous,
+with a harness that ever carried an extra endpoint taking >5 min to clear versus
+~2.5 min for a plain one. All three are now recorded in the scenario.
+
+### M19 — institutionalise the lesson — ✅ DELIVERED
+
+- [x] **`docs/INVARIANTS.md`** — 27 security invariants, each naming the property,
+      the **layer that owns it**, and the test that proves it. Owner matters:
+      INV-PROMOTE-3 was lost precisely because a docstring delegated a case to
+      "a caller". IDs are cited from code comments, so an implementation detail
+      traces back to the property it serves.
+- [x] **`tests/test_invariants_doc.py`** — the doc is executable: every cited test
+      must be collectible by pytest, every `INV-*` referenced in source must
+      resolve to a documented row, and no row may omit its owner or its test. It
+      caught its own first stale citation immediately.
+- [x] **mypy `--strict` on the six security-critical modules** (`loop_safety`,
+      `autonomy`, `agent_loop`, `sandbox_hooks`, `provenance`, `feedback`) — which
+      the previous lenient gate did not cover **at all**. Every M18 defect was in a
+      file outside the type gate; that is not a coincidence.
+      `--follow-imports=silent` scopes the strictness so the lenient modules stay
+      lenient; ratchet by moving a file between the two lists. `make typecheck`
+      runs both halves locally.
+- [x] **Docs-drift guards for quoted counts** (INV-DOC-2). The README asserted
+      BOTH "2365 offline tests" (shields.io badge) and "2352 offline tests pass"
+      (status matrix) while the suite collected 2493 — three numbers, one in a
+      badge a reader takes at face value. The guard checks reality **and** internal
+      consistency, scoped to present-tense claims so ROADMAP changelog entries
+      ("2126 → 2352") are not falsely flagged.
+
+**Acceptance:** suite 2493 → **2590** offline passing (+8 skipped), ruff clean,
+coverage 90% (gate 88), both mypy gates green, docs-drift + invariant-doc guards
+green, and `evidence/m18_gates_live_result.json` `closed: true` with zero residue
+on a real account.
+
+**Standing recommendation:** run a **round 9 adversarial audit aimed at semantic
+gaps** — rounds 3–8 hunted "the code is wrong"; every M18 defect was "the
+invariant was never asked". Different question, different findings.
