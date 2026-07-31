@@ -128,11 +128,55 @@ _CANDIDATE_FIELDS: List[Tuple[str, str]] = [
     ("port", _TYPE_EXACT),
 ]
 
+# Fields that are NOT a benign-identity discriminator on their own. A port, a
+# user, or a hostname is CONTEXT, not identity: whitelisting "all traffic on
+# dst_port 443" or "everything user SYSTEM does" suppresses the real threats the
+# rule was built to catch, right alongside the FP. R12 reproduced this — a single
+# weak field beat an explicit tp_examples guard. Such a field may only NARROW a
+# whitelist already anchored on a strong discriminator (a future enhancement); on
+# its own it is refused. (The strong fields — domain / process / hash / ip — each
+# name a specific actor or artifact and are safe to anchor on.)
+_WEAK_FIELDS = frozenset({
+    "user", "username", "src_user", "host", "hostname", "dst_port", "port",
+})
+
+# Sigma-value metacharacters that make a synthesized filter's match set DIVERGE
+# from the literal FP value. `_clause_matches` compares with Python `==`/`endswith`
+# (literal), but the emitted Sigma value is read by any real engine — including
+# this repo's tools/sigma_match — with `*`/`?` as live wildcards. A value carrying
+# one cannot be rendered as a faithful literal filter (`a*.exe` would glob-suppress
+# attack.exe, agent.exe, ...), so such a field is refused rather than emitted with
+# an unearned TP-preservation guarantee. A single-quote additionally breaks the
+# single-quoted YAML the filter is emitted in.
+_UNSAFE_VALUE_CHARS = ("*", "?", "'", '"', "\\", "\n", "\r")
+
 # Minimum CIDR prefix lengths accepted, to avoid over-suppression. A CIDR
-# broader than these (i.e. covering more than a small block) is rejected as an
-# unsafe whitelist — we do not want to whitelist a whole /8.
+# broader than these is rejected as an unsafe whitelist. v6 was /48 — 2**80
+# addresses, absurd to authorize from a couple of FP events — tightened to /64
+# (a single subnet, matching the v4 /24 "one small block" intent).
 _MIN_PREFIX_V4 = 24
-_MIN_PREFIX_V6 = 48
+_MIN_PREFIX_V6 = 64
+
+# Public suffixes (a minimal, offline PSL subset). `_common_domain`'s "shared
+# parent of >= 2 labels" heuristic wrongly treats these as a safe private suffix,
+# so two UNRELATED FPs on `a.co.uk` + `b.co.uk` synthesized a whitelist on the
+# entire `co.uk` — suppressing every `.co.uk` C2. A safe domain suffix must extend
+# at least one label BELOW the registrable boundary (i.e. include a private label).
+_PUBLIC_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "gov.uk", "ac.uk", "co.jp", "co.kr", "co.nz", "co.za",
+    "com.au", "com.br", "com.cn", "com.mx", "com.tr", "com.sg",
+    "blob.core.windows.net", "core.windows.net", "windows.net",
+    "s3.amazonaws.com", "amazonaws.com", "cloudfront.net", "azurewebsites.net",
+    "appspot.com", "web.app", "firebaseapp.com", "github.io", "herokuapp.com",
+    "pages.dev", "workers.dev", "r2.dev",
+})
+
+# A cohort of ONE FP is not enough evidence to generalize a whitelist from: a
+# single benign hit does not establish that a discriminator characterizes
+# known-good traffic rather than this one event. Below this floor the tool refuses
+# for anything but an EXACT full-value match (which suppresses only that one value,
+# not a generalized class).
+_MIN_COHORT_FOR_GENERALIZATION = 2
 
 # In-line true-positive markers that a caller may set on an fp_event to say
 # "this one is actually a real detection, protect it".
@@ -317,8 +361,30 @@ def _common_domain(domains: List[str]) -> Optional[Tuple[str, str]]:
         else:
             break
     if len(common) >= 2:  # require at least e.g. "example.com", never just "com"
-        return (MATCH_DOMAIN_SUFFIX, ".".join(reversed(common)))
+        suffix = ".".join(reversed(common))
+        # The shared suffix must be a PRIVATE (registrable) domain, not a public
+        # suffix. Two unrelated FPs on a.co.uk + b.co.uk share "co.uk", but
+        # whitelisting co.uk suppresses every .co.uk C2. Require at least one label
+        # below the public-suffix boundary: "example.co.uk" is safe, "co.uk" is not.
+        if _is_public_suffix(suffix):
+            return None
+        return (MATCH_DOMAIN_SUFFIX, suffix)
     return None
+
+
+def _is_public_suffix(domain: str) -> bool:
+    """True if ``domain`` is a public suffix (a registry boundary), so whitelisting
+    it would suppress an entire shared registrar space rather than one tenant.
+
+    Offline heuristic against a minimal PSL subset (:data:`_PUBLIC_SUFFIXES`): the
+    domain itself is public, OR it is a bare TLD (single label like ``com``). A
+    private registrable domain (``example.com``, ``foo.co.uk``) is NOT public."""
+    d = domain.lower().strip(".")
+    if d in _PUBLIC_SUFFIXES:
+        return True
+    if "." not in d:  # a bare TLD ("com", "net") is never a safe private suffix
+        return True
+    return False
 
 
 def _common_cidr(ip_strings: List[str]) -> Optional[Tuple[str, str]]:
@@ -366,8 +432,21 @@ def _discriminator_for_field(
     A field is usable only if every FP event carries it and the values share a
     safe common representation for the field's type.
     """
+    # A weak/context field (port, user, host) is never a benign-IDENTITY
+    # discriminator on its own — whitelisting it suppresses the real threats too.
+    if field in _WEAK_FIELDS:
+        return None
+
     values = _all_values(fp_events, field)
     if values is None:
+        return None
+
+    # A value carrying a Sigma metacharacter cannot be rendered as a faithful
+    # literal filter: `_clause_matches` compares it literally, but the emitted Sigma
+    # is read with `*`/`?` as wildcards, so the deployed filter would suppress far
+    # more than the FP cohort (and defeat the TP guard, which is computed on the
+    # literal semantics). Refuse the field rather than emit an unsafe artifact.
+    if any(_has_unsafe_char(v) for v in values):
         return None
 
     if ftype == _TYPE_DOMAIN:
@@ -379,6 +458,12 @@ def _discriminator_for_field(
     if len(set(low)) == 1:
         return (MATCH_EXACT, values[0])
     return None
+
+
+def _has_unsafe_char(value: str) -> bool:
+    """True if a field value carries a char that would make the emitted Sigma
+    filter's match set diverge from the literal value (see _UNSAFE_VALUE_CHARS)."""
+    return any(c in value for c in _UNSAFE_VALUE_CHARS)
 
 
 # --------------------------------------------------------------------------
@@ -510,14 +595,34 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # Evaluate candidate fields in priority order; the first that yields a
     # discriminator common to every FP AND that does not match any TP wins.
     rejected_for_tp: List[str] = []
+    rejected_thin: List[str] = []
     for field, ftype in _CANDIDATE_FIELDS:
         disc = _discriminator_for_field(field, ftype, fp_cohort)
         if disc is None:
             continue
         match_type, value = disc
 
-        # Guard: the clause must NOT suppress any known true-positive.
-        if any(_clause_matches(tp, field, match_type, value) for tp in tp_guards):
+        # n=1 floor: a single FP is not enough to generalize a class-level
+        # whitelist (a suffix / CIDR / class). Only an EXACT full-value match — which
+        # suppresses that one value and nothing broader — may be synthesized from a
+        # lone FP; anything generalizing is refused as overfitting.
+        # EXACT full-value matches (a single IP, a single full domain) suppress only
+        # that one value, not a class — they are safe from one FP. Anything that
+        # generalizes (a CIDR block, a domain SUFFIX) is refused below the floor.
+        _exact_kinds = (MATCH_EXACT, MATCH_DOMAIN_EXACT)
+        if len(fp_cohort) < _MIN_COHORT_FOR_GENERALIZATION and match_type not in _exact_kinds:
+            rejected_thin.append(field)
+            continue
+
+        # Guard: the clause must NOT suppress any known true-positive — and it must
+        # be able to PROVE that for each guard. A tp_example that lacks the
+        # whitelisted field makes `_clause_matches` return False (looks safe), but
+        # that is absence of evidence, not evidence of safety: the real event the
+        # guard stands for may well carry the field. Fail CLOSED — a guard we cannot
+        # evaluate against this field disqualifies the field (INV-WL-3).
+        tp_hit = any(_clause_matches(tp, field, match_type, value) for tp in tp_guards)
+        tp_unprovable = any(_get_field(tp, field) is None for tp in tp_guards)
+        if tp_hit or tp_unprovable:
             rejected_for_tp.append(field)
             continue
 
@@ -552,8 +657,18 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         rationale = (
             f"The false-positive events for rule '{rule_name}' share "
             f"discriminator(s) on {sorted(set(rejected_for_tp))}, but every one "
-            "would also suppress a provided true-positive example. Refusing to "
-            "emit a whitelist that would blind the rule to a real detection."
+            "would also suppress a provided true-positive example (or could not be "
+            "proven safe against one). Refusing to emit a whitelist that would blind "
+            "the rule to a real detection."
+        )
+    elif rejected_thin:
+        rationale = (
+            f"The lone false-positive event for rule '{rule_name}' shares "
+            f"discriminator(s) on {sorted(set(rejected_thin))}, but a single event is "
+            "not enough evidence to generalize a class-level whitelist (a suffix / "
+            "CIDR / class match) — that would overfit one benign hit into suppressing "
+            "a whole class. Provide more false-positive examples, or accept only an "
+            "exact full-value match."
         )
     else:
         rationale = (
