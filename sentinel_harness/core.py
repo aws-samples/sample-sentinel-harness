@@ -292,7 +292,7 @@ def _consume_stream(stream) -> dict:
     a result back via :func:`invoke_with_tool_result` (the HITL resume contract)."""
     out, events, stop, meta, tools_used = "", [], None, None, []
     cur = None          # tool call currently being assembled
-    pending = []        # ALL completed tool calls in this turn (parallel tool_use)
+    pending: list = []  # ALL completed tool calls in this turn (parallel tool_use)
     error = None        # first stream-level error, surfaced explicitly (not just in text)
     for ev in stream:
         for et, payload in ev.items():
@@ -321,7 +321,23 @@ def _consume_stream(stream) -> dict:
                     # APPEND — a turn can pause on MULTIPLE parallel tool_use blocks;
                     # keeping only the last silently dropped earlier HITL gates and
                     # produced a resume message missing a toolResult for each pending id.
-                    pending.append(cur)
+                    # DEDUPE by toolUseId: the resume contract answers each pending id
+                    # with exactly one toolResult, and the Bedrock protocol requires
+                    # every toolUseId in a turn to be unique. A stream that repeats an
+                    # id (a retried/duplicated block) would otherwise put two entries in
+                    # `pending`, and invoke_with_tool_results would then emit two
+                    # toolResults for the same id — a ValidationException / corrupted
+                    # session. Keep the FIRST occurrence (the completed one) and drop a
+                    # later duplicate rather than silently overwriting its input.
+                    cur_id = cur.get("toolUseId")
+                    if cur_id is not None and any(p.get("toolUseId") == cur_id for p in pending):
+                        _log.warning(
+                            "invoke stream repeated toolUseId %r; keeping the first "
+                            "block and dropping the duplicate (resume answers each id "
+                            "exactly once)", cur.get("toolUseId"),
+                        )
+                    else:
+                        pending.append(cur)
                     cur = None
             elif et == "messageStop":
                 stop = payload.get("stopReason")
