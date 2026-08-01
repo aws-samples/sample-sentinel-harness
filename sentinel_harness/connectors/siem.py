@@ -23,7 +23,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from .base import ConnectorError, neutral_event
+from .base import (
+    DEFAULT_RESULT_LIMIT,
+    ConnectorError,
+    neutral_event,
+)
 
 # --------------------------------------------------------------------------- #
 # permissive field extraction (shared by the SIEM connectors)                 #
@@ -125,9 +129,12 @@ class SplunkConnector:
 
     def build_request(self, selector: str, value: str) -> Dict[str, Any]:
         if selector == "*":
-            spl = "search index=* sourcetype=alert"
+            spl = f"search index=* sourcetype=alert | head {DEFAULT_RESULT_LIMIT}"
         else:
-            spl = f'search index=* sourcetype=alert {selector}="{_escape_dquote(value)}"'
+            spl = (
+                f"search index=* sourcetype=alert {selector}=\"{_escape_dquote(value)}\" "
+                f"| head {DEFAULT_RESULT_LIMIT}"
+            )
         return {"body": {"search": spl, "output_mode": "json"}, "path": ""}
 
     def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
@@ -157,7 +164,7 @@ class _EsFamilyConnector:
             query: Dict[str, Any] = {"match_all": {}}
         else:
             query = {"term": {f"{selector}.keyword": value}}
-        return {"body": {"query": query, "size": 1000}, "path": "/_search"}
+        return {"body": {"query": query, "size": DEFAULT_RESULT_LIMIT}, "path": "/_search"}
 
     def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
         if not isinstance(payload, dict):
@@ -202,9 +209,12 @@ class QRadarConnector:
 
     def build_request(self, selector: str, value: str) -> Dict[str, Any]:
         if selector == "*":
-            aql = "SELECT * FROM events LAST 24 HOURS"
+            aql = f"SELECT * FROM events LIMIT {DEFAULT_RESULT_LIMIT}"
         else:
-            aql = f"SELECT * FROM events WHERE {selector} = '{_escape_squote(value)}' LAST 24 HOURS"
+            aql = (
+                f"SELECT * FROM events WHERE {selector} = '{_escape_squote(value)}' "
+                f"LIMIT {DEFAULT_RESULT_LIMIT}"
+            )
         return {"body": {"query_expression": aql}, "path": "/api/ariel/searches"}
 
     def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
@@ -234,9 +244,12 @@ class MicrosoftSentinelConnector:
 
     def build_request(self, selector: str, value: str) -> Dict[str, Any]:
         if selector == "*":
-            kql = "SecurityAlert | take 1000"
+            kql = f"SecurityAlert | take {DEFAULT_RESULT_LIMIT}"
         else:
-            kql = f'SecurityAlert | where {selector} == "{_escape_dquote(value)}" | take 1000'
+            kql = (
+                f'SecurityAlert | where {selector} == "{_escape_dquote(value)}" '
+                f"| take {DEFAULT_RESULT_LIMIT}"
+            )
         return {"body": {"query": kql}, "path": "/v1/query"}
 
     def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
@@ -292,7 +305,11 @@ class ChronicleConnector:
             udm = "metadata.event_type != \"\""
         else:
             udm = f'{selector} = "{_escape_dquote(value)}"'
-        return {"body": {"query": udm}, "path": "/v1/events:udmSearch"}
+        # Bound the result set to the shared default (Chronicle carries the cap as a
+        # request field, not in the query text) so every connector returns the same
+        # number of rows for the same neutral query.
+        return {"body": {"query": udm, "limit": DEFAULT_RESULT_LIMIT},
+                "path": "/v1/events:udmSearch"}
 
     def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
         if not isinstance(payload, dict) or "events" not in payload:
@@ -322,9 +339,9 @@ class SumoLogicConnector:
 
     def build_request(self, selector: str, value: str) -> Dict[str, Any]:
         if selector == "*":
-            q = "_sourceCategory=* | limit 1000"
+            q = f"_sourceCategory=* | limit {DEFAULT_RESULT_LIMIT}"
         else:
-            q = f'{selector}="{_escape_dquote(value)}" | limit 1000'
+            q = f'{selector}="{_escape_dquote(value)}" | limit {DEFAULT_RESULT_LIMIT}'
         return {"body": {"query": q}, "path": "/api/v1/search/jobs"}
 
     def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
@@ -360,7 +377,10 @@ class DatadogConnector:
             q = "*"
         else:
             q = f'@{selector}:"{_escape_dquote(value)}"'
-        return {"body": {"filter": {"query": q}}, "path": "/api/v2/security_monitoring/signals/search"}
+        # Datadog carries the cap as a page[limit], not in the query text — bound it
+        # to the shared default so its result set matches the other connectors'.
+        return {"body": {"filter": {"query": q}, "page": {"limit": DEFAULT_RESULT_LIMIT}},
+                "path": "/api/v2/security_monitoring/signals/search"}
 
     def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
         if not isinstance(payload, dict) or "data" not in payload:
