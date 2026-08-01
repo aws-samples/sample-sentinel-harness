@@ -265,6 +265,80 @@ def check_ticketing_connector(connector: Any) -> ConformanceResult:
     return res
 
 
+def _declared_result_bound(connector: Any) -> tuple:
+    """Infer (limit, window_hours) from a connector's emitted request. PURE.
+
+    Reads what ``build_request`` actually emits — the ground truth — rather than a
+    declared attribute, so a connector cannot pass by claiming one bound while
+    emitting another. Parses the common shapes: a numeric ``size``/``limit`` in the
+    body (ES/Chronicle) or a nested ``page.limit`` (Datadog), and a
+    ``head``/``take``/``limit``/``LIMIT N`` clause or a ``LAST N HOURS`` window in a
+    query string (Splunk/Sentinel/Sumo/QRadar). ``None`` for a bound the emitted
+    request does not carry."""
+    import re
+
+    req = connector.build_request("dst_domain", "example.test")
+    body = req.get("body")
+    limit = None
+    window = None
+
+    def _scan_text(text: str) -> None:
+        nonlocal limit, window
+        m = re.search(r"\b(?:head|take|limit)\s+(\d+)\b", text, re.I)
+        if m:
+            limit = int(m.group(1))
+        m = re.search(r"\bLAST\s+(\d+)\s+HOURS?\b", text, re.I)
+        if m:
+            window = int(m.group(1))
+
+    def _scan(obj: Any) -> None:
+        nonlocal limit
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k in ("size", "limit") and isinstance(v, int):
+                    limit = v
+                elif isinstance(v, (dict, str)):
+                    _scan(v)
+        elif isinstance(obj, str):
+            _scan_text(obj)
+
+    _scan(body)
+    return (limit, window)
+
+
+def check_result_set_equivalence(get_siem, siem_names) -> ConformanceResult:
+    """Assert every SIEM connector emits the SAME result-set bound (limit + window).
+
+    THE cross-connector invariant a per-connector shape check cannot see (round 13):
+    a translator is only faithful if the same neutral query returns the same result
+    SET from every backend. Before this, QRadar silently applied a 24h window while
+    others were unbounded, and only some capped at 1000 — so a detection validated
+    offline behaved differently per backend, and every connector still passed
+    conformance. This check makes that divergence a certification FAILURE."""
+    res = ConformanceResult(name="_cross_connector", kind="siem", ok=True)
+    bounds: Dict[str, tuple] = {}
+    for n in siem_names:
+        try:
+            bounds[n] = _declared_result_bound(get_siem(n))
+        except Exception as exc:  # noqa: BLE001
+            _record(res, f"bound[{n}]", False, f"raised {type(exc).__name__}: {exc}")
+    distinct = set(bounds.values())
+    _record(
+        res, "result_set_equivalence", len(distinct) <= 1,
+        f"all connectors agree on (limit, window_hours)={distinct.pop()}" if len(distinct) == 1
+        else f"connectors DISAGREE on result-set bound — a detection validated offline "
+             f"would behave differently per backend: {bounds}",
+    )
+    # A silent time window is a specific, dangerous divergence (drops older hits with
+    # nothing in the result to say so): the neutral query carries no time filter, so
+    # NO connector may invent one.
+    windowed = {n: b for n, b in bounds.items() if b[1] is not None}
+    _record(res, "no_invented_time_window", not windowed,
+            "no connector imposes a time window the neutral query did not ask for"
+            if not windowed else f"connector(s) invent a time window: {windowed}")
+    return res
+
+
 def certify_all(get_siem, get_ticketing, siem_names, ticketing_names) -> Dict[str, ConformanceResult]:
     """Run the conformance kit over every registered connector.
 
@@ -289,4 +363,14 @@ def certify_all(get_siem, get_ticketing, siem_names, ticketing_names) -> Dict[st
                 _record(res, "certification_ran", False,
                         f"resolving/certifying raised {type(exc).__name__}: {exc}")
                 out[n] = res
+    # Cross-connector result-set equivalence — the invariant a per-connector check
+    # is structurally blind to (round 13). Recorded under a synthetic name so it
+    # surfaces in the same result map.
+    try:
+        out["_cross_connector"] = check_result_set_equivalence(get_siem, siem_names)
+    except Exception as exc:  # noqa: BLE001
+        res = ConformanceResult(name="_cross_connector", kind="siem", ok=False)
+        _record(res, "certification_ran", False,
+                f"cross-connector check raised {type(exc).__name__}: {exc}")
+        out["_cross_connector"] = res
     return out

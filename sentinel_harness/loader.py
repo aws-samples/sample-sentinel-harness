@@ -194,16 +194,40 @@ def _resolve_system_prompt(system_prompt, harness_dir: str):
 def _inject_inline_gates(tools: list, allowed_tools) -> list:
     """For every allowedTools entry that names a known inline HITL gate but is not
     already declared in `tools`, inject its inline_function definition from the
-    registry so the gate is actually wired at create time."""
+    registry so the gate is actually wired at create time.
+
+    NEAR-MISS NAMES FAIL LOUDLY. Matching is exact, so an entry like
+    ``"request_publish_approval "`` (trailing space — invisible in YAML) or
+    ``"Request_Publish_Approval"`` used to inject NOTHING while still sitting in
+    allowedTools. The config then read as "this harness has a publish gate" in
+    review, the agent was allowed to call a tool that did not exist, and the gate
+    silently did not exist. That is the worst possible failure for a HITL control:
+    it looks present and is absent.
+
+    We do NOT silently normalize the name either — auto-correcting would hide the
+    typo and leave the YAML permanently wrong. Instead a near-miss raises, naming
+    the exact expected spelling."""
     declared = {t.get("name") for t in tools if isinstance(t, dict)}
     for entry in allowed_tools or []:
         # gateway-scoped tools use the @gateway/... grammar; those are not inline.
         if not isinstance(entry, str) or entry.startswith("@"):
             continue
-        if entry in _INLINE_GATES and entry not in declared:
-            gate = _INLINE_GATES[entry]
-            tools.append(core.tool_inline(entry, gate["description"], gate["input_schema"]))
-            declared.add(entry)
+        if entry in _INLINE_GATES:
+            if entry not in declared:
+                gate = _INLINE_GATES[entry]
+                tools.append(core.tool_inline(entry, gate["description"], gate["input_schema"]))
+                declared.add(entry)
+            continue
+        # Not an exact gate name — is it a near miss for one? (whitespace / case)
+        canonical = entry.strip().lower()
+        if canonical in _INLINE_GATES:
+            raise ValueError(
+                f"allowedTools entry {entry!r} looks like the built-in HITL gate "
+                f"{canonical!r} but does not match exactly (check for stray "
+                f"whitespace or capitalisation). It would NOT have been wired: the "
+                f"harness would appear to have a human-approval gate while having "
+                f"none. Use exactly {canonical!r}."
+            )
     return tools
 
 

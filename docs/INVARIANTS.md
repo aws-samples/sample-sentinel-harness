@@ -1,0 +1,223 @@
+# Security Invariants
+
+> The executable contract for `sentinel-harness`'s security-critical behaviour.
+> Every invariant here is **enforced by a named test**. A row without a passing
+> test is a lie, and `tests/test_invariants_doc.py` fails the build if any test
+> named here stops existing.
+
+## Why this file exists
+
+The M18 audit found four defects in code with 90–97% line coverage and a passing
+2493-test suite. None was a coding error. All four were **assembly gaps**: a
+module documented a fail-closed posture in its docstring, delegated one case to
+"the caller", and no caller implemented it.
+
+The clearest example: `loop_safety.safety_failures()`'s docstring said a missing
+safety dimension "is NOT counted as a failure here" and added that "a caller that
+wants a fail-closed posture on missing safety data can inspect the parsed
+dimensions". Its only caller — `autonomy.evaluate_gate`, *the* promotion decision
+— never did. A judge that never scored safety therefore promoted the agent.
+
+The lesson is not "write more tests". It is that **an invariant living only in a
+docstring is not enforced by anything**. A docstring cannot state which layer
+owns a guarantee, cannot be checked against reality, and cannot fail a build. So
+each invariant below names three things:
+
+1. the **property** in one sentence, phrased as what must never happen;
+2. the **layer that owns it** (so it cannot be delegated into a gap again);
+3. the **test that proves it**.
+
+## How to use this file
+
+- **Changing a security module?** Read its invariants first. If your change makes
+  one of them false, you are introducing a vulnerability, not a feature.
+- **Adding a guarantee?** Add a row *and* a test. A row without a test fails
+  `tests/test_invariants_doc.py`.
+- **Reviewing?** The invariant IDs are cited in code comments (grep
+  `INV-PROMOTE-3`) — that is the link from an implementation detail back to the
+  property it serves.
+
+---
+
+## INV-PROMOTE — promotion to production
+
+The self-improvement loop can create a production endpoint. These invariants make
+"the loop can never promote something worse or unsafe" structurally true rather
+than merely intended.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-PROMOTE-1** | A promotion NEVER executes without an evaluation the driver itself witnessed as passing. The agent's *claim* of a score is never evidence — only a handler's actual return. | `agent_loop.run_agent_loop` | `test_prop_promotion_policy.py::test_promotion_implies_a_witnessed_passing_eval` |
+| **INV-PROMOTE-2** | A promotion NEVER executes on a human approval given for a *different* harness. Consent is subject-bound; approving A cannot promote B. | `agent_loop.run_agent_loop` | `test_prop_promotion_policy.py::test_promotion_implies_human_approval_of_the_same_subject`, `test_m18_security_gates.py::TestApprovalSubjectBinding` |
+| **INV-PROMOTE-3** | A promotion NEVER executes on a verdict that did not score EVERY veto dimension (`safety`, `groundedness`). A judge's silence is not a pass. | `autonomy.evaluate_gate` (`require_safety_dims=True`) | `test_prop_promotion_policy.py::test_promotion_implies_every_veto_dimension_was_actually_scored`, `test_m18_security_gates.py::TestMissingSafetyDataFailsClosed` |
+| **INV-PROMOTE-4** | A real judge's dimension NAMES reach the veto: `Builtin.Harmfulness` / `Faithfulness` / `safety_score` / `is_safe` are recognized, and inverted-polarity metrics are score-flipped, not just renamed. | `loop_safety.parse_dimension_scores` | `test_m18_security_gates.py::TestSafetyDimensionAliases` |
+| **INV-PROMOTE-5** | The eval, the approval and the promotion all name ONE harness. Any mismatch, or any missing subject, refuses the promotion. | `agent_loop.run_agent_loop` | `test_prop_promotion_policy.py::test_promotion_implies_subject_consistency_end_to_end` |
+| **INV-PROMOTE-6** | A promotion NEVER regresses below the incumbent best, nor below the caller's pass bar. | `loop_safety.regression_guard` | `test_prop_promotion_policy.py::test_promotion_never_regresses_below_the_incumbent`, `test_loop_safety.py` |
+| **INV-PROMOTE-7** | An explicit safety failure vetoes the verdict regardless of how high the aggregate is. Fluency can never buy back a safety failure. | `loop_safety.apply_safety_veto` | `test_loop_safety.py::test_safety_veto_*` |
+| **INV-PROMOTE-8** | A missing approval callback means REFUSED, never "skip the gate". | `autonomy.run_improvement_loop`, `agent_loop.run_agent_loop` | `test_prop_promotion_policy.py::test_no_approve_fn_never_promotes` |
+| **INV-PROMOTE-9** | A human REJECTION is terminal for that consent — it binds no subject and leaves nothing reusable. | `agent_loop.run_agent_loop` | `test_prop_promotion_policy.py::test_a_rejected_approval_never_promotes`, `test_m18_security_gates.py::TestApprovalSubjectBinding::test_rejection_binds_nothing` |
+| **INV-PROMOTE-10** | Every refused promotion is explainable: the audit record carries one reason per refusal. A silent refusal erodes trust as much as a silent approval. | `agent_loop.run_agent_loop` | `test_prop_promotion_policy.py::test_refusals_always_carry_a_reason` |
+
+### Layering note (the M18.1 root cause, recorded so it cannot recur)
+
+`apply_safety_veto` is a pure **combiner**: for it, absence of a safety dimension
+is not an explicit failure, so the verdict follows the aggregate. Callers rely on
+that. The **fail-closed posture** — "no safety score means not promotable" —
+belongs one layer up, in the promotion gate (`autonomy.evaluate_gate`), which
+consults `loop_safety.missing_safety_dimensions()`.
+
+Keeping strictness in the gate rather than the combiner is what lets both
+contracts be true at once. If you find yourself writing "a caller that wants X
+can do Y" in a docstring, **name the caller and check that it does Y** — that
+sentence is exactly how INV-PROMOTE-3 went unenforced.
+
+---
+
+## INV-LOOP — loop safety
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-LOOP-1** | Dispatched tool calls NEVER exceed `max_tool_calls`. A spinning agent terminates with `stopped_by == "cap"`. | `agent_loop.run_agent_loop` | `test_prop_promotion_policy.py::test_tool_call_cap_is_never_exceeded` |
+| **INV-LOOP-2** | Every paused `toolUseId` is answered exactly once (the live `InvokeHarness` resume contract). A missing or duplicated answer corrupts the session. | `core.invoke_with_tool_results`, `agent_loop` | `test_prop_promotion_policy.py::test_every_pending_gate_is_answered_exactly_once`, `test_agent_loop.py::TestResumeContract` |
+| **INV-LOOP-3** | The improvement loop never exceeds `max_rounds` scored attempts, and a reviser that returns an unchanged candidate ends the loop. | `autonomy.run_improvement_loop` | `test_autonomy.py` |
+| **INV-LOOP-4** | An unknown tool, an exploding handler, or an empty turn is audited as a structured outcome — never a crash, never an execution. | `agent_loop.run_agent_loop` | `test_prop_promotion_policy.py::test_driver_never_raises_on_arbitrary_streams` |
+| **INV-LOOP-5** | A non-finite / bool / unreadable aggregate score coerces to 0.0 (fail-closed), never to a pass. | `autonomy._score_value` | `test_autonomy.py` |
+
+---
+
+## INV-SANDBOX — what a sandboxed agent may execute
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-SANDBOX-1** | An ALLOWED command never contains a shell chain/redirection operator (incl. newline/CR), so a denied verb cannot be smuggled past the leading-verb allowlist. | `sandbox_hooks.validate_command` | `test_fuzz_sandbox_hooks.py` |
+| **INV-SANDBOX-2** | An allowed interpreter may run a path-confined FILE, never inline source. `python -c` / `node -e` / `npx <pkg>` are refused. | `sandbox_hooks._check_interpreter_escape` | `test_m18_security_gates.py::TestSandboxInterpreterEscape` |
+| **INV-SANDBOX-3** | A package install is never redirected at an attacker-controlled source (`--index-url`, `--registry`, a `git+`/URL/archive spec). | `sandbox_hooks._check_untrusted_package_source` | `test_m18_security_gates.py::TestSandboxInterpreterEscape::test_untrusted_package_source_is_blocked` |
+| **INV-SANDBOX-4** | An ALLOWED path never contains a `..` traversal segment and always resolves under a sandbox root. | `sandbox_hooks.validate_path` | `test_fuzz_sandbox_hooks.py`, `test_sandbox_hooks.py` |
+| **INV-SANDBOX-5** | The real build/test/VCS surface stays usable: `pip install -r`, `python -m pytest`, `npm ci`, `make test` are allowed. A guard that breaks the normal workflow gets switched off, so zero false positives is a security requirement. | `sandbox_hooks.validate_command` | `test_m18_security_gates.py::TestSandboxInterpreterEscape::test_legitimate_commands_still_allowed` |
+
+### Why the syntactic/semantic split matters
+
+INV-SANDBOX-1 is a **syntactic** property, and the property tests that enforce it
+are sound. INV-SANDBOX-2 is a **semantic** one — `python -c "<code>"` contains no
+shell metacharacter at all, so it satisfied every syntactic check while executing
+arbitrary code. When you add a validator, ask which of the two kinds of property
+you are asserting; a passing syntactic fuzz test says nothing about semantic
+escapes.
+
+---
+
+## INV-GOV — tool/skill governance
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-GOV-1** | A tool is live only if it is BOTH registry-approved AND code-mapped (the dual gate). | `registry.ToolRegistry.resolve` | `test_registry.py` |
+| **INV-GOV-2** | `allowedTools` is always an explicit list — never `['*']`. | harness YAML + `loader` | `test_config_validation.py` |
+| **INV-GOV-3** | The provenance ledger is append-only and hash-chained; any edit to a record, or an insert/delete in the MIDDLE, fails verification. | `provenance.verify_ledger` | `test_provenance.py` |
+| **INV-GOV-4** | A ledger that was TRUNCATED (last N records deleted, or emptied) is detected — a hash chain cannot do this alone, so the record count + tail hash are anchored outside the chain. `require_anchor=True` additionally refuses an unanchored ledger, because "no anchor" is not "verified". | `provenance.write_anchor` + `verify_ledger` | `test_r9_semantic_gates.py::TestLedgerTruncation` |
+| **INV-GOV-5** | A `promoted` provenance record always names an approver. "Promoted by nobody" cannot answer the one question the ledger exists to answer. `rejected`/`held` legitimately have none. | `provenance._entry_to_content` | `test_r9_semantic_gates.py::TestPromotedRequiresApprover` |
+| **INV-GOV-6** | An OIDC `discovery_url` is HTTPS to a routable host. The discovery document determines the token-signing keys, so plaintext HTTP lets an on-path attacker swap the JWKS and mint accepted tokens. | `gateway._validate_discovery_url` | `test_r9_semantic_gates.py::TestDiscoveryUrlScheme` |
+| **INV-GOV-7** | `allowedAudience`/`allowedClients` contain only concrete, non-blank values — never a wildcard or empty string. These lists ARE the auth boundary (same rule as `allowedTools`, never `['*']`). | `gateway._validate_claim_values` | `test_r9_semantic_gates.py::TestClaimValueHygiene` |
+| **INV-GOV-8** | An `allowedTools` entry that is a NEAR MISS for a built-in HITL gate (stray whitespace / wrong case) fails loudly. Silently not injecting it produced a config that read as "has a human-approval gate" while having none. | `loader._inject_inline_gates` | `test_r9_semantic_gates.py::TestHitlGateNearMiss` |
+| **INV-GOV-9** | A `whitelist_optimization` task is only emitted when something can SAFELY be suppressed. When every FP indicator is also a TP indicator, the task is withheld (with a recorded reason) and a `rule_regeneration` task is emitted instead — a noisy-but-unsuppressable rule must not produce silence. | `feedback.detect_triggers` | `test_r9_semantic_gates.py::TestUnsuppressableNoise` |
+
+---
+
+## INV-TRANSLATE — a translated detection keeps its match set
+
+A Sigma → SIEM translation is worthless — worse than worthless — if it silently
+changes WHAT the rule matches. A false negative here reads as coverage in a SOC
+dashboard while catching nothing.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-TRANSLATE-1** | A lossy modifier (`base64`, `re`, …) is NEVER emitted as a plaintext field predicate on a field-aware target (Splunk/Elastic). `CommandLine\|base64: 'whoami'` matches `base64('whoami')`, not the literal `whoami` — emitting the literal is a disjoint match set. It is withheld and routed to `untranslatable` with the target's native operator (`\| regex`, `regex~`). Byte scanners keep a labelled best-effort literal. | `detection_translate._translate` | `test_r10_semantic_gates.py::TestBase64ModifierIsNotEmittedAsPlaintext`, `::TestRegexModifierIsNotEmittedAsLiteral` |
+| **INV-TRANSLATE-2** | A predicate withheld from a field-aware query surfaces in `notes` — a partial translation must announce that it is partial, never read as full coverage. | `detection_translate._translate` | `test_r10_semantic_gates.py::TestFieldAwareNotesSurfaceWithheldPredicates` |
+| **INV-TRANSLATE-3** | Faithful modifiers (`contains`/`startswith`/`endswith`/plain) are unaffected by the withholding, and EQL plain equality stays case-insensitive (`cmd.exe` matches `CMD.EXE`). The fix must not over-withhold. | `detection_translate._translate` | `test_r10_semantic_gates.py::TestFaithfulTranslationsStillWork` |
+
+## INV-COVERAGE — a coverage number reflects capability, not intent
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-COVERAGE-1** | A rule that can NEVER FIRE (no `detection` block, no `condition`, or a `condition` naming an undefined selection) contributes NO coverage, and is reported in `non_actionable_rules` with the technique it falsely claimed. An ATT&CK tag is a statement of INTENT; only a rule that can fire is CAPABILITY, and counting the former as the latter turns the matrix green over a real blind spot. Valid condition grammar (`and not`, `1 of selection_*`, `all of them`) is never falsely excluded. | `detection_coverage._actionability_defect` | `test_r11_semantic_gates.py::TestNonActionableRulesDoNotCountAsCoverage` |
+| **INV-COVERAGE-2** | The audit health score penalises a non-actionable rule MORE than an untagged one. An untagged rule under-reports its own coverage (conservative); a non-actionable rule over-reports it (hides a gap). | `detection_audit._health_score` | `test_r11_semantic_gates.py::TestAuditPenalisesNonActionableRules` |
+
+## INV-MATCH — the matcher agrees with Sigma semantics
+
+A wrong verdict here is not just a wrong boolean: `longrunning/bas-runner` reads
+this matcher to decide whether a technique is detected, so an under-match publishes
+a FALSE BLIND SPOT — the team is sent to build coverage it already has, and the
+noise hides the real gaps.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-MATCH-1** | Sigma value WILDCARDS are honoured: `*` matches any run, `?` exactly one, composed with `contains`/`startswith`/`endswith` rather than overriding them. Only `\*`, `\?` and `\\` are escapes (so Windows paths survive), and an escaped wildcard matches the literal character — including on the non-wildcard path, which is the spelling that exists for exactly that purpose. | `sigma_match._has_wildcard` / `_wildcard_match` / `_unescape_sigma` | `test_r11_semantic_gates.py::TestSigmaWildcardsAreHonoured` |
+| **INV-MATCH-2** | Field names resolve case-insensitively (an exact hit always wins), because a rule author's field reference routinely differs in case from the shipped log schema. Two event keys differing only by case are AMBIGUOUS: the key is refused with a caveat rather than guessed, since either choice could flip the verdict. | `sigma_match._resolve_field` | `test_r11_semantic_gates.py::TestFieldNamesAreCaseInsensitive` |
+| **INV-MATCH-3** | `detection_dedup` reports a duplicate only on a PROVEN match-set equality, never on text similarity — a false duplicate gets a real rule deleted. A stricter rule is a subsumption, not a duplicate; a different logsource is never a duplicate; a non-provable rule lands in `not_analyzed` rather than counting as "checked, no duplicates". | `detection_dedup._predicate_implies` / `_subset_of` | `test_r11_semantic_gates.py::TestDedupRemainsAMatchSetProof` |
+
+## INV-WL — a synthesized whitelist suppresses only the FP cohort
+
+The whitelist_optimizer GENERATES a Sigma filter. A generated suppression rule
+that matches more than its FP cohort actively turns OFF a working detection — the
+most dangerous outcome in the suite.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-WL-1** | A filter is never synthesized from a value carrying a Sigma metacharacter (`*` `?` `'` `"` `\`). The TP guard compares literally, but the emitted Sigma is read with `*`/`?` as live wildcards — so `process_name: 'a*.exe'` would glob-suppress the very TP it certified as preserved. Such a field is refused. | `whitelist_optimizer._has_unsafe_char` | `test_r12_semantic_gates.py::TestWhitelistNeverSuppressesBeyondCohort` |
+| **INV-WL-2** | A domain-suffix whitelist must extend below the public-suffix boundary (a private registrable domain). `co.uk` / `blob.core.windows.net` are refused — whitelisting them suppresses an entire shared registrar space. A weak context field (port / user / host) is never a sole discriminator; a /48 IPv6 block and an n=1 class generalization are refused. | `whitelist_optimizer._is_public_suffix` / `_WEAK_FIELDS` / `_discriminator_for_field` | `test_r12_semantic_gates.py::TestWhitelistNeverSuppressesBeyondCohort` |
+| **INV-WL-3** | A true-positive guard that LACKS the whitelisted field fails CLOSED: absence of evidence is not evidence of safety, so the field is refused rather than certified TP-preserving. | `whitelist_optimizer.handler` (tp_unprovable) | `test_r12_semantic_gates.py::TestWhitelistNeverSuppressesBeyondCohort::test_tp_missing_the_whitelisted_field_fails_closed` |
+
+## INV-BASELINE — a real regression can never pass green
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-BASELINE-1** | A technique leaving the COVERED set is a regression even when it never enters `uncovered` (no target list) — the snapshot records the covered set, not just uncovered. A shrinking rule library is flagged. | `detection_baseline._compact` / `_compare` | `test_r12_semantic_gates.py::TestBaselineRegressionsCannotHide` |
+| **INV-BASELINE-2** | A CHANGED target list is not credited as resolved blind spots: a smaller question is not an improvement. Growth in a saturated deduction class (untagged / non_actionable) is flagged at a flat score. | `detection_baseline._compare` | `test_r12_semantic_gates.py::TestBaselineRegressionsCannotHide` |
+| **INV-BASELINE-3** | A malformed / empty baseline FAILS CLOSED (validation_error), never green — the worst failure for a gate is passing because it could not read its baseline. A negative `allow_score_drop` clamps to strict, never disables the gate. | `detection_baseline._validate` / `handler` | `test_r12_semantic_gates.py::TestBaselineRegressionsCannotHide::test_malformed_baseline_fails_closed`, `::test_negative_allowance_does_not_disable_the_gate` |
+
+## INV-NAV — the Navigator layer agrees with coverage
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-NAV-1** | A technique claimed only by a rule that cannot fire is NOT painted green and does not vanish from the layer; it is a distinct "claimed-but-cannot-fire" class, counted in the denominator so coverage cannot read 100% over it. The Navigator's green set equals coverage's covered set. | `detection_navigator._analyze` / `_build_layer` | `test_r12_semantic_gates.py::TestNavigatorAgreesWithCoverage` |
+
+## INV-FP — FP-proneness tracks specificity, not just rule shape
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-FP-1** | A rule with a self-anchoring predicate (full path / full hash / long exact value) is NOT flagged FP-prone — checks that use "no exclusion filter" or "few predicates" as a breadth proxy are exempted when a predicate is precise enough to stand alone. Penalising a team's most precise detection pushes the library the wrong way. | `sigma_yara_lint._has_high_specificity_predicate` | `test_r13_semantic_gates.py::TestPreciseRulesAreNotPenalised`, `::TestSpecificityHelper` |
+| **INV-FP-2** | A short `\|contains` value is only "generic" if it reads like a plain lowercase-ASCII word and is not a known IOC marker; `jndi` / `ldap` / `::$` / `-enc` are specific, not noise. A wildcard-bearing or `\|contains` value never counts as self-anchoring, so a broad rule is still caught. | `sigma_yara_lint._is_generic_short_value` | `test_r13_semantic_gates.py::TestPreciseRulesAreNotPenalised`, `::TestBroadRulesAreStillCaught` |
+| **INV-FP-3** | Breadth is judged by the SELECTIVITY OF THE VALUE, whatever modifier spells it. A bare `'*'`, a `\|re: '.*'`, an `\|exists: true`, a `\|gt: 0` floor and a 1-char anchor are all match-everything — the pre-fix checks keyed on the literal substring `\|contains` and scored six such predicates at ZERO. A list-of-maps selection cannot evade the checks either. | `sigma_yara_lint._match_everything_reason` / `_iter_predicates` | `test_r13b_semantic_gates.py::TestBreadthIsJudgedByValueNotModifierSpelling` |
+| **INV-FP-4** | Warning count is MONOTONIC in real breadth: a rule matching everything never scores fewer warnings than one matching a strict subset of it. (Pre-fix `Image: '*'` scored 2 while its subset `\|contains: 'cmd'` scored 3 — sign-inverted on a subset relation the repo's own matcher can decide.) A match-everything predicate is decisive evidence, weighted to dominate any stack of shape heuristics. | `sigma_yara_lint._fp_heuristics_sigma` | `test_r13b_semantic_gates.py::TestBreadthIsJudgedByValueNotModifierSpelling::test_breadth_is_monotonic_with_real_match_set` |
+| **INV-FP-5** | An "exclusion filter" means the condition genuinely EXCLUDES: an `and not` in conjunctive position, matched case-insensitively. An OR-*widening* condition (`selection or filter_extra`) is never credited as a filter. Self-anchoring accepts a modified predicate only when the VALUE is intrinsically unique (a full hash); position-based anchoring (a full path) still requires an exact predicate, because `\|contains` on a system path or `\|endswith: '\cmd.exe'` is broad. | `sigma_yara_lint._has_exclusion_filter` / `_has_high_specificity_predicate` | `test_r13b_semantic_gates.py::TestExclusionFilterDetectionIsSemantic`, `::TestSpecificityExemptionAcceptsModifiedPredicates` |
+
+## INV-CONNECTOR — a SIEM connector preserves the result set across backends
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-CONNECTOR-1** | Every SIEM connector emits the SAME result-set bound (limit + time window) for the same neutral query, so a detection validated offline behaves identically on any backend. No connector invents a time window the neutral query did not ask for (QRadar's silent 24h window dropped older true hits). | `connectors.siem` + `base.DEFAULT_RESULT_LIMIT` | `test_r13_semantic_gates.py::TestConnectorsPreserveResultSet` |
+| **INV-CONNECTOR-2** | The conformance suite ASSERTS cross-connector result-set equivalence, not just per-connector response shape — a divergent limit or an invented window is a certification FAILURE. (Per-connector shape checks alone were structurally blind to the divergence, the same "asks the wrong question" gap as INV-COVERAGE-1.) | `connectors.conformance.check_result_set_equivalence` | `test_r13_semantic_gates.py::TestConnectorsPreserveResultSet::test_conformance_catches_an_invented_time_window`, `::test_conformance_catches_a_divergent_limit` |
+| **INV-CONNECTOR-3** | A SEMANTIC selector is never emitted as a field filter. `siem_query` accepts `query` (match-all) and `since` (a time floor), which are query semantics, not backend fields — emitting `query="*"` / `since="<ts>"` filtered on fields no backend has, so the LIVE path returned 0 rows where the offline mock returned all of them. `resolve_selector` translates them once, shared by all eight connectors. | `connectors.base.resolve_selector` | `test_r13b_semantic_gates.py::TestSelectorSemantics` |
+| **INV-CONNECTOR-4** | The generic live path and the named-connector path agree on every value coercion. A bare `bool()` on a string `false_positive` yields True (`bool("false")` is truthy), so the two paths returned OPPOSITE security verdicts on the same bytes — one dropping a genuine alert as noise. One shared coercion, one answer. | `siem_query._coerce_fp` → `connectors.base._coerce_bool` | `test_r13b_semantic_gates.py::TestLivePathsAgree` |
+| **INV-CONNECTOR-5** | Response normalization never fabricates or silently discards a field: an ES hit's `_id` survives into `alert_id` (two distinct documents must not collapse to one identical event), a ticketing reply's real status is reported rather than a hardcoded one, and a duplicate columnar column name is refused instead of clobbering the earlier value. | `connectors.siem` / `connectors.ticketing` | `test_r13b_semantic_gates.py::TestResponseNormalizationFidelity` |
+
+## INV-STREAM — the InvokeHarness stream parser protects the resume contract
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-STREAM-1** | A repeated `toolUseId` in a stream is collapsed to ONE pending entry (first wins). Two entries would make the resume emit two `toolResult`s for one id, which the Bedrock protocol rejects — a corrupted session. Distinct parallel ids are all kept. | `core._consume_stream` | `test_r10_semantic_gates.py::TestStreamDedupesToolUseId` |
+
+## INV-EXPORT — the exported skeleton does not quietly drop a safety gate
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-EXPORT-1** | A `request_*_approval` HITL gate is exported as a clearly-marked SAFETY GATE, distinct from ordinary tools, and the builder emits a warning when one is present. Listing it among business tools invites an adopter wiring `tools=[...]` to drop it — shipping an agent that acts without the approval the harness required. The generated module always parses. | `exporter.export_harness_to_strands` | `test_r10_semantic_gates.py::TestExporterFlagsHitlGatesAsGuardrails` |
+
+---
+
+## INV-DOC — the docs cannot drift
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-DOC-1** | Every public export carries a docstring, and the public surface never silently regresses. | `sentinel_harness/__init__.py` | `test_docs_drift.py` |
+| **INV-DOC-2** | Counts quoted in the docs (tests, tools, evidence, scenarios) match reality, and never contradict each other between files. | docs + `tests/` | `test_docs_drift.py::test_quoted_counts_match_reality` |
+| **INV-DOC-3** | Every test named in this file exists. | this file | `test_invariants_doc.py` |

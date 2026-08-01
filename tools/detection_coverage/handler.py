@@ -16,6 +16,12 @@ threat-model's priority techniques, or an ATT&CK-Navigator layer), it reports:
   - ``untagged_rules`` — rules that carry no ATT&CK tag at all (un-attributable
                      coverage, a governance gap);
   - ``invalid_tags`` — ``attack.*`` tags that are not a valid technique id;
+  - ``non_actionable_rules`` — rules EXCLUDED from coverage because they can never
+                     fire (no ``detection`` block, no ``condition``, or a
+                     ``condition`` naming an undefined selection). A tag states
+                     INTENT; only a rule that can fire is CAPABILITY, and counting
+                     the former as the latter manufactures a green matrix over a
+                     real blind spot;
   - ``coverage_ratio`` — covered / target (only when a target list is given).
 
 With no target list, it produces the INVENTORY: every technique the rule set tags,
@@ -202,15 +208,77 @@ def _covering_rules(target: str, per_rule: List[Tuple[str, set]]) -> List[str]:
     return hits
 
 
+def _actionability_defect(parsed: Dict[str, Any]) -> Optional[str]:
+    """Return why a rule can NEVER fire, or ``None`` if it is structurally able to.
+
+    WHY coverage must ask this: a technique's coverage was computed purely from
+    ``tags``, i.e. from what a rule CLAIMS to detect. But a tag is a statement of
+    intent, not evidence of capability. A rule with no ``detection`` block, or whose
+    ``condition`` references a selection that does not exist, produces exactly ZERO
+    alerts — yet its tag was enough to move its technique out of ``uncovered``. That
+    is the module's own stated failure mode ("a false 'covered' hides a real blind
+    spot"): the ATT&CK matrix shows green while an attacker using that technique
+    walks in unseen.
+
+    This is deliberately a MINIMAL structural check, not a re-implementation of
+    ``tools/sigma_yara_lint`` (which is the authority on rule validity and already
+    reports all three of these defects). Duplicating the full linter here would
+    drift; asking only "could this rule ever fire?" is the narrow question coverage
+    needs, and it stays in agreement with the linter's rules by construction.
+    """
+    detection = parsed.get("detection")
+    if not isinstance(detection, dict) or not detection:
+        return "no 'detection' block — the rule can never fire"
+    condition = detection.get("condition")
+    if condition is None:
+        return "'detection' has no 'condition' — the rule can never fire"
+    selection_names = {k for k in detection if k != "condition"}
+    if not selection_names:
+        return "'detection' declares no selection — the rule can never fire"
+    # Every bare identifier in the condition must name a real selection. Sigma
+    # keywords / quantifier syntax are skipped; a trailing-* prefix target (e.g.
+    # `all of selection_*`) is satisfied when ANY declared selection matches it.
+    if isinstance(condition, str):
+        keywords = {"and", "or", "not", "of", "them", "all", "any", "1"}
+        for token in re.split(r"[\s()|,]+", condition.strip().lower()):
+            if not token or token in keywords or token.isdigit():
+                continue
+            if token.endswith("*"):
+                prefix = token[:-1]
+                if not any(s.lower().startswith(prefix) for s in selection_names):
+                    return (
+                        f"condition targets {token!r} but no selection matches that "
+                        "prefix — the rule can never fire"
+                    )
+                continue
+            if token not in {s.lower() for s in selection_names}:
+                return (
+                    f"condition references undefined selection {token!r} — the rule "
+                    "can never fire"
+                )
+    return None
+
+
 def _analyze(rules: List[Any], techniques: Optional[List[str]]) -> Dict[str, Any]:
     invalid_tags: List[Dict[str, str]] = []
     per_rule: List[Tuple[str, set]] = []      # (rule_id, {techniques})
     untagged: List[str] = []
+    non_actionable: List[Dict[str, str]] = []
 
     for i, raw in enumerate(rules):
         parsed = _parse_rule(raw, i)
         rid = _rule_id(parsed, i)
         techs = _rule_techniques(parsed, rid, invalid_tags)
+        defect = _actionability_defect(parsed)
+        if defect is not None:
+            # WITHHELD from coverage: a rule that cannot fire contributes no
+            # detection capability, so letting its tag mark a technique "covered"
+            # would manufacture a blind spot that reads as green. Recorded (never
+            # silently dropped) so the gap is actionable — that is the difference
+            # between "checked and found it cannot fire" and "never checked".
+            non_actionable.append({"rule": rid, "reason": defect,
+                                   "claimed_techniques": sorted(techs)})
+            continue
         per_rule.append((rid, techs))
         if not techs:
             untagged.append(rid)
@@ -245,19 +313,27 @@ def _analyze(rules: List[Any], techniques: Optional[List[str]]) -> Dict[str, Any
     uncovered.sort()
     untagged.sort()
     invalid_tags.sort(key=lambda d: (d["rule"], d["tag"]))
+    non_actionable.sort(key=lambda d: d["rule"])
 
+    # A non-actionable rule is a governance finding in its own right: it looked like
+    # coverage. Put it in the summary so it cannot be missed by a reader who only
+    # reads the one line.
+    na_note = (
+        f" {len(non_actionable)} rule(s) EXCLUDED as non-actionable (cannot fire)."
+        if non_actionable else ""
+    )
     if techniques is not None:
         summary = (
             f"{len(rules)} rule(s) vs {target_count} target technique(s): "
             f"{len(covered)} covered, {len(uncovered)} UNCOVERED "
             f"(ratio {coverage_ratio}); {len(untagged)} untagged rule(s), "
-            f"{len(invalid_tags)} invalid tag(s)."
+            f"{len(invalid_tags)} invalid tag(s).{na_note}"
         )
     else:
         summary = (
             f"{len(rules)} rule(s) tag {len(covered)} distinct technique(s); "
             f"{len(untagged)} untagged rule(s), {len(invalid_tags)} invalid tag(s). "
-            f"(no target list → inventory only)"
+            f"(no target list → inventory only){na_note}"
         )
 
     return {
@@ -268,6 +344,7 @@ def _analyze(rules: List[Any], techniques: Optional[List[str]]) -> Dict[str, Any
         "uncovered": uncovered,
         "untagged_rules": untagged,
         "invalid_tags": invalid_tags,
+        "non_actionable_rules": non_actionable,
         "coverage_ratio": coverage_ratio,
         "summary": summary,
     }

@@ -267,6 +267,25 @@ def _select(key: str, value: str) -> List[Dict[str, Any]]:
     return sorted(events, key=lambda e: (e["ts"], e["alert_id"]))
 
 
+def _coerce_fp(value: Any) -> bool:
+    """Coerce a backend ``false_positive`` value WITHOUT the string-truthiness trap.
+
+    Delegates to ``connectors.base._coerce_bool`` so the generic live path and the
+    named-connector path cannot disagree — round 13 reproduced them returning
+    OPPOSITE verdicts on the same bytes: for the string ``"false"`` a bare ``bool()``
+    yields True (any non-empty string is truthy), so a genuine alert was flagged a
+    false positive and dropped as noise, while the connector path read it as False.
+    Falls back to the same rule inline if the package import is unavailable (this
+    tool must stay runnable as a standalone script)."""
+    try:
+        from sentinel_harness.connectors.base import _coerce_bool
+        return _coerce_bool(value)
+    except Exception:  # noqa: BLE001 - standalone-script fallback, same rule inline
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "y", "t"}
+        return bool(value)
+
+
 def _normalize_live_event(record: Dict[str, Any]) -> Dict[str, Any]:
     """Project one backend record into the SAME 10-field event shape the stub
     emits (see ``_normalize_event``).
@@ -291,7 +310,13 @@ def _normalize_live_event(record: Dict[str, Any]) -> Dict[str, Any]:
         "dst_ip": record.get("dst_ip"),
         "technique": record.get("technique", ""),
         "summary": record.get("summary", record.get("raw_summary", "")),
-        "false_positive": bool(record.get("false_positive", False)),
+        # Use the SAME truthiness rule the connector path uses. A bare bool() falls
+        # into the string-truthiness trap — bool("false") is True — so a backend that
+        # JSON-serializes booleans as strings had its genuine alerts (false_positive
+        # "false") flipped to TRUE here and dropped as noise, while the connector path
+        # read the same reply as False. Two live paths, opposite security verdicts on
+        # the same bytes (INV-CONNECTOR-4). One shared coercion, one answer.
+        "false_positive": _coerce_fp(record.get("false_positive", False)),
     }
 
 

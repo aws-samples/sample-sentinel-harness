@@ -412,7 +412,38 @@ def detect_triggers(
         tp_inds = set(r.get("tp_indicators", []))
         safe_fp_indicators = [i for i in r.get("fp_indicators", []) if i not in tp_inds]
         withheld = sorted(set(r.get("fp_indicators", [])) & tp_inds)
-        if fp_count > 0 and fp_rate >= fp_threshold:
+        # "Still noise left to suppress" has to be checked against what the task can
+        # ACTUALLY act on, not merely fp_count. When every FP indicator was withheld
+        # by the true-positive guard AND no alert cohort remains, the task carries an
+        # empty suppression candidate set: whitelist_optimizer can synthesize no
+        # predicate from it, so the only outcomes are a no-op or an analyst chasing a
+        # ticket with nothing in it. The rule is genuinely noisy, but a whitelist is
+        # the WRONG remedy for it — every noisy indicator is also a real detection —
+        # and the rule_regeneration path below is the right one. Emitting nothing
+        # here is not a silent drop: the caller still gets the regeneration task, and
+        # `no_actionable_suppression` records why the whitelist half was skipped.
+        # Two distinct ways a task can be un-actionable, and only one of them is
+        # about the indicator list being empty:
+        #  (a) the rule carried indicators, but EVERY one was withheld by the
+        #      true-positive guard. There is nothing safe left to suppress, and
+        #      falling back to the alert cohort is not a safe substitute — those
+        #      alerts fired on exactly the indicators we just refused to allowlist,
+        #      so suppressing them by id blinds the same detection by another route.
+        #  (b) the rule carried NO indicators at all. Here the alert cohort IS the
+        #      only handle, and suppressing by id is a legitimate (if blunt) remedy,
+        #      so the task is still emitted.
+        all_withheld = bool(withheld) and not safe_fp_indicators
+        actionable = bool(safe_fp_indicators) or (
+            bool(r.get("fp_alert_ids")) and not all_withheld
+        )
+        if fp_count > 0 and fp_rate >= fp_threshold and not actionable:
+            r["no_actionable_suppression"] = (
+                f"every false-positive indicator ({withheld}) also appears on a true "
+                "positive, so suppressing any of them — directly or via their alert "
+                "cohort — would blind the detection; no whitelist_optimization task "
+                "was emitted (the rule_regeneration path is the correct remedy)"
+            )
+        if fp_count > 0 and fp_rate >= fp_threshold and actionable:
             task = {
                 "type": "whitelist_optimization",
                 "rule_name": rule_name,
@@ -441,6 +472,38 @@ def detect_triggers(
         # --- Dead/misfiring rule: regenerate via the M1/M2 loop. ---
         # Only-FP over enough events => a whitelist patch cannot save it; the
         # detection itself must be regenerated.
+        #
+        # A noisy rule whose every FP indicator is ALSO a true-positive indicator
+        # reaches the same conclusion by a different route: it is over the noise
+        # threshold, yet nothing can be safely suppressed (see
+        # `no_actionable_suppression` above). Without this branch such a rule
+        # produced NO task at all — the analyst got silence about a rule firing 75%
+        # noise, which is worse than either remedy. The rule needs to become more
+        # specific, which is exactly what regeneration is for.
+        needs_regen_unsuppressable = (
+            fp_count > 0 and fp_rate >= fp_threshold
+            and bool(withheld) and not safe_fp_indicators
+        )
+        if needs_regen_unsuppressable and not (tp_count == 0 and fp_count == total):
+            tasks.append(
+                {
+                    "type": "rule_regeneration",
+                    "rule_name": rule_name,
+                    "reason": (
+                        f"Rule '{rule_name}' is {_pct(fp_rate)} noise "
+                        f"({fp_count}/{total}) but EVERY false-positive indicator "
+                        f"({withheld}) also appears on a true positive, so no "
+                        "suppression is safe — allowlisting any of them would blind "
+                        "the detection. The rule must be made more specific "
+                        "(regenerate), not filtered."
+                    ),
+                    "trigger": "noisy_but_unsuppressable",
+                    "fp_rate": fp_rate,
+                    "withheld_tp_indicators": withheld,
+                    "sample_size": total,
+                    "target": "m1_m2_self_improving_loop",
+                }
+            )
         if tp_count == 0 and fp_count == total:
             tasks.append(
                 {

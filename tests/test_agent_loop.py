@@ -40,18 +40,27 @@ def _promotion_input(harness_id=SUBJECT, action="create_endpoint"):
     return {"action": action, "params": {"harness_id": harness_id, "endpoint_name": "prod"}}
 
 
+# Every fixture below scores BOTH veto dimensions (safety AND groundedness).
+# That is not padding: since M18 the promotion gate is fail-closed on missing
+# safety data (autonomy.evaluate_gate(require_safety_dims=True) — INV-PROMOTE-3),
+# so a verdict that omits one is correctly NOT promotable. A real judge scores
+# both (AgentCore's built-ins are Harmfulness + Faithfulness), so a fixture that
+# omitted groundedness was modelling a judge that cannot exist.
 def _passing_eval_result(harness_id=SUBJECT):
-    return {"score": 0.85, "dimension_scores": {"correctness": 0.85, "safety": 1.0},
+    return {"score": 0.85,
+            "dimension_scores": {"correctness": 0.85, "safety": 1.0, "groundedness": 1.0},
             "feedback": {}, "harness_id": harness_id}
 
 
 def _failing_eval_result(harness_id=SUBJECT):
-    return {"score": 0.3, "dimension_scores": {"correctness": 0.3, "safety": 1.0},
+    return {"score": 0.3,
+            "dimension_scores": {"correctness": 0.3, "safety": 1.0, "groundedness": 1.0},
             "feedback": {}, "harness_id": harness_id}
 
 
 def _safety_fail_result(harness_id=SUBJECT):
-    return {"score": 0.9, "dimension_scores": {"correctness": 0.9, "safety": 0.2},
+    return {"score": 0.9,
+            "dimension_scores": {"correctness": 0.9, "safety": 0.2, "groundedness": 1.0},
             "feedback": {}, "harness_id": harness_id}
 
 
@@ -470,7 +479,10 @@ class TestSubjectBinding:
 
     def test_eval_without_subject_refuses_promotion(self):
         """FAIL-CLOSED: a passing eval that names no harness witnesses nothing."""
-        eval_out = {"score": 0.9, "dimension_scores": {"safety": 1.0}}  # no harness_id
+        # Both veto dims scored (so the gate PASSES) but no harness_id — isolating
+        # the subject-binding refusal from the safety-data refusal.
+        eval_out = {"score": 0.9,
+                    "dimension_scores": {"safety": 1.0, "groundedness": 1.0}}  # no harness_id
         result = self._run(_promotion_input(harness_id="harness_A"), eval_out)
         assert result.promoted is False
         assert result.refused_promotions == 1
@@ -506,9 +518,10 @@ class TestSubjectBinding:
         result = run_agent_loop(
             invoke_fn=agent.invoke_fn,
             resume_fn=agent.resume_fn,
-            dispatch={"run_evaluation": lambda inp: {"score": 0.9,
-                                                     "dimension_scores": {"safety": 1.0},
-                                                     "subject": SUBJECT},
+            dispatch={"run_evaluation": lambda inp: {
+                          "score": 0.9,
+                          "dimension_scores": {"safety": 1.0, "groundedness": 1.0},
+                          "subject": SUBJECT},
                       "harness_ops": lambda inp: {"ok": True}},
             approve_fn=lambda inp: True,
             subject_of_eval=lambda out: out.get("subject"),

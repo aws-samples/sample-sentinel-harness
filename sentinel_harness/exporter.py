@@ -152,14 +152,33 @@ def export_harness_to_strands(config: dict) -> str:
     lines.append("#   name                     -> a Strands @tool or builtin")
     lines.append("#   @gateway/<action>        -> an MCP client tool (AgentCore Gateway)")
     lines.append("#   request_*_approval       -> a human-in-the-loop @tool gate you own")
+    # A human-in-the-loop gate (request_*_approval) is not an ordinary tool: on the
+    # managed harness it PAUSES the loop for analyst sign-off before a high-stakes
+    # action (contain / publish / promote). If the exporter listed it alongside the
+    # business tools, an adopter wiring `tools=[...]` would naturally add siem_query
+    # and skip the approval gate — silently shipping an agent with LESS safety than
+    # the harness it was exported from. So the gates are called out SEPARATELY, as
+    # guardrails, and the builder emits a hard warning when any is present.
+    hitl_gates = [t for t in allowed_tools
+                  if isinstance(t, str) and t.startswith("request_") and t.endswith("_approval")]
+    business_tools = [t for t in allowed_tools if t not in hitl_gates]
     if allowed_tools:
-        for t in allowed_tools:
+        for t in business_tools:
             # Sanitize before interpolating into a COMMENT: a raw newline (or other
             # control char) in an allowedTools entry would break out of the '#' line
             # and inject arbitrary lines into the exported Strands module. Collapse
             # control chars to spaces so the entry stays a single, inert comment line.
             # (The executable ALLOWED_TOOLS list below already uses safe repr via {t!r}.)
             lines.append(f"#   - {_comment_safe(t)}")
+        if hitl_gates:
+            lines.append("#")
+            lines.append("#   *** HUMAN-IN-THE-LOOP SAFETY GATES — NOT optional tooling ***")
+            lines.append("#   On the harness these PAUSE the loop for analyst approval before a")
+            lines.append("#   high-stakes action. Omitting them here ships an agent that acts")
+            lines.append("#   WITHOUT that approval — a lower safety posture than the original.")
+            lines.append("#   Re-implement each as a blocking @tool that requires sign-off:")
+            for t in hitl_gates:
+                lines.append(f"#   - {_comment_safe(t)}   (SAFETY GATE)")
     else:
         lines.append("#   (none declared)")
     lines.append("ALLOWED_TOOLS = [")
@@ -223,6 +242,12 @@ def export_harness_to_strands(config: dict) -> str:
     lines.append("    return Agent(")
     lines.append("        model=model,")
     lines.append("        system_prompt=SYSTEM_PROMPT,")
+    if hitl_gates:
+        lines.append("        # WARNING: ALLOWED_TOOLS includes human-in-the-loop safety gate(s) "
+                     + f"{hitl_gates!r}.")
+        lines.append("        # Wiring the business tools but NOT these gates yields an agent that")
+        lines.append("        # takes high-stakes actions without the analyst approval the harness")
+        lines.append("        # required. Add the gate(s) as blocking @tools before production use.")
     lines.append("        tools=[],  # <- wire ALLOWED_TOOLS entries here")
     lines.append("    )")
     lines.append("")

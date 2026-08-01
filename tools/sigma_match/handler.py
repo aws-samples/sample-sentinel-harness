@@ -112,7 +112,7 @@ import importlib.util
 import ipaddress
 import os
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # --------------------------------------------------------------------------
 # YAML parsing — REUSE the sigma_yara_lint approach.
@@ -438,6 +438,37 @@ def _match_one_value(
 
     fv = _as_text(field_value, cased)
     ev = _as_text(expected, cased)
+
+    # Sigma WILDCARDS: '*' (any run of chars) and '?' (exactly one) are part of the
+    # value grammar itself, not a modifier — `Image: 'C:\\*\\cmd.exe'` is idiomatic
+    # and extremely common. Treating them as literal characters silently UNDER-matches:
+    # a real rule `Image: 'cmd*'` would report no match against `cmd.exe`.
+    #
+    # In this tool that failure is not merely a wrong boolean. `sigma_match` is what
+    # `longrunning/bas-runner` uses to decide whether a technique is DETECTED, so an
+    # under-match publishes a FALSE BLIND SPOT: the report tells the team to go build
+    # coverage they already have, and the noise hides the real gaps. Escaped `\*` /
+    # `\?` stay literal, per the Sigma spec.
+    # The modifier still decides WHERE the pattern must sit: `|contains: 'x*y'` means
+    # "some substring matches x*y", not "the whole field does". Composing them (rather
+    # than letting a wildcard override the modifier) keeps both semantics intact.
+    if _has_wildcard(ev):
+        if modifier == "contains":
+            return _wildcard_match(fv, f"*{ev}*")
+        if modifier == "startswith":
+            return _wildcard_match(fv, f"{ev}*")
+        if modifier == "endswith":
+            return _wildcard_match(fv, f"*{ev}")
+        return _wildcard_match(fv, ev)
+
+    # No live wildcard — but the value may still carry ESCAPE sequences (`\*`, `\?`,
+    # `\\`) that must be unescaped before a literal comparison. Without this, a rule
+    # written `a\*b` (meaning the literal text `a*b`) was compared as the raw 4-char
+    # string `a\*b` and matched nothing at all: the escape was honoured on the
+    # wildcard path and ignored on the literal path, so the ONE spelling that exists
+    # to match a literal asterisk was the one spelling that could never match.
+    ev = _unescape_sigma(ev)
+
     if modifier == "contains":
         return ev in fv
     if modifier == "startswith":
@@ -448,6 +479,80 @@ def _match_one_value(
     return fv == ev
 
 
+def _has_wildcard(pattern: str) -> bool:
+    """True if ``pattern`` carries an UNESCAPED Sigma wildcard (``*`` or ``?``).
+
+    A backslash-escaped ``\\*`` / ``\\?`` is a literal character and must not turn the
+    value into a glob (otherwise a rule matching a literal asterisk would silently
+    become a match-anything)."""
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\" and i + 1 < len(pattern) and pattern[i + 1] in ("*", "?", "\\"):
+            # Per the Sigma spec ONLY \*, \? and \\ are escape sequences. A lone
+            # backslash before anything else stays a literal backslash — which is
+            # what makes Windows paths work: in `C:\*\cmd.exe` the `\*` pair is a
+            # path separator followed by a real WILDCARD, not an escaped asterisk.
+            # Treating every `\X` as an escape (the first version of this fix) broke
+            # exactly the most common Sigma value there is.
+            i += 2
+            continue
+        if c in ("*", "?"):
+            return True
+        i += 1
+    return False
+
+
+def _unescape_sigma(pattern: str) -> str:
+    """Resolve Sigma escape sequences in a value with no live wildcard. PURE.
+
+    Only ``\\*``, ``\\?`` and ``\\\\`` are escapes; every other backslash is a literal
+    (which is what keeps Windows paths intact). Mirrors :func:`_has_wildcard` /
+    :func:`_wildcard_match` — all three must agree on what an escape is."""
+    out = []
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\" and i + 1 < len(pattern) and pattern[i + 1] in ("*", "?", "\\"):
+            out.append(pattern[i + 1])
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _wildcard_match(text: str, pattern: str) -> bool:
+    """Full-string Sigma wildcard match: ``*`` -> ``.*``, ``?`` -> ``.``.
+
+    Built by translating to a regex rather than using ``fnmatch``, because fnmatch
+    also honours ``[seq]`` character classes, which Sigma does NOT have — a value
+    containing a literal ``[`` would otherwise change meaning. Everything except the
+    two wildcards is regex-escaped, and an escaped ``\\*``/``\\?`` is emitted as the
+    literal character. Anchored, since a Sigma value predicate is a whole-field match
+    (``contains`` semantics come from the modifier, not from the wildcard)."""
+    out = ["(?s)^"]
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\" and i + 1 < len(pattern) and pattern[i + 1] in ("*", "?", "\\"):
+            # Only \*, \? and \\ are escapes (mirrors _has_wildcard — the two MUST
+            # agree, or a pattern could be classified as a glob here and matched as
+            # a literal there). Any other backslash is emitted as itself.
+            out.append(re.escape(pattern[i + 1]))
+            i += 2
+            continue
+        if c == "*":
+            out.append(".*")
+        elif c == "?":
+            out.append(".")
+        else:
+            out.append(re.escape(c))
+        i += 1
+    out.append("$")
+    return re.match("".join(out), text) is not None
+
+
 # Modifiers that select HOW a value is compared (at most one applies per key).
 _VALUE_MODIFIERS = (
     "contains", "startswith", "endswith", "re", "cidr",
@@ -456,6 +561,26 @@ _VALUE_MODIFIERS = (
 # Modifiers that flag a mode rather than select a comparison operator.
 _FLAG_MODIFIERS = ("all", "cased", "exists")
 _KNOWN_MODIFIERS = frozenset(_VALUE_MODIFIERS + _FLAG_MODIFIERS)
+
+
+def _resolve_field(field: str, log_event: Dict[str, Any]) -> Tuple[Optional[str], bool]:
+    """Find the event key for ``field``, case-insensitively. PURE.
+
+    Returns ``(key_or_None, ambiguous)``. An EXACT match always wins, so a
+    well-formed event is unaffected. Otherwise a single case-insensitive match is
+    used. If two or more keys differ only by case (``Image`` and ``image`` both
+    present) the result is ambiguous: the caller records a caveat and refuses the
+    key rather than silently picking one, since either choice could flip a
+    detection verdict."""
+    if field in log_event:
+        return field, False
+    lowered = field.lower()
+    hits = [k for k in log_event if isinstance(k, str) and k.lower() == lowered]
+    if len(hits) == 1:
+        return hits[0], False
+    if len(hits) > 1:
+        return None, True
+    return None, False
 
 
 def _match_key(
@@ -486,9 +611,25 @@ def _match_key(
             caveats.append({"field": field, "modifier": m, "reason": "unsupported_modifier"})
         return False  # inconclusive key => cannot claim a match
 
+    # Resolve the field name CASE-INSENSITIVELY. Sigma field names are matched
+    # case-insensitively in practice (a rule written `Image:` must still match an
+    # event carrying `image:`), and real log pipelines routinely differ in case
+    # between the rule author's reference and the shipped field. An exact-only
+    # lookup silently reported "no match" for a rule that fires in production —
+    # which in this tool means a FALSE BLIND SPOT in the BAS report, not just a
+    # wrong boolean. An exact hit always wins; a case-insensitive hit is the
+    # fallback, and an ambiguous one (two keys differing only by case) is refused
+    # with a caveat rather than guessed.
+    resolved, ambiguous = _resolve_field(field, log_event)
+    if ambiguous:
+        caveats.append({"field": field, "modifier": "", "reason": "ambiguous_field_case"})
+        return False
+    field_present = resolved is not None
+    lookup_key = resolved if field_present else field
+
     # ``exists`` is presence-only and ignores the field's value.
     if "exists" in modifiers:
-        return (field in log_event) == _coerce_bool(expected)
+        return field_present == _coerce_bool(expected)
 
     require_all = "all" in modifiers
     cased = "cased" in modifiers
@@ -504,11 +645,11 @@ def _match_key(
     else:
         expected_values = [expected]
 
-    if field not in log_event:
+    if not field_present:
         # An absent field can only satisfy an explicit ``null`` (no value
         # modifier); everything else fails to match without crashing.
         return value_modifier == "" and any(ev is None for ev in expected_values)
-    field_value = log_event[field]
+    field_value = log_event[lookup_key]
 
     def _one(ev: Any) -> bool:
         # ``field: null`` matches a present-but-None value too.

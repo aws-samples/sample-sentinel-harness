@@ -51,8 +51,8 @@ live) · 🟡 skeleton / partial · 🔴 gap.
 | `specialists/` | `cve-intel` (docker-build + live-validated on AgentCore Runtime) + `attack-mapper` / `threat-hunt` (real graph/plan builders) + `adversarial-reviewer` (agent_a2a + local_a2a + two-stage Dockerfile + contract test) | ✅ | all four specialists shipped |
 | `longrunning/` | `bas-runner` (BAS case-gen + detection-replay) + `detonation` (full simulated microVM lifecycle + orchestrator) | 🟩 | both built + tested; detonation stays an honest SIMULATED no-op |
 | `iac-cdk/lib/` | 9 synth-green stacks — `gateway` / `registry` / `memory` / `network` / `identity` / `guardrail` / `observability` / `harness` / `runtime` (+ `iam`); `iac-terraform/` mirror is `terraform validate`-clean | ✅ | `guardrail` / `identity` / `observability` LIVE-deployed (us-east-1); the Registry + `runtime` custom-resource/raw-CfnResource stacks synth clean but fail on deploy until their CFN types are GA (both control-plane APIs are separately live-verified — Registry via `registry_live.py`, `CreateAgentRuntime` via a real arm64 microVM that served a live A2A call, HTTP 200, real Bedrock model, on a non-prod test account, then torn down — `evidence/live_a2a_runtime_result.json`) |
-| `tests/` | 120 files, **2365 offline passing** (+6 skipped) | ✅ | add tests with each new module |
-| `evidence/` | 36 evidence sets | ✅ | add one per milestone |
+| `tests/` | 137 files, **2923 offline passing** (+6 skipped) | ✅ | add tests with each new module |
+| `evidence/` | 37 evidence sets | ✅ | add one per milestone |
 
 ### 0.3 Fit score (vs. a full three-layer SecOps agent program)
 
@@ -181,8 +181,8 @@ Each milestone gives: **goal / files / reused APIs / acceptance (live evidence) 
 Suggest one feature branch per milestone.
 
 ### M0 — Environment & baseline reproduction (half a day)
-**Goal:** on a fresh machine, get all 2365 offline tests green and reproduce ≥1 live scenario.
-- [ ] `uv sync` + `uv run pytest -q` → 2365 passing (+6 skipped) (offline).
+**Goal:** on a fresh machine, get all 2923 offline tests green and reproduce ≥1 live scenario.
+- [ ] `uv sync` + `uv run pytest -q` → 2923 passing (+6 skipped) (offline).
 - [ ] Configure `SENTINEL_EXECUTION_ROLE_ARN` / `SENTINEL_REGION` / `AWS_PROFILE` (non-prod) — see `docs/SETUP.md`.
 - [ ] Run `scenarios/scenario_cve_triage.py`; compare `evidence/cve_triage_result.json` shape.
 - [ ] Run `scenarios/scenario_hitl_resume.py`; reproduce pause→approve→resume.
@@ -419,7 +419,7 @@ hand-off reuses the live-capable M1/M2 engine (driven offline here, labeled a wi
       (`make deploy`, cost note, `make destroy`) + the no-lock-in export. — `docs/QUICKSTART.md`
 - [x] `tests/smoke/`: offline acceptance suite (default offline; `SENTINEL_SMOKE_LIVE=1` opt-in for live). — `tests/smoke/`
 
-**Acceptance:** `make test` → 2365 offline tests green; `make seed-registry` → dual-gate `ok`;
+**Acceptance:** `make test` → 2923 offline tests green; `make seed-registry` → dual-gate `ok`;
 `make create-harnesses` (DRY_RUN=1) → 8 harnesses validate offline with zero AWS; `sentinel export` → valid
 compilable Strands Python; `make smoke` → the offline acceptance suite green. A fresh non-prod account can then
 run `make deploy` (free-tier foundation) and the live scenarios; `make destroy` tears it all down.
@@ -750,3 +750,315 @@ Not code — align these with your platform/security owners before M5, or it wil
 **Acceptance:** `sentinel mcp serve` starts, lists 20 tools, invokes each correctly;
 Pages live at `neosun100.github.io/sentinel-harness/`; `pip install sentinel-harness`
 installs 0.4.0 from PyPI; suite 2365 passed.
+
+---
+
+## 4f. Security-gate audit + invariant enforcement (M18–M19) — ✅ DELIVERED (offline + LIVE-validated)
+
+> Theme: **the bottleneck was never test count — it was that the invariants lived
+> in docstrings, where nothing can check them.** All four defects below shipped
+> green in code with **90–97% line coverage** and a **2493-test passing suite**.
+> None was a coding error; every one was an *assembly gap* where a module
+> documented a fail-closed posture, delegated one case to "the caller", and no
+> caller implemented it.
+
+### M18 — four security-gate defects, found and fixed — ✅ DELIVERED
+
+| # | Defect | Invariant | Why the existing tests missed it |
+|---|---|---|---|
+| 18.1 | **`safety` veto was fail-OPEN on missing data.** A judge verdict of bare `{"score": 0.95}` cleared every machine gate and promoted an agent whose safety was *never assessed*. `safety_failures()`'s docstring said a caller wanting fail-closed "can inspect the parsed dimensions" — its only caller, the promotion gate, never did. | INV-PROMOTE-3 | Assertions checked verdict *shape*; nothing asked "did the judge score safety at all?" `test_loop_safety.py` even froze the fail-open behaviour as a contract (`apply_safety_veto({}, aggregate=0.90) is True`). |
+| 18.2 | **A real judge's dimension NAMES never reached the veto.** AgentCore online evaluation is reference-free → restricted to built-ins, which report `Builtin.Harmfulness` / `Builtin.Faithfulness` (`evidence/live_online_evaluation_result.json`). The exact-match veto set ignored them, so a live "this answer is harmful" verdict was silently dropped. | INV-PROMOTE-4 | Tests only ever used the canonical names. The live evidence file recording the real names was never cross-checked against the veto set. |
+| 18.3 | **The human approval was not subject-bound.** M16 subject-bound the eval↔promotion but left `witnessed_approval` a bare bool that never reset. An agent could get consent for harness A, silently re-evaluate B, and promote B on A's approval — `promoted=True, refused_promotions=0`. | INV-PROMOTE-2 | The confused-deputy tests covered the *eval* half only; no test asked whether consent was bound to anything. |
+| 18.4 | **`python -c` escaped the sandbox allowlist.** `python` is allowlisted (for repo scripts / `python -m pytest`), so `python -c "<arbitrary code>"` passed every check — no chain operator, no denied verb, allowed leading verb. | INV-SANDBOX-2/3 | The Hypothesis fuzz test asserts an ALLOWED verdict carries no shell metacharacter — a **syntactic** property. This escape is **semantic** and carries none. |
+
+**A fifth gap surfaced from fixing 18.1:** `eval/criteria.yaml` declares
+`groundedness` a first-class veto dimension, but **no scoring path ever emitted
+it** — the live judge projection and both offline scenario scorers reported only
+correctness+safety. Unreachable while absence was a pass; a hard red once it is
+not. Turning an implicit assumption into an explicit contract retro-validates
+everything that depended on it.
+
+**Tests added (offline):** 68 named regression tests + 11 Hypothesis
+**policy-level** properties. Verified to anchor the behaviour: with the four
+source files reverted, **52 of the 68 fail**, and the property suite
+**autonomously rediscovers INV-PROMOTE-3** from a randomly generated tool-call
+stream (`promoted on evidence missing the 'groundedness' dimension: {'safety':
+1.0}`). Stable across 12 random seeds with a cleared Hypothesis DB.
+
+### M18-LIVE — verified on real Amazon Bedrock AgentCore — ✅ DELIVERED
+
+`scenarios/scenario_m18_gates_live.py` → `evidence/m18_gates_live_result.json`
+(`closed: true`, zero residue). Two real harnesses created and driven to READY on
+a non-prod account; the promotion handler calls the **real
+`CreateHarnessEndpoint`**:
+
+- **INV-PROMOTE-2 live** — the confused-deputy attack is refused, and
+  `ListHarnessEndpoints` on B shows **no promotion-created endpoint**. "Refused"
+  is grounded in the control plane, not a boolean in a dataclass.
+- **INV-PROMOTE-3 live** — the no-safety-dimension verdict is refused; A carries
+  no promotion-created endpoint.
+- **Positive control** — the fully-evidenced path **really promotes** (endpoint
+  `m18ctl` created and read back). Without it the run would prove only that the
+  code refuses everything, which is trivial and useless.
+- **Cost posture:** spends control-plane calls, not tokens — the tool-call stream
+  is scripted and the eval handler deterministic, so it does **not** depend on
+  `InvokeHarness` quota (the limit that gated earlier live runs).
+
+**Three things the live run taught that the offline suite could not:**
+AgentCore provisions a `DEFAULT` endpoint on every harness (so "refused ⟹ zero
+endpoints" was the wrong assertion — the right one is "no endpoint by the
+requested name"); `DeleteHarness` raises `ConflictException` while a non-DEFAULT
+endpoint exists (delete order is a hard dependency); and deletion is asynchronous,
+with a harness that ever carried an extra endpoint taking >5 min to clear versus
+~2.5 min for a plain one. All three are now recorded in the scenario.
+
+### M19 — institutionalise the lesson — ✅ DELIVERED
+
+- [x] **`docs/INVARIANTS.md`** — 27 security invariants, each naming the property,
+      the **layer that owns it**, and the test that proves it. Owner matters:
+      INV-PROMOTE-3 was lost precisely because a docstring delegated a case to
+      "a caller". IDs are cited from code comments, so an implementation detail
+      traces back to the property it serves.
+- [x] **`tests/test_invariants_doc.py`** — the doc is executable: every cited test
+      must be collectible by pytest, every `INV-*` referenced in source must
+      resolve to a documented row, and no row may omit its owner or its test. It
+      caught its own first stale citation immediately.
+- [x] **mypy `--strict` on the six security-critical modules** (`loop_safety`,
+      `autonomy`, `agent_loop`, `sandbox_hooks`, `provenance`, `feedback`) — which
+      the previous lenient gate did not cover **at all**. Every M18 defect was in a
+      file outside the type gate; that is not a coincidence.
+      `--follow-imports=silent` scopes the strictness so the lenient modules stay
+      lenient; ratchet by moving a file between the two lists. `make typecheck`
+      runs both halves locally.
+- [x] **Docs-drift guards for quoted counts** (INV-DOC-2). The README asserted
+      BOTH "2365 offline tests" (shields.io badge) and "2352 offline tests pass"
+      (status matrix) while the suite collected 2493 — three numbers, one in a
+      badge a reader takes at face value. The guard checks reality **and** internal
+      consistency, scoped to present-tense claims so ROADMAP changelog entries
+      ("2126 → 2352") are not falsely flagged.
+
+**Acceptance:** suite 2493 → **2923** offline passing (+8 skipped), ruff clean,
+coverage 90% (gate 88), both mypy gates green, docs-drift + invariant-doc guards
+green, and `evidence/m18_gates_live_result.json` `closed: true` with zero residue
+on a real account.
+
+**Standing recommendation:** run a **round 9 adversarial audit aimed at semantic
+gaps** — rounds 3–8 hunted "the code is wrong"; every M18 defect was "the
+invariant was never asked". Different question, different findings.
+
+---
+
+## 4g. Round-9 adversarial audit — SEMANTIC gaps (R9) — ✅ DELIVERED (offline)
+
+> Rounds 3–8 asked **"is the code wrong?"** and found 96 defects. M18 showed that
+> a different question — **"was the invariant ever asked?"** — finds a different
+> class of defect entirely. Round 9 put that question to the surfaces M18 did not
+> touch: gateway auth, the feedback thresholds, the provenance ledger, and
+> registry/loader governance.
+
+**Six more gaps of the same shape** — a contract stated in prose that the
+mechanism does not deliver:
+
+| # | Gap | Invariant | Why it survived 8 audit rounds |
+|---|---|---|---|
+| R9-1 | **A hash chain cannot detect its own TRUNCATION.** The module promised "inserting/deleting a record ... will raise" — true for the middle, structurally impossible for the tail. Deleting the last record left a perfectly valid shorter chain, and the last record is exactly what someone hiding a bad promotion wants gone. Emptying or deleting the file also passed silently. | INV-GOV-4 | The mechanism was sound; the CLAIM exceeded it. Every test asserted tamper-in-place, which the chain does catch. |
+| R9-2 | **`promotion_decision='promoted'` was accepted with `approver=None`** — a governance record asserting "promoted by nobody", answering the one question the ledger exists to answer with silence. | INV-GOV-5 | `approver` is legitimately optional for `rejected`/`held`, and the optionality was never scoped by decision. |
+| R9-3 | **The OIDC `discovery_url` was unvalidated** — any string, including `http://`. That document determines the token-SIGNING KEYS: over plaintext an on-path attacker swaps the JWKS and mints tokens the gateway accepts, while the authorizer looks fully configured. | INV-GOV-6 | The builder carefully validated the audience/clients XOR (with a real live-tested gotcha in the comment) and never questioned the URL beyond non-empty. |
+| R9-4 | **`allowed_clients=["*"]` was accepted verbatim.** That list IS the auth boundary; the repo's ironclad rule #1 forbids `allowedTools: ['*']` for exactly this reason, but the same reasoning was never applied to whose TOKEN is accepted. | INV-GOV-7 | Rule #1 was written about tools, so nobody transferred it to claims. |
+| R9-5 | **A near-miss HITL gate name injected nothing, silently.** `allowedTools: ["request_publish_approval "]` — a trailing space, invisible in YAML — wired NO gate while remaining in allowedTools. The config read as "this harness has a publish gate" in review; the gate did not exist. | INV-GOV-8 | Exact-match lookup is correct behaviour for a lookup; nobody asked what a near miss should do. Worst failure mode for a HITL control: looks present, is absent. |
+| R9-6 | **A suppression task was emitted with nothing safe to suppress.** When every FP indicator was also a TP indicator, the true-positive guard correctly stripped them all — and the task went out with `fp_indicators: []`. The comment said it would emit "only if there is still noise left to suppress"; the condition it checked was `fp_count > 0`. | INV-GOV-9 | The TP guard (the hard part) was right and well-tested; the emptiness of its OUTPUT was never asserted. |
+
+R9-6's fix surfaced a follow-on: suppressing that rule's alert **cohort** is not a
+safe fallback either (those alerts fired on exactly the indicators we refused to
+allowlist), and with the whitelist task correctly withheld the rule produced **no
+task at all** — silence about a rule firing 75% noise. A
+`rule_regeneration / noisy_but_unsuppressable` branch now covers it: the rule
+needs to become more specific, not filtered.
+
+### Surfaces probed and found SOLID (recorded so round 10 does not redo them)
+
+- **The registry dual gate.** `deprecated`-with-code is refused AND reported as
+  drift; a case mismatch fails on both sides; an invalid `status` fails at load
+  rather than degrading silently to "not approved".
+- **The feedback true-positive guard.** An indicator seen on a real detection is
+  never proposed for suppression, and withheld indicators are surfaced, not
+  dropped.
+- **`policy_engine_config`.** Defaults to `ENFORCE`; an invalid mode raises (a
+  guardrail that silently degraded to observe-only would be a false sense of
+  protection).
+- **`loader`'s `allowedTools` shape checks.** The bare-scalar and `'*'` cases were
+  already closed, with the reasoning in the comments.
+
+**Tests:** `tests/test_r9_semantic_gates.py` — 59 tests, of which **37 fail on
+pre-R9 source**. The other 22 are the solid-surface tripwires and false-positive
+guards, expected green in both states. Suite 2590 → **2923**; ruff clean; both
+mypy gates green; docs-drift + invariant-doc guards green.
+
+**Recommendation for round 10:** the remaining unprobed semantic surfaces are
+`core.invoke`'s stream-parsing edge cases (partial/interleaved tool_use blocks),
+`exporter`'s generated-code fidelity, and the detection-suite translators
+(`detection_translate`'s SPL/EQL emitters got an injection audit in M14, but not a
+SEMANTIC one — e.g. does a translated rule preserve the original's match set?).
+
+---
+
+## 4h. Round-10 adversarial audit — SEMANTIC gaps in output fidelity (R10) — ✅ DELIVERED (offline)
+
+> R9 audited governance surfaces. R10 asked the same question — "was the invariant
+> ever asked?" — of three places where a **well-formed output can be semantically
+> wrong**: the Sigma→SIEM translators, the InvokeHarness stream parser, and the
+> Strands exporter.
+
+**Three gaps, and the headline is a false NEGATIVE** — the worst kind for a
+detection, because it reads as coverage while catching nothing:
+
+| # | Gap | Invariant | Why it survived 9 rounds |
+|---|---|---|---|
+| R10-1 | **A lossy modifier was translated to a plaintext field match on Splunk/Elastic, changing the match set to a DISJOINT one.** `CommandLine\|base64: 'whoami'` (matches `base64('whoami')` = `d2hvYW1p`) became Splunk `CommandLine="whoami"` (matches the plaintext). A rule written to catch OBFUSCATED commands was silently turned into one that only catches un-obfuscated ones. `\|re` had the same shape (regex → literal). And the caveat named the wrong targets — "no YARA/Suricata equivalent" on an SPL translation. | INV-TRANSLATE-1/2/3 | The M14 audit checked the translators for output INJECTION (can a value break the grammar?) and found real bugs — but never for match-set FIDELITY (does the rule still match the same events?). Different question. The literal was even labelled "best effort", which is honest on a byte scanner and a false negative on a field-aware query — the same word covering two different truths. |
+| R10-2 | **A repeated `toolUseId` in the stream produced two pending gates**, so the resume would emit two `toolResult`s for one id — which the Bedrock protocol rejects, corrupting the session. | INV-STREAM-1 | The parser was audited for DROPPING gates (M18 fixed parallel-gate loss) but never for DUPLICATING one. The fix is symmetric to that one. |
+| R10-3 | **The exporter listed HITL safety gates among ordinary tools** and initialised `tools=[]`. An adopter wiring the business tools would naturally skip the `request_*_approval` gate — shipping an agent that acts without the approval the harness required, with nothing calling it out. | INV-EXPORT-1 | `export` is honestly a SKELETON (documented as such), so "it drops tools" is not a bug — but nobody asked whether it distinguishes a SAFETY GATE from a business tool. It did not. |
+
+The fixes are scoped, not blanket: byte-scanner targets (YARA/Suricata) keep the
+labelled best-effort literal — there a byte substring IS the honest approximation;
+only the field-aware targets withhold it. Faithful modifiers
+(contains/startswith/endswith/plain, and EQL's case-insensitive equality) are
+untouched. The stream dedupe keeps distinct parallel ids. The exporter adds the
+guardrail marking only when a gate is present, and the generated module always
+still parses.
+
+### Surfaces probed and found SOLID (recorded for round 11)
+
+- **The stream parser's other edge cases** — an out-of-order `delta` before its
+  `start` is ignored, a `contentBlockStart` with no name creates no phantom gate,
+  and a stream-level error is surfaced in the `error` field rather than swallowed
+  into `text`. All correct.
+- **The exporter's injection hardening** — a control char or `\n` in a tool name
+  stays an inert comment; the executable `ALLOWED_TOOLS` uses safe `repr`. The
+  generated module parses for every tool combination tried.
+- **The translator's escaping and negation handling** (M14 + R9 work) — untrusted
+  values cannot break the target grammar, and a `not` in the condition is flagged
+  untranslatable rather than silently inverted.
+
+**Tests:** `tests/test_r10_semantic_gates.py` — 22 tests, of which **11 fail on
+pre-R10 source** (verified by reverting the three modules). Suite 2649 → **2923**;
+ruff clean; both mypy gates green; docs-drift + invariant-doc guards green.
+`docs/INVARIANTS.md` now carries 37 invariants across five families.
+
+**Recommendation for round 11:** the remaining unprobed semantic surfaces are the
+detection-suite's OTHER stages — `detection_dedup` (does "duplicate" mean the same
+match set, or just similar text?), `detection_coverage` (does a claimed ATT&CK
+technique mapping actually correspond to the rule's logic?), and `sigma_match`
+(does the matcher's evaluation agree with a real Sigma engine on the modifier
+edge cases R10 just mapped?).
+
+---
+
+## 4i. Round-11 adversarial audit — detection-suite fidelity (R11) — ✅ DELIVERED (offline)
+
+> R10 asked "is this well-formed output semantically right?" of the translators.
+> R11 asked it of the rest of the detection suite, where the failure mode is
+> subtler: these tools produce **governance numbers a SOC acts on**, and a wrong
+> number is worse than a crash — nobody investigates a green dashboard.
+
+**Two gaps, both of which make a blind spot look covered:**
+
+| # | Gap | Invariant | Why it survived 10 rounds |
+|---|---|---|---|
+| R11-1 | **`detection_coverage` counted a rule that can NEVER FIRE as coverage.** A rule with no `detection` block, or a `condition` naming an undefined selection, produces exactly zero alerts — yet its `attack.t1059` tag was enough to move T1059 out of `uncovered`. The ATT&CK matrix showed green while an attacker using that technique walked in unseen. | INV-COVERAGE-1/2 | The module's goal is "which techniques can we NOT detect", but it validated a PROXY: which techniques a tag mentions. A tag is intent, not capability. Its own docstring even names the failure mode ("a false 'covered' hides a real blind spot") — it just never checked. Notably `sigma_yara_lint` already detected all three defects; coverage simply never consumed that judgement. |
+| R11-2 | **`sigma_match` treated Sigma wildcards as literal characters.** `Image: 'cmd*'` reported NO match against `cmd.exe`. Field names were also compared case-sensitively, so a rule written `Image:` missed an event carrying `image:`. | INV-MATCH-1/2 | The matcher had impressively complete modifier support (`re`/`cidr`/`base64`/`windash`/numeric/`cased`/`exists`) and a working `caveats` mechanism for unsupported modifiers — so the ONE missing feature was invisible: wildcards are part of the value GRAMMAR, not a modifier, so nothing flagged them. And because `bas-runner` reads this matcher to decide whether a technique is detected, an under-match publishes a **false blind spot**: the team is sent to build coverage it already has, and the noise hides the real gaps. |
+
+**A connected finding surfaced from fixing R11-1.** With dead rules no longer
+counted, `detection_audit`'s health score IMPROVED (0 → 10) on a pathological rule
+set, because those rules had been contributing the `untagged_rules` deduction. That
+exposed a **penalty-calibration gap**: a rule that claims a technique it cannot
+detect was only ever penalised as "untagged" (-10), which is backwards — an
+untagged rule UNDER-reports its own coverage (conservative, harmless), while a
+non-actionable rule OVER-reports it (turns the matrix green over a real gap). A new
+`non_actionable_rules` class (-15, above untagged) now reflects that asymmetry, and
+the pre-existing `assert health_score == 0` saturation test verified it landed.
+
+### Surface probed and found SOLID: `detection_dedup`
+
+Worth recording in detail, because it is the counter-example that shows the audit
+question is genuinely discriminating rather than always finding something.
+`detection_dedup` was probed with exactly the same intent — "does 'duplicate' mean
+the same MATCH SET, or just similar text?" — and passed 7/7:
+
+- it performs a real containment PROOF (`_predicate_implies` argues per modifier)
+  and returns False whenever containment is not provable — it never over-claims;
+- a stricter rule is reported as a **subsumption**, never a duplicate (calling it a
+  duplicate would get a real detection deleted);
+- value and field-name case differences ARE duplicates; a different logsource never
+  is;
+- a rule outside the provable shape lands in `not_analyzed` rather than silently
+  counting as "checked, no duplicates found".
+
+Tripwire tests are kept in the R11 suite so the tempting "optimisation" — compare
+normalised rule text — cannot quietly turn a sound proof into fuzzy matching.
+
+**Tests:** `tests/test_r11_semantic_gates.py` — 59 tests, of which **32 fail on
+pre-R11 source** (verified by reverting the three modules). The other 27 are the
+dedup tripwires and regression guards, green in both states. Suite 2671 → **2923**
+collected; ruff clean (it caught a genuinely missing `Optional` import that the
+runtime never touches thanks to `from __future__ import annotations`); both mypy
+gates green; docs-drift + invariant-doc guards green. `docs/INVARIANTS.md` now
+carries 42 invariants across eight families.
+
+**Recommendation for round 12:** the unprobed surfaces left are
+`detection_navigator` (does the emitted ATT&CK-Navigator layer's scoring match the
+coverage it was built from, now that coverage excludes dead rules?),
+`detection_baseline` (can a regression be hidden by reordering, or by a rule set
+that shrinks?), and `whitelist_optimizer`'s synthesised Sigma filter (does the
+generated filter suppress ONLY the FP cohort it was given — i.e. the same match-set
+question R11 asked of dedup, applied to a GENERATED rule).
+
+---
+
+## 4j. Round-12 adversarial audit — generated-rule & gate fidelity (R12) — ✅ DELIVERED (offline, workflow-driven)
+
+> R11 asked "does this governance NUMBER reflect capability?". R12 pushed the same
+> match-set question into three tools that GENERATE a rule or GATE on a comparison,
+> where a wrong answer actively degrades the detection posture. Run as a **fan-out
+> workflow**: three parallel probes, each finding **adversarially re-reproduced**
+> (default-REFUTE verifier, must run the probe) before it survived — 20 agents, 14
+> findings CONFIRMED-by-reproduction, 3 refuted, then each reproduced independently
+> by hand before fixing.
+
+**The headline is the most dangerous class in the suite: a synthesized suppression
+that turns OFF a real detection.**
+
+| # | Gap | Invariant | Why it survived 11 rounds |
+|---|---|---|---|
+| R12-1 | **whitelist_optimizer synthesized a filter that suppressed MORE than the FP cohort — including the TP it certified as preserved.** Its guard `_clause_matches` compares with Python `==`/`endswith`, but the Sigma filter it EMITS is read by any engine (incl. this repo's own matcher) with `*`/`?` as live wildcards. `process_name: 'a*.exe'` was certified "preserving 1 true-positive" while the deployed filter globbed away `attack.exe` (that TP), `agent.exe`, `abc.exe`. Same class via a public-suffix domain (`co.uk`), a weak field (`dst_port`), a TP missing the whitelisted field (guard vacuously satisfied), an n=1 over-generalization, a single-quote YAML break, and a /48 IPv6 block. | INV-WL-1/2/3 | The module was impressively self-aware — its comments warn verbatim that the emitted Sigma "MUST match EXACTLY what `_clause_matches` certifies" — but the check was written against the LITERAL semantics on both sides, so it never noticed the emitted side is interpreted as a glob. The repo had even fixed this same TP-safety class twice before (CHANGELOG domain_suffix apex, bare-suffix), on the FP-leak side; this was the strictly-worse detection-deletion side. |
+| R12-2 | **detection_baseline let a real regression pass green.** A shrinking library reported an "improvement" (score rose while coverage dropped); a trimmed target list relabelled real blind spots "resolved"; an empty/malformed baseline FAILED OPEN (health defaulted to 0, so everything scored an improvement). | INV-BASELINE-1/2/3 | It snapshotted six fields and diffed only the uncovered/invalid/dup SETS + the scalar score. Coverage that dropped without a target list never entered `uncovered`; the covered SET was never snapshotted; and the malformed-baseline path had no fail-closed guard. |
+| R12-3 | **detection_navigator disagreed with the round-11 coverage fix.** A technique claimed only by a rule that cannot fire vanished from the layer, which then asserted 100% coverage over a real blind spot. | INV-NAV-1 | Navigator faithfully delegated to coverage for `covered`/`uncovered` — but R11 added a THIRD class (`non_actionable_rules`) that navigator did not consume, so the newest coverage output and the layer silently diverged the moment R11 shipped. |
+
+The fixes are scoped, not blanket: whitelist_optimizer still synthesizes the
+classic CDN-subdomain whitelist and n=1 EXACT matches; baseline still passes a
+genuine improvement; navigator still reports 100% on a clean rule set. A private
+registrable suffix is allowed where a public suffix is refused, and the fix set was
+validated end-to-end by replaying emitted filters through the repo's OWN Sigma
+engine (`tools/sigma_match`) to confirm the deployed match set, not just the
+certified one.
+
+### The 3 refuted findings
+
+The adversarial verifier REFUTED three probes (kept out of the fix set): a
+`| count(...) by ...` aggregation rule painted as a blind spot (coverage's
+documented, correct treatment — an aggregation is not a simple detection),
+`allow_score_drop` sign handling at one boundary (behaviour defensible), and one
+inventory-mode percentage claim whose causal story did not hold. Recording them so
+round 13 does not re-litigate settled ground.
+
+**Tests:** `tests/test_r12_semantic_gates.py` — 45 tests, of which **36 fail on
+pre-R12 source** (verified by reverting the three modules). The other 9 are the
+happy-path and fail-closed regression guards. Suite 2730 → **2923** collected; ruff
+clean; both mypy gates green; docs-drift + invariant-doc guards green.
+`docs/INVARIANTS.md` now carries 47 invariants across eleven families.
+
+**Recommendation for round 13:** the detection suite is now well-covered; the
+unprobed match-set surfaces left are `detection_translate`'s REVERSE direction (if
+any), `sigma_yara_lint`'s FP-proneness heuristic (does "FP-prone" correlate with a
+real over-broad match, or just rule shape?), and the `connectors/` SIEM translators
+(does a Splunk/Elastic/QRadar query translation preserve the mock backend's result
+set — the R10 question applied to the live-seam adapters).

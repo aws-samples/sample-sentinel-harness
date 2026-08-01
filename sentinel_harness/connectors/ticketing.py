@@ -129,9 +129,24 @@ class JiraConnector:
         key = payload.get("key")
         if not key:
             raise ConnectorError("Jira reply missing issue 'key'")
+        # Read the status the reply actually reports. Hardcoding "open" FABRICATED a
+        # status the payload could contradict: a Jira instance with a non-default
+        # create transition (or an issue auto-transitioned by a workflow rule) returns
+        # e.g. "Triage"/"In Progress", and reporting "open" tells the caller the
+        # ticket needs work that was already started. Jira nests it under
+        # fields.status.name; fall back to "open" only when the reply omits it (the
+        # create API's minimal response shape genuinely does).
+        status = "open"
+        fields = payload.get("fields")
+        if isinstance(fields, dict):
+            st = fields.get("status")
+            if isinstance(st, dict) and str(st.get("name", "")).strip():
+                status = str(st["name"]).strip().lower()
+            elif isinstance(st, str) and st.strip():
+                status = st.strip().lower()
         return {
             "ticket_id": str(key),
-            "status": "open",
+            "status": status,
             "url": str(payload.get("self", "")),
         }
 

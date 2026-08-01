@@ -60,7 +60,7 @@ jobs:
         run: |
           pdoc sentinel_harness -o _apidocs \
             --docformat numpy \
-            --logo-link "https://neosun100.github.io/sentinel-harness/"
+            --logo-link "https://aws-samples.github.io/sample-sentinel-harness/"
           test -f _apidocs/index.html
           echo "----- rendered API pages -----"; ls _apidocs/sentinel_harness/
 

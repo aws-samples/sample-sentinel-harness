@@ -294,11 +294,25 @@ def build_live_loop_callables(judge_arn, agent_id, agent_arn, *, strong_prompt=N
     def score_fn(answer):
         v = _score(judge_arn, answer)
         agg = v.get("score") or 0.0
-        # A judge that errored/throttled scores 0 with a safety-neutral dim (the
-        # controller then simply won't promote — an honest non-pass, not a crash).
-        safety = agg if v.get("ok") else 0.0
+        # Project BOTH veto dimensions eval/criteria.yaml declares first-class
+        # (groundedness + safety). Emitting only `safety` left `groundedness`
+        # unscored, and since M18 the gate is fail-closed on missing safety data
+        # (INV-PROMOTE-3) — an unscored veto dimension can never promote. Prefer the
+        # judge's own per-dimension verdict when it reports one; fall back to the
+        # aggregate (this judge grades holistically against a rubric that already
+        # penalizes hallucination and missing safety steps, so the aggregate is the
+        # honest proxy for both).
+        judge_dims = v.get("dimensions") or v.get("dimension_scores") or {}
+        # A judge that errored/throttled scores 0 on BOTH veto dims (the controller
+        # then simply won't promote — an honest non-pass, not a crash).
+        fallback = agg if v.get("ok") else 0.0
+        dims = {
+            "correctness": judge_dims.get("correctness", agg),
+            "safety": judge_dims.get("safety", fallback),
+            "groundedness": judge_dims.get("groundedness", fallback),
+        }
         return {"score": agg,
-                "dimension_scores": {"correctness": agg, "safety": safety},
+                "dimension_scores": dims,
                 "feedback": {"suggestions": v.get("suggestions") or [],
                              "judge_ok": v.get("ok")}}
 

@@ -20,7 +20,7 @@ SHELL := /bin/bash
 PYTEST := uv run --no-project --python 3.13 --with pytest --with hypothesis --with boto3 --with pyyaml --with . python -m pytest
 
 .DEFAULT_GOAL := help
-.PHONY: help ci test lint synth deploy deploy-endpoints seed-registry create-harnesses \
+.PHONY: help ci typecheck test lint synth deploy deploy-endpoints seed-registry create-harnesses \
         smoke reset destroy demo clean
 
 help: ## List available targets (default).
@@ -33,12 +33,26 @@ help: ## List available targets (default).
 	@echo "OFFLINE (no AWS): ci test lint synth seed-registry create-harnesses smoke demo clean"
 	@echo "TOUCHES AWS (confirm prompt): deploy deploy-endpoints reset destroy"
 
+typecheck: ## Run both mypy gates exactly as CI does (lenient core + --strict security modules)
+	# The security-module gate is STRICT on purpose: these files decide whether an
+	# agent reaches production (loop_safety/autonomy/agent_loop) and what a
+	# sandboxed agent may run (sandbox_hooks). Run this before touching them.
+	uv run --no-project --python 3.12 --with mypy --with boto3 --with pyyaml --with . \
+		mypy sentinel_harness/core.py sentinel_harness/factory.py \
+		     sentinel_harness/loader.py sentinel_harness/registry.py \
+		     sentinel_harness/registry_live.py
+	uv run --no-project --python 3.12 --with mypy --with boto3 --with pyyaml --with . \
+		mypy --strict --ignore-missing-imports --follow-imports=silent \
+		     sentinel_harness/loop_safety.py sentinel_harness/autonomy.py \
+		     sentinel_harness/agent_loop.py sentinel_harness/sandbox_hooks.py \
+		     sentinel_harness/provenance.py sentinel_harness/feedback.py
+
 ci: ## Run the core CI gates locally (lint · coverage>=88 · iac synth · secret-scan). NOTE: the mypy type-gate and the iac-cdk/test/*.test.ts stack tests run in CI only.
 	# Mirrors the lint/test/synth/scan gates of .github/workflows/ci.yml. It does NOT
-	# run two CI-only gates: the `mypy` job (5 core control-plane modules) and the
-	# `iac` job's `ts-node` stack-assertion tests (iac-cdk/test/*.test.ts). A green
-	# `make ci` therefore does not guarantee green CI on those two — run them if you
-	# touched typed core modules or the CDK stacks.
+	# run two CI-only gates: the `mypy` job (`make typecheck` runs both halves of it
+	# locally) and the `iac` job's `ts-node` stack-assertion tests
+	# (iac-cdk/test/*.test.ts). A green `make ci` therefore does not guarantee green
+	# CI on those two — run them if you touched typed core modules or the CDK stacks.
 	# 1) Lint — REQUIRED, pinned to the same ruff CI + pre-commit run.
 	uv run --no-project --python 3.13 --with ruff==0.15.20 ruff check .
 	# 2) Coverage-gated tests (offline; branch coverage; fails under the 88 floor

@@ -116,9 +116,16 @@ def _technique_row(technique_id: str, *, covered: bool, comment: str) -> Dict[st
     }
 
 
-def _build_layer(name: str, covered: List[Dict[str, Any]], uncovered: List[str]) -> Dict[str, Any]:
+def _build_layer(name: str, covered: List[Dict[str, Any]], uncovered: List[str],
+                 non_actionable: Optional[List[str]] = None) -> Dict[str, Any]:
     """Assemble the ATT&CK Navigator layer v4.5 object. ``techniques`` is sorted by
-    id for byte-stable output."""
+    id for byte-stable output.
+
+    ``non_actionable`` techniques are claimed only by rules that cannot fire; they
+    are drawn as NOT covered (amber comment) and — critically — counted in the
+    denominator, so the coverage percentage cannot read 100% while dead-rule claims
+    are quietly dropped."""
+    non_actionable = non_actionable or []
     rows: List[Dict[str, Any]] = []
     for c in covered:
         rule_list = ", ".join(c.get("rules", []))
@@ -130,9 +137,14 @@ def _build_layer(name: str, covered: List[Dict[str, Any]], uncovered: List[str])
         rows.append(_technique_row(
             tid, covered=False, comment="NO detecting rule — blind spot",
         ))
+    for tid in non_actionable:
+        rows.append(_technique_row(
+            tid, covered=False,
+            comment="claimed by a rule that CANNOT FIRE (no detection / broken condition) — not real coverage",
+        ))
     rows.sort(key=lambda r: r["techniqueID"])
 
-    total = len(covered) + len(uncovered)
+    total = len(covered) + len(uncovered) + len(non_actionable)
     pct = round(100 * len(covered) / total, 1) if total else 0.0
     return {
         "name": name,
@@ -144,7 +156,9 @@ def _build_layer(name: str, covered: List[Dict[str, Any]], uncovered: List[str])
         "domain": _DOMAIN,
         "description": (
             f"sentinel-harness detection coverage: {len(covered)}/{total} technique(s) "
-            f"covered ({pct}%), {len(uncovered)} blind spot(s). Deterministic export."
+            f"covered ({pct}%), {len(uncovered)} blind spot(s)"
+            + (f", {len(non_actionable)} claimed-but-cannot-fire" if non_actionable else "")
+            + ". Deterministic export."
         ),
         "gradient": {
             "colors": [_COLOR_UNCOVERED, _COLOR_COVERED],
@@ -173,15 +187,34 @@ def _analyze(rules: List[Any], techniques: Optional[List[str]], name: str) -> Di
 
     covered = cov["covered"]
     uncovered = cov["uncovered"]
-    layer = _build_layer(name, covered, uncovered)
+
+    # A technique claimed ONLY by a rule that cannot fire (round-11 non_actionable)
+    # must not vanish from the layer. In inventory mode (no target list) coverage
+    # simply omits it, so navigator would paint a map that silently drops the
+    # technique AND reports 100% covered — a green matrix over a real blind spot.
+    # Surface those techniques as a distinct third class: "claims coverage but
+    # cannot fire", scored/coloured as NOT covered (they detect nothing) but
+    # labelled so an analyst sees it is a fixable dead rule, not an untouched gap.
+    covered_ids = {c["technique"] for c in covered}
+    uncovered_ids = set(uncovered)
+    non_actionable_techs: set = set()
+    for entry in (cov.get("non_actionable_rules") or []):
+        for tech in (entry.get("claimed_techniques") or []):
+            if tech not in covered_ids and tech not in uncovered_ids:
+                non_actionable_techs.add(tech)
+    non_actionable = sorted(non_actionable_techs)
+
+    layer = _build_layer(name, covered, uncovered, non_actionable)
     return {
         "ok": True,
         "layer": layer,
         "covered_count": len(covered),
         "uncovered_count": len(uncovered),
+        "non_actionable_count": len(non_actionable),
         "summary": (
             f"{len(layer['techniques'])} technique(s) in layer: "
-            f"{len(covered)} covered (green), {len(uncovered)} uncovered (red)."
+            f"{len(covered)} covered (green), {len(uncovered)} uncovered (red), "
+            f"{len(non_actionable)} claimed-but-cannot-fire (amber)."
         ),
     }
 

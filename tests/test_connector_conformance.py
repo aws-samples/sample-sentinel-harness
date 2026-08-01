@@ -38,7 +38,12 @@ def test_certify_all_reports_every_connector():
         C.get_siem_connector, C.get_ticketing_connector,
         C.available_siem_connectors(), C.available_ticketing_connectors(),
     )
-    assert set(results) == set(C.available_siem_connectors()) | set(C.available_ticketing_connectors())
+    # Every connector is reported, PLUS the synthetic cross-connector result-set
+    # equivalence check (round 13: the invariant a per-connector check is blind to).
+    per_connector = set(C.available_siem_connectors()) | set(C.available_ticketing_connectors())
+    assert per_connector <= set(results)
+    assert "_cross_connector" in results, "cross-connector equivalence check must run"
+    assert set(results) == per_connector | {"_cross_connector"}
     assert all(r.ok for r in results.values())
 
 
