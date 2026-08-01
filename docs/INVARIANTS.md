@@ -180,6 +180,20 @@ most dangerous outcome in the suite.
 |---|---|---|---|
 | **INV-NAV-1** | A technique claimed only by a rule that cannot fire is NOT painted green and does not vanish from the layer; it is a distinct "claimed-but-cannot-fire" class, counted in the denominator so coverage cannot read 100% over it. The Navigator's green set equals coverage's covered set. | `detection_navigator._analyze` / `_build_layer` | `test_r12_semantic_gates.py::TestNavigatorAgreesWithCoverage` |
 
+## INV-FP — FP-proneness tracks specificity, not just rule shape
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-FP-1** | A rule with a self-anchoring predicate (full path / full hash / long exact value) is NOT flagged FP-prone — checks that use "no exclusion filter" or "few predicates" as a breadth proxy are exempted when a predicate is precise enough to stand alone. Penalising a team's most precise detection pushes the library the wrong way. | `sigma_yara_lint._has_high_specificity_predicate` | `test_r13_semantic_gates.py::TestPreciseRulesAreNotPenalised`, `::TestSpecificityHelper` |
+| **INV-FP-2** | A short `\|contains` value is only "generic" if it reads like a plain lowercase-ASCII word and is not a known IOC marker; `jndi` / `ldap` / `::$` / `-enc` are specific, not noise. A wildcard-bearing or `\|contains` value never counts as self-anchoring, so a broad rule is still caught. | `sigma_yara_lint._is_generic_short_value` | `test_r13_semantic_gates.py::TestPreciseRulesAreNotPenalised`, `::TestBroadRulesAreStillCaught` |
+
+## INV-CONNECTOR — a SIEM connector preserves the result set across backends
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-CONNECTOR-1** | Every SIEM connector emits the SAME result-set bound (limit + time window) for the same neutral query, so a detection validated offline behaves identically on any backend. No connector invents a time window the neutral query did not ask for (QRadar's silent 24h window dropped older true hits). | `connectors.siem` + `base.DEFAULT_RESULT_LIMIT` | `test_r13_semantic_gates.py::TestConnectorsPreserveResultSet` |
+| **INV-CONNECTOR-2** | The conformance suite ASSERTS cross-connector result-set equivalence, not just per-connector response shape — a divergent limit or an invented window is a certification FAILURE. (Per-connector shape checks alone were structurally blind to the divergence, the same "asks the wrong question" gap as INV-COVERAGE-1.) | `connectors.conformance.check_result_set_equivalence` | `test_r13_semantic_gates.py::TestConnectorsPreserveResultSet::test_conformance_catches_an_invented_time_window`, `::test_conformance_catches_a_divergent_limit` |
+
 ## INV-STREAM — the InvokeHarness stream parser protects the resume contract
 
 | ID | Invariant | Owner | Enforced by |
