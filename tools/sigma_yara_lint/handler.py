@@ -305,6 +305,105 @@ _SPECIFIC_SHORT_VALUES = frozenset({
 })
 
 
+def _has_exclusion_filter(condition: str) -> bool:
+    """True only if the condition genuinely EXCLUDES something. PURE.
+
+    The old test was `"not " in condition or "filter" in condition` — a raw substring
+    scan, which round 13 showed accepts two things that exclude nothing:
+      - `selection or filter_extra` — an OR *WIDENS* the match set, yet the word
+        "filter" appearing anywhere satisfied the check, so an actively broader rule
+        was credited with having an exclusion filter;
+      - a selection merely NAMED `filter_*` that the condition never negates.
+    It was also case-sensitive, so an idiomatic `selection AND NOT filter` (upper
+    case) was read as having no filter at all.
+
+    An exclusion requires the token `not` in a conjunctive position, i.e. `... and
+    not <something>`. That is what we look for, case-insensitively."""
+    cond = " ".join(str(condition).lower().split())
+    if not cond:
+        return False
+    # `and not X` / `and not(X)` — the canonical Sigma exclusion.
+    if re.search(r"\band\s+not\b", cond):
+        return True
+    # A leading `not X and ...` also excludes (rare but valid).
+    if re.match(r"^not\s+", cond) and " and " in cond:
+        return True
+    return False
+
+
+def _iter_predicates(selections: dict):
+    """Yield ``(sel_name, field_key, value)`` for EVERY predicate in every selection.
+
+    Handles both selection shapes Sigma allows: a MAP of field→value, and a LIST of
+    maps (the standard OR-of-maps form). Round 13 found the breadth checks skipped
+    the list form entirely (`isinstance(sel_body, dict)` → `continue`), so a rule
+    could evade every breadth check just by wrapping its selection in a list — a
+    cosmetic edit that provably does not change the match set."""
+    for sel_name, sel_body in selections.items():
+        bodies = sel_body if isinstance(sel_body, list) else [sel_body]
+        for body in bodies:
+            if not isinstance(body, dict):
+                continue
+            for field_key, field_val in body.items():
+                for v in (field_val if isinstance(field_val, list) else [field_val]):
+                    yield sel_name, field_key, v
+
+
+def _match_everything_reason(field_key: str, value) -> str:
+    """Return WHY a predicate matches (nearly) every event, or "" if it is selective.
+
+    THE round-13 fix. The old breadth checks keyed on the literal substring
+    ``"|contains"`` in the field name, so every other way of spelling
+    match-anything was invisible: `Image: '*'`, `|re: '.*'`, `|exists: true`,
+    `|gt: 0`, a 1-char `|startswith`. Six such predicates each matched 5/5 benign
+    events while scoring ZERO warnings — and worse, the scoring was SIGN-INVERTED on
+    a subset relation: `Image: '*'` (a strict superset of `Image|contains: 'cmd'`)
+    scored strictly FEWER warnings than the narrower rule.
+
+    So the test is now on the SELECTIVITY OF THE VALUE, whatever modifier spells it.
+    Deliberately NOT flagged (they would trade false negatives for false positives on
+    idiomatic rules): a normal `|endswith: '.exe'`, or a 3+ char anchor."""
+    key = str(field_key)
+    mods = [m.strip().lower() for m in key.split("|")[1:]]
+
+    # A presence test alone says only "the field exists" — true of every event that
+    # carries the field at all.
+    if "exists" in mods and _coerce_truthy(value):
+        return f"'{key}' is a presence test only — matches every event carrying the field"
+
+    if isinstance(value, str):
+        raw = value.strip()
+        # A bare wildcard (any modifier, incl. plain equality) matches everything.
+        if raw and set(raw) <= {"*", "?"}:
+            return f"'{key}' value {value!r} is a bare wildcard — matches every event"
+        if "re" in mods:
+            # A regex that accepts any input: .*, .+, ^.*$, (.*) and friends.
+            stripped = raw.strip("^$()")
+            if stripped in (".*", ".+", ".*?", "") or set(stripped) <= {".", "*", "+", "?"}:
+                return f"'{key}' regex {value!r} matches any value"
+        # A 1-2 char prefix/suffix anchor is barely narrower than no filter at all.
+        if ("startswith" in mods or "endswith" in mods) and 0 < len(raw) <= 2:
+            return f"'{key}' anchor {value!r} is only {len(raw)} char(s) — near-universal"
+
+    # A numeric floor at or below the domain minimum excludes nothing. Event ids and
+    # counters are non-negative, so `>= 0` / `> -1` is a no-op filter.
+    if any(m in mods for m in ("gt", "gte")) and isinstance(value, (int, float)):
+        if not isinstance(value, bool):
+            floor_excludes_nothing = (value <= 0) if "gt" in mods else (value <= 0)
+            if floor_excludes_nothing:
+                return f"'{key}' numeric floor {value!r} excludes nothing (non-negative domain)"
+    return ""
+
+
+def _coerce_truthy(value) -> bool:
+    """Sigma-ish truthiness for an ``|exists`` flag (``true``/``yes``/1)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+    return bool(value)
+
+
 def _has_high_specificity_predicate(selections: dict) -> bool:
     """True if any selection carries a predicate specific enough to stand alone. PURE.
 
@@ -328,9 +427,26 @@ def _has_high_specificity_predicate(selections: dict) -> bool:
             continue
         for field_key, field_val in sel_body.items():
             key = str(field_key)
-            # Only an exact predicate anchors; any value modifier widens it.
-            if "|" in key and not key.endswith("|cased"):
+            mods = [m.strip().lower() for m in key.split("|")[1:]]
+            # Two DIFFERENT sources of anchoring, and conflating them was a real
+            # regression I introduced and the tests caught:
+            #
+            #  (a) THE VALUE IS INTRINSICALLY UNIQUE — a full md5/sha1/sha256. A hash
+            #      identifies one artifact no matter where it sits in the field, so
+            #      `Hashes|contains: SHA256=<64 hex>` (the standard Sigma idiom for the
+            #      multi-hash `Hashes` field) IS anchored. Round 13 showed the
+            #      exact-only rule rejected it and penalised a hash-pinned rule.
+            #  (b) THE POSITION PROVIDES THE ANCHORING — a full path / long literal.
+            #      Here the modifier matters: `Image: 'C:\\...\\cmd.exe'` pins the whole
+            #      field, but `Image|contains: 'C:\\Windows\\System32\\cmd.exe'` is a
+            #      SUBSTRING test that fires on any command line quoting that path, and
+            #      `Image|endswith: '\\cmd.exe'` matches every cmd.exe launch. Those are
+            #      broad, so only an EXACT (unmodified / |cased) predicate qualifies.
+            widening = any(m in mods for m in
+                           ("re", "gt", "gte", "lt", "lte", "exists", "cidr"))
+            if widening:
                 continue
+            exact_only = not [m for m in mods if m != "cased"]
             for v in (field_val if isinstance(field_val, list) else [field_val]):
                 if not isinstance(v, str):
                     continue
@@ -338,13 +454,17 @@ def _has_high_specificity_predicate(selections: dict) -> bool:
                 if not s or "*" in s or "?" in s:
                     continue          # a wildcard value is not specific
                 low = s.lower()
-                hexish = low.replace(" ", "")
-                if len(hexish) in (32, 40, 64) and all(c in "0123456789abcdef" for c in hexish):
-                    return True       # full md5 / sha1 / sha256
+                # (a) a full hash anchors under ANY non-widening modifier. Tolerate a
+                # `SHA256=` style prefix, which the Sigma `Hashes` field uses.
+                for token in re.split(r"[=,;\s]+", low):
+                    if len(token) in (32, 40, 64) and all(c in "0123456789abcdef" for c in token):
+                        return True
+                if not exact_only:
+                    continue          # (b) needs an exact predicate
                 is_win_path = (len(s) > 3 and s[1:3] == ":\\") or s.startswith("\\\\")
                 is_posix_path = s.startswith("/") and s.count("/") >= 2
                 if (is_win_path or is_posix_path) and len(s) >= 8:
-                    return True       # full absolute path — self-anchoring
+                    return True       # full absolute path, exactly matched
                 if len(s) >= 24:
                     return True       # GUID / full command line / URL
     return False
@@ -405,33 +525,55 @@ def _fp_heuristics_sigma(doc: dict) -> List[str]:
 
     # 2. High-volume logsource with no exclusion filter in condition.
     if category in _HIGH_VOLUME_CATEGORIES and not specific:
-        has_filter = "not " in condition or "filter" in condition
-        if not has_filter:
+        if not _has_exclusion_filter(condition):
             fp.append(
                 f"high-volume logsource '{category}' with no exclusion filter "
                 f"in condition (prone to noise without 'and not <filter>')"
             )
 
-    # 3. Short/generic contains values.
-    for sel_name, sel_body in selections.items():
-        if not isinstance(sel_body, dict):
+    # 3. Low-selectivity values — ANY modifier, not just |contains.
+    #    Two distinct problems, reported separately:
+    #      (a) a predicate that matches (nearly) everything, however it is spelled;
+    #      (b) a short/generic |contains value.
+    #    (a) is what the pre-R13b check could not see at all: it keyed on the literal
+    #    substring "|contains", so `Image: '*'` / `|re: '.*'` / `|exists: true` /
+    #    `|gt: 0` were invisible — and the scoring was sign-inverted on a subset
+    #    relation (a strict superset scored FEWER warnings than its subset).
+    seen_broad: set = set()
+    for sel_name, field_key, v in _iter_predicates(selections):
+        reason = _match_everything_reason(field_key, v)
+        if reason and (sel_name, str(field_key)) not in seen_broad:
+            seen_broad.add((sel_name, str(field_key)))
+            fp.append(f"match-everything predicate in {sel_name}: {reason}")
+            # MONOTONICITY: a match-everything predicate is DECISIVE evidence of
+            # breadth, not one shape signal among several. Emitting a single warning
+            # left the scoring sign-inverted on a subset relation — `Image: '*'`
+            # (matches every event) scored 2 while `Image|contains: 'cmd'` (a strict
+            # SUBSET of it, matching 1/5) scored 3, because the narrower rule stacked
+            # two extra SHAPE warnings. A rule that matches everything must never
+            # score below one that matches a subset of it, so this counts for enough
+            # to dominate any stack of shape heuristics.
+            fp.append(
+                f"selection '{sel_name}' cannot be more specific than match-everything "
+                f"— this predicate alone makes the rule fire on (nearly) every event"
+            )
+
+    seen_generic: set = set()
+    for sel_name, field_key, v in _iter_predicates(selections):
+        if "|contains" not in str(field_key) or not isinstance(v, str):
             continue
-        for field_key, field_val in sel_body.items():
-            if "|contains" not in str(field_key):
-                continue
-            vals = field_val if isinstance(field_val, list) else [field_val]
-            for v in vals:
-                if not isinstance(v, str):
-                    continue
-                if _is_generic_short_value(v):
-                    fp.append(
-                        f"short/generic contains value '{v}' in {sel_name}.{field_key}"
-                    )
-                    break  # one per field is enough
+        if _is_generic_short_value(v) and (sel_name, str(field_key)) not in seen_generic:
+            seen_generic.add((sel_name, str(field_key)))   # one per field is enough
+            fp.append(
+                f"short/generic contains value '{v}' in {sel_name}.{field_key}"
+            )
 
     # 4. Selection whose ONLY predicate is a single contains (no anchoring).
+    #    Skipped when the rule carries a self-anchoring predicate: a lone
+    #    `Hashes|contains: SHA256=<64 hex>` IS anchored by its value, and calling it
+    #    "low specificity" is the same false positive checks #2/#5 were exempted from.
     for sel_name, sel_body in selections.items():
-        if not isinstance(sel_body, dict):
+        if not isinstance(sel_body, dict) or specific:
             continue
         if len(sel_body) == 1:
             key = next(iter(sel_body))
