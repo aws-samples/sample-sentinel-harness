@@ -285,6 +285,91 @@ _GENERIC_SHORT_VALUES = frozenset({
     "sys", "win", "app", "get", "set", "put", "del", "new", "old", "all",
 })
 
+# Short values that are HIGH-SPECIFICITY IOC markers, not generic noise. A pure
+# length threshold cannot tell `cmd` (in every command line ever) from `jndi` (the
+# Log4Shell marker, and the core detection in this repo's own evidence): both are
+# 3-4 chars. Flagging the latter penalises a surgically precise rule and trains the
+# team to ignore the fp_prone signal — so the length rule needs a specificity
+# escape hatch.
+#
+# Two ways a short value earns it: it is a KNOWN marker (below), or it is not
+# plain lowercase alphanumerics (a value carrying punctuation/mixed case — `::$`,
+# `%%1`, `-enc`, `/c ` — is a syntactic artefact, not an English word, and English
+# words are what make a short value generic).
+_SPECIFIC_SHORT_VALUES = frozenset({
+    "jndi", "ldap", "rmi", "iiop",          # Log4Shell / JNDI injection vectors
+    "psexec", "wmic", "certutil", "bitsadmin",  # LOLBins (also >4 but kept together)
+    "mimi", "kerb", "asrep", "spn",         # credential-access markers
+    "b374k", "r57", "c99",                  # webshell families
+    "nc.exe", "ncat",
+})
+
+
+def _has_high_specificity_predicate(selections: dict) -> bool:
+    """True if any selection carries a predicate specific enough to stand alone. PURE.
+
+    Checks #2 (high-volume logsource without an exclusion filter) and #5 (high
+    severity with few predicates) both use the ABSENCE OF A SHAPE as a proxy for
+    "not specific enough". That proxy misfires on the most precise rules there are:
+    a full absolute path or a complete file hash IS its own filter, and needs
+    neither an `and not` clause nor extra predicates. Penalising those pushes an
+    engineer to loosen a surgical rule, and teaches the team to ignore the
+    fp_prone signal.
+
+    High-specificity evidence (any one is enough):
+      - a full file hash as an exact value (32/40/64 hex chars — md5/sha1/sha256);
+      - an exact (unmodified) value that looks like a full absolute path
+        (a drive-letter/UNC Windows path or a rooted POSIX path with >=2 segments);
+      - a long exact value (>=24 chars) — a GUID, a full command line, a URL.
+    Only EXACT predicates count: a `|contains` on the same text is a substring
+    match and is not self-anchoring."""
+    for sel_body in selections.values():
+        if not isinstance(sel_body, dict):
+            continue
+        for field_key, field_val in sel_body.items():
+            key = str(field_key)
+            # Only an exact predicate anchors; any value modifier widens it.
+            if "|" in key and not key.endswith("|cased"):
+                continue
+            for v in (field_val if isinstance(field_val, list) else [field_val]):
+                if not isinstance(v, str):
+                    continue
+                s = v.strip()
+                if not s or "*" in s or "?" in s:
+                    continue          # a wildcard value is not specific
+                low = s.lower()
+                hexish = low.replace(" ", "")
+                if len(hexish) in (32, 40, 64) and all(c in "0123456789abcdef" for c in hexish):
+                    return True       # full md5 / sha1 / sha256
+                is_win_path = (len(s) > 3 and s[1:3] == ":\\") or s.startswith("\\\\")
+                is_posix_path = s.startswith("/") and s.count("/") >= 2
+                if (is_win_path or is_posix_path) and len(s) >= 8:
+                    return True       # full absolute path — self-anchoring
+                if len(s) >= 24:
+                    return True       # GUID / full command line / URL
+    return False
+
+
+def _is_generic_short_value(value: str) -> bool:
+    """True if a short ``|contains`` value is GENERIC (noise-prone), not a specific
+    IOC marker. PURE.
+
+    A value is generic when it is short AND reads like a plain English/ASCII word:
+    lowercase alphanumerics only, and not on the known-specific list. Anything
+    carrying punctuation, mixed case, or a known-marker name is treated as specific
+    — it is a syntactic artefact or a named IOC, which is exactly the kind of short
+    value a precise rule legitimately keys on."""
+    v = value.lower().strip()
+    if v in _SPECIFIC_SHORT_VALUES:
+        return False
+    if v in _GENERIC_SHORT_VALUES:
+        return True
+    if len(v) > 4:
+        return False
+    # Short: generic only if it is a bare lowercase-alnum token (an English-looking
+    # word). Punctuation / symbols / digits-with-symbols mean a specific artefact.
+    return v.isalnum() and v.isascii() and v == value.strip().lower()
+
 
 def _fp_heuristics_sigma(doc: dict) -> List[str]:
     """Deterministic FP-proneness heuristics for a parsed Sigma rule.
@@ -313,8 +398,13 @@ def _fp_heuristics_sigma(doc: dict) -> List[str]:
     if "falsepositives" not in doc:
         fp.append("no 'falsepositives' field — undocumented FP sources")
 
+    # A full path / full hash / long exact value IS its own filter and its own
+    # specificity — checks #2 and #5 must not penalise a rule that has one, or the
+    # heuristic pushes engineers to loosen their most precise detections.
+    specific = _has_high_specificity_predicate(selections)
+
     # 2. High-volume logsource with no exclusion filter in condition.
-    if category in _HIGH_VOLUME_CATEGORIES:
+    if category in _HIGH_VOLUME_CATEGORIES and not specific:
         has_filter = "not " in condition or "filter" in condition
         if not has_filter:
             fp.append(
@@ -333,8 +423,7 @@ def _fp_heuristics_sigma(doc: dict) -> List[str]:
             for v in vals:
                 if not isinstance(v, str):
                     continue
-                v_lower = v.lower().strip()
-                if len(v_lower) <= 4 or v_lower in _GENERIC_SHORT_VALUES:
+                if _is_generic_short_value(v):
                     fp.append(
                         f"short/generic contains value '{v}' in {sel_name}.{field_key}"
                     )
@@ -353,7 +442,9 @@ def _fp_heuristics_sigma(doc: dict) -> List[str]:
                 )
 
     # 5. Critical/high level with low-specificity selections.
-    if level in ("critical", "high"):
+    #    Skipped when a predicate is self-anchoring (full path / hash / long exact):
+    #    "few predicates" only implies low specificity if none of them is precise.
+    if level in ("critical", "high") and not specific:
         total_predicates = sum(
             len(v) if isinstance(v, dict) else 0 for v in selections.values()
         )
