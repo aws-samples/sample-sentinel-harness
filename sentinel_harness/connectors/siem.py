@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from .base import (
+    resolve_selector,
     DEFAULT_RESULT_LIMIT,
     ConnectorError,
     neutral_event,
@@ -128,14 +129,20 @@ class SplunkConnector:
     name = "splunk"
 
     def build_request(self, selector: str, value: str) -> Dict[str, Any]:
-        if selector == "*":
-            spl = f"search index=* sourcetype=alert | head {DEFAULT_RESULT_LIMIT}"
+        kind, field, val = resolve_selector(selector, value)
+        base = "search index=* sourcetype=alert"
+        if kind == "match_all":
+            spl = base
+        elif kind == "time_floor":
+            # SPL expresses a lower time bound natively; an equality on a `since`
+            # FIELD (the pre-fix behaviour) matches nothing on a real backend.
+            spl = f'{base} earliest="{_escape_dquote(val)}"'
+        elif kind == "free_text":
+            spl = f'{base} "{_escape_dquote(val)}"'
         else:
-            spl = (
-                f"search index=* sourcetype=alert {selector}=\"{_escape_dquote(value)}\" "
-                f"| head {DEFAULT_RESULT_LIMIT}"
-            )
-        return {"body": {"search": spl, "output_mode": "json"}, "path": ""}
+            spl = f'{base} {field}="{_escape_dquote(val)}"'
+        return {"body": {"search": f"{spl} | head {DEFAULT_RESULT_LIMIT}",
+                         "output_mode": "json"}, "path": ""}
 
     def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
         if not isinstance(payload, dict) or "results" not in payload:
@@ -160,10 +167,17 @@ class _EsFamilyConnector:
     name = "_es_family"
 
     def build_request(self, selector: str, value: str) -> Dict[str, Any]:
-        if selector == "*":
-            query: Dict[str, Any] = {"match_all": {}}
+        kind, field, val = resolve_selector(selector, value)
+        query: Dict[str, Any]
+        if kind == "match_all":
+            query = {"match_all": {}}
+        elif kind == "time_floor":
+            # A lower time bound is a RANGE query, not a term on a `since` field.
+            query = {"range": {"@timestamp": {"gte": val}}}
+        elif kind == "free_text":
+            query = {"query_string": {"query": val}}
         else:
-            query = {"term": {f"{selector}.keyword": value}}
+            query = {"term": {f"{field}.keyword": val}}
         return {"body": {"query": query, "size": DEFAULT_RESULT_LIMIT}, "path": "/_search"}
 
     def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
@@ -177,6 +191,16 @@ class _EsFamilyConnector:
             if not isinstance(hit, dict):
                 raise ConnectorError(f"{self.name} hit must be an object")
             source = hit.get("_source", hit)
+            # The document id lives at the HIT level, not inside _source. Reading
+            # only _source discarded it, so two distinct documents that carry no
+            # in-body id produced BYTE-IDENTICAL neutral events (alert_id "") —
+            # they then dedupe into one, and an analyst cannot trace an alert back
+            # to its document. Fold the hit-level _id in as a fallback, without
+            # letting it override an id the document itself carries.
+            if isinstance(source, dict) and hit.get("_id") is not None:
+                if not any(source.get(k) is not None
+                           for k in ("alert_id", "id", "event_id", "uid")):
+                    source = {**source, "_id": hit["_id"]}
             out.append(_map_record(source))
         return out
 
@@ -208,11 +232,24 @@ class QRadarConnector:
     name = "qradar"
 
     def build_request(self, selector: str, value: str) -> Dict[str, Any]:
-        if selector == "*":
+        kind, field, val = resolve_selector(selector, value)
+        if kind == "match_all":
             aql = f"SELECT * FROM events LIMIT {DEFAULT_RESULT_LIMIT}"
+        elif kind == "time_floor":
+            # AQL expresses a lower bound with START; an equality on a `since`
+            # FIELD matched nothing on a real QRadar.
+            aql = (
+                f"SELECT * FROM events START '{_escape_squote(val)}' "
+                f"LIMIT {DEFAULT_RESULT_LIMIT}"
+            )
+        elif kind == "free_text":
+            aql = (
+                f"SELECT * FROM events WHERE TEXT SEARCH '{_escape_squote(val)}' "
+                f"LIMIT {DEFAULT_RESULT_LIMIT}"
+            )
         else:
             aql = (
-                f"SELECT * FROM events WHERE {selector} = '{_escape_squote(value)}' "
+                f"SELECT * FROM events WHERE {field} = '{_escape_squote(val)}' "
                 f"LIMIT {DEFAULT_RESULT_LIMIT}"
             )
         return {"body": {"query_expression": aql}, "path": "/api/ariel/searches"}
@@ -243,11 +280,22 @@ class MicrosoftSentinelConnector:
     name = "microsoft_sentinel"
 
     def build_request(self, selector: str, value: str) -> Dict[str, Any]:
-        if selector == "*":
+        kind, field, val = resolve_selector(selector, value)
+        if kind == "match_all":
             kql = f"SecurityAlert | take {DEFAULT_RESULT_LIMIT}"
+        elif kind == "time_floor":
+            kql = (
+                f'SecurityAlert | where TimeGenerated >= todatetime("{_escape_dquote(val)}") '
+                f"| take {DEFAULT_RESULT_LIMIT}"
+            )
+        elif kind == "free_text":
+            kql = (
+                f'SecurityAlert | where * has "{_escape_dquote(val)}" '
+                f"| take {DEFAULT_RESULT_LIMIT}"
+            )
         else:
             kql = (
-                f'SecurityAlert | where {selector} == "{_escape_dquote(value)}" '
+                f'SecurityAlert | where {field} == "{_escape_dquote(val)}" '
                 f"| take {DEFAULT_RESULT_LIMIT}"
             )
         return {"body": {"query": kql}, "path": "/v1/query"}
@@ -269,6 +317,18 @@ class MicrosoftSentinelConnector:
         col_names = [
             (c.get("name") if isinstance(c, dict) else str(c)) for c in columns
         ]
+        # DUPLICATE column names would make the row→record dict comprehension below
+        # silently keep the LAST value and discard the earlier one — a data loss with
+        # no signal, and (worse) non-deterministic in which value an analyst sees.
+        # A duplicated column is a corrupt table, handled the same way as the
+        # row/column length mismatch below: raise rather than quietly clobber.
+        named = [n for n in col_names if n]
+        if len(named) != len(set(named)):
+            dupes = sorted({n for n in named if named.count(n) > 1})
+            raise ConnectorError(
+                f"Microsoft Sentinel table has duplicate column name(s) {dupes} — "
+                "zipping rows would silently discard all but the last value"
+            )
         out: List[Dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, list):
@@ -301,10 +361,15 @@ class ChronicleConnector:
     name = "chronicle"
 
     def build_request(self, selector: str, value: str) -> Dict[str, Any]:
-        if selector == "*":
+        kind, field, val = resolve_selector(selector, value)
+        if kind == "match_all":
             udm = "metadata.event_type != \"\""
+        elif kind == "time_floor":
+            udm = f'metadata.event_timestamp >= "{_escape_dquote(val)}"'
+        elif kind == "free_text":
+            udm = f'metadata.description = /{_escape_dquote(val)}/ nocase'
         else:
-            udm = f'{selector} = "{_escape_dquote(value)}"'
+            udm = f'{field} = "{_escape_dquote(val)}"'
         # Bound the result set to the shared default (Chronicle carries the cap as a
         # request field, not in the query text) so every connector returns the same
         # number of rows for the same neutral query.
@@ -338,10 +403,17 @@ class SumoLogicConnector:
     name = "sumologic"
 
     def build_request(self, selector: str, value: str) -> Dict[str, Any]:
-        if selector == "*":
+        kind, field, val = resolve_selector(selector, value)
+        if kind == "match_all":
             q = f"_sourceCategory=* | limit {DEFAULT_RESULT_LIMIT}"
+        elif kind == "time_floor":
+            # Sumo carries the time range as request fields, not in the query text.
+            q = f"_sourceCategory=* | limit {DEFAULT_RESULT_LIMIT}"
+            return {"body": {"query": q, "from": val}, "path": "/api/v1/search/jobs"}
+        elif kind == "free_text":
+            q = f'_sourceCategory=* "{_escape_dquote(val)}" | limit {DEFAULT_RESULT_LIMIT}'
         else:
-            q = f'{selector}="{_escape_dquote(value)}" | limit {DEFAULT_RESULT_LIMIT}'
+            q = f'{field}="{_escape_dquote(val)}" | limit {DEFAULT_RESULT_LIMIT}'
         return {"body": {"query": q}, "path": "/api/v1/search/jobs"}
 
     def parse_response(self, payload: Any) -> List[Dict[str, Any]]:
@@ -373,10 +445,18 @@ class DatadogConnector:
     name = "datadog"
 
     def build_request(self, selector: str, value: str) -> Dict[str, Any]:
-        if selector == "*":
+        kind, field, val = resolve_selector(selector, value)
+        if kind == "match_all":
             q = "*"
+        elif kind == "time_floor":
+            # Datadog carries the time range as filter.from, not in the query text.
+            return {"body": {"filter": {"query": "*", "from": val},
+                             "page": {"limit": DEFAULT_RESULT_LIMIT}},
+                    "path": "/api/v2/security_monitoring/signals/search"}
+        elif kind == "free_text":
+            q = f'"{_escape_dquote(val)}"'
         else:
-            q = f'@{selector}:"{_escape_dquote(value)}"'
+            q = f'@{field}:"{_escape_dquote(val)}"'
         # Datadog carries the cap as a page[limit], not in the query text — bound it
         # to the shared default so its result set matches the other connectors'.
         return {"body": {"filter": {"query": q}, "page": {"limit": DEFAULT_RESULT_LIMIT}},

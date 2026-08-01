@@ -111,6 +111,48 @@ DEFAULT_RESULT_LIMIT = 1000
 RESULT_WINDOW_UNBOUNDED = None
 
 
+# --------------------------------------------------------------------------- #
+# Request-side selector semantics — what `build_request(selector, ...)` is given #
+# --------------------------------------------------------------------------- #
+# `tools/siem_query` accepts SEMANTIC selectors (host / technique / severity /
+# alert_id / since / query), not backend field names. It passed them straight to
+# `build_request`, which treats its first argument as a FIELD NAME (with the single
+# special case `"*"`). Round 13 reproduced the consequence: for `query: "*"` the
+# connector emitted `query="*"` — a filter on a field no backend has — so the LIVE
+# path returned 0 rows where the offline mock returned all 11. Same for
+# `since: <ts>` (emitted as an equality on a `since` field instead of a time range).
+# A detection validated offline silently returned nothing in production.
+#
+# These constants name the selectors that are NOT field filters, so a connector (or
+# the tool wiring it) can translate the semantics instead of fabricating a field.
+SELECTOR_MATCH_ALL = "query"      # value "*" means "everything"; not a field
+SELECTOR_TIME_FLOOR = "since"     # an ISO-8601 lower bound; a RANGE, not equality
+SEMANTIC_SELECTORS = frozenset({SELECTOR_MATCH_ALL, SELECTOR_TIME_FLOOR})
+
+
+def resolve_selector(selector: str, value: str) -> tuple:
+    """Translate a semantic selector into ``(kind, field_or_none, value)``. PURE.
+
+    ``kind`` is one of:
+      - ``"match_all"``  — return everything (``query`` with a ``*`` value, or a
+        bare ``"*"`` selector, the form connectors already special-cased);
+      - ``"time_floor"`` — ``since``: the value is an inclusive lower time bound and
+        must become a RANGE in the native DSL, never a field equality;
+      - ``"field"``      — an ordinary field filter; ``field`` is the name to use.
+
+    Keeping this in one place is what stops each of the eight connectors from
+    guessing differently (INV-CONNECTOR-3)."""
+    if selector == "*":
+        return ("match_all", None, value)
+    if selector == SELECTOR_MATCH_ALL:
+        # `query` is the wildcard selector; any value other than "*" is still a
+        # free-text search over the record, NOT a field named "query".
+        return ("match_all", None, value) if value.strip() == "*" else ("free_text", None, value)
+    if selector == SELECTOR_TIME_FLOOR:
+        return ("time_floor", None, value)
+    return ("field", selector, value)
+
+
 class ResultSemantics:
     """The declared result-set semantics of a connector's ``build_request``.
 
