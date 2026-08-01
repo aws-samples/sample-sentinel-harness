@@ -232,3 +232,155 @@ class TestResponseNormalizationFidelity:
         """Regression: the per-connector contract is unaffected by all of the above."""
         res = C.check_siem_connector(get_siem_connector(name))
         assert res.ok, f"{name}: {res.failures}"
+
+
+# --------------------------------------------------------------------------- #
+# INV-FP-3/4/5 — breadth is judged by VALUE SELECTIVITY, monotonically         #
+# --------------------------------------------------------------------------- #
+lint = _load("sigma_yara_lint_r13b", "tools/sigma_yara_lint/handler.py")
+sm = _load("sigma_match_r13b", "tools/sigma_match/handler.py")
+
+_BENIGN = [
+    {"Image": r"C:\Windows\System32\svchost.exe", "CommandLine": "svchost -k", "EventID": 1},
+    {"Image": r"C:\Windows\System32\cmd.exe", "CommandLine": "cmd /c dir", "EventID": 1},
+    {"Image": r"C:\Windows\explorer.exe", "CommandLine": "Explorer.EXE", "EventID": 1},
+    {"Image": r"C:\Prog\chrome.exe", "CommandLine": "chrome --r", "EventID": 1},
+    {"Image": "/usr/bin/bash", "CommandLine": "bash -lc ls", "EventID": 1},
+]
+_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
+def _rule(predicate: str, *, category: str = "", service: str = "sysmon",
+          level: str = "medium", condition: str = "selection") -> str:
+    ls = f"    category: {category}\n" if category else f"    service: {service}\n"
+    return (
+        "title: T\nid: dddddddd-0000-0000-0000-000000000001\n"
+        f"status: stable\nlevel: {level}\n"
+        f"logsource:\n    product: windows\n{ls}"
+        f"detection:\n    selection:\n        {predicate}\n"
+        f"    condition: {condition}\nfalsepositives:\n    - unknown\n"
+    )
+
+
+def _warnings(rule: str):
+    return lint.handler({"rule_type": "sigma", "content": rule}, None).get("fp_warnings") or []
+
+
+def _benign_hits(rule: str) -> int:
+    return sum(1 for e in _BENIGN
+               if sm.handler({"rule": rule, "log_event": e}, None).get("matched"))
+
+
+class TestBreadthIsJudgedByValueNotModifierSpelling:
+    """PRE-R13b: the breadth checks keyed on the literal substring `"|contains"` in
+    the field name, so every OTHER way of spelling match-anything scored ZERO
+    warnings. Six such predicates each matched 4-5/5 benign events and shipped clean.
+
+    This is also the finding that corrected my own earlier conclusion: I had probed
+    this direction with a `category: process_creation` + `level: high` fixture, which
+    independently trips two other checks — the fixture, not the heuristic, produced
+    the warnings I measured."""
+
+    @pytest.mark.parametrize("predicate", [
+        "Image: '*'",                  # bare wildcard, plain equality — invisible before
+        "CommandLine|re: '.*'",        # regex matching anything
+        "Image|exists: true",          # presence test on a universal field
+        "EventID|gt: 0",               # numeric floor excluding nothing
+        "Image|startswith: 'C'",       # 1-char anchor
+        "Image|endswith: 'e'",
+    ])
+    def test_match_everything_predicate_is_flagged(self, predicate):
+        rule = _rule(predicate)
+        warnings = _warnings(rule)
+        assert _benign_hits(rule) >= 4, "fixture sanity: this should match broadly"
+        assert len(warnings) >= 2, f"broad predicate not fp_prone: {warnings}"
+        assert any("match-everything" in w for w in warnings)
+
+    def test_breadth_is_monotonic_with_real_match_set(self):
+        """A rule that matches EVERYTHING must never score fewer warnings than one
+        matching a strict subset of it. Pre-fix `Image: '*'` (5/5 benign) scored 2
+        while `Image|contains: 'cmd'` (1/5, a strict subset) scored 3 — sign-inverted
+        on a subset relation the repo's own matcher can decide."""
+        star = _rule("Image: '*'", category="process_creation")
+        narrow = _rule("Image|contains: 'cmd'", category="process_creation")
+        assert _benign_hits(star) > _benign_hits(narrow)
+        assert len(_warnings(star)) >= len(_warnings(narrow))
+
+    def test_list_of_maps_selection_cannot_evade_the_checks(self):
+        """A standard Sigma OR-of-maps selection made the breadth checks structurally
+        unreachable, so wrapping a selection in a list — a cosmetic edit that provably
+        does not change the match set — cleared every warning."""
+        rule = (
+            "title: T\nid: dddddddd-0000-0000-0000-000000000002\n"
+            "status: stable\nlevel: medium\n"
+            "logsource:\n    product: windows\n    service: sysmon\n"
+            "detection:\n    selection:\n        - Image: '*'\n"
+            "    condition: selection\nfalsepositives:\n    - unknown\n"
+        )
+        assert any("match-everything" in w for w in _warnings(rule))
+
+    @pytest.mark.parametrize("predicate", [
+        "Image|endswith: '.exe'",      # idiomatic, deliberately NOT flagged
+        "Image|contains: 'powershell'",
+        f"sha256: '{_SHA256}'",
+    ])
+    def test_idiomatic_predicates_are_not_flagged_as_match_everything(self, predicate):
+        """The fix must not trade false negatives for false positives: a normal
+        `|endswith: '.exe'` or a 3+ char marker is selective enough."""
+        assert not any("match-everything" in w for w in _warnings(_rule(predicate)))
+
+
+class TestExclusionFilterDetectionIsSemantic:
+    """PRE-R13b: `has_filter` was `"not " in condition or "filter" in condition` — a
+    raw substring scan that credited an OR-WIDENING condition with having an
+    exclusion filter, and missed an upper-case `AND NOT`."""
+
+    @pytest.mark.parametrize("condition", [
+        "selection and not filter",
+        "selection AND NOT filter",
+        "selection and not(filter)",
+        "1 of selection_* and not filter_*",
+    ])
+    def test_real_exclusions_are_recognised(self, condition):
+        assert lint._has_exclusion_filter(condition) is True
+
+    @pytest.mark.parametrize("condition", [
+        "selection",
+        "selection or filter_extra",   # an OR WIDENS — it excludes nothing
+        "selection or filter",
+        "1 of selection_*",
+    ])
+    def test_non_exclusions_are_not_credited(self, condition):
+        assert lint._has_exclusion_filter(condition) is False
+
+
+class TestSpecificityExemptionAcceptsModifiedPredicates:
+    """PRE-R13b my own R13 exemption only accepted BARE exact predicates, so
+    `Hashes|contains: SHA256=<64 hex>` — the standard Sigma idiom for the multi-hash
+    `Hashes` field — was penalised as FP-prone."""
+
+    def test_hash_anchors_under_a_contains_modifier(self):
+        assert lint._has_high_specificity_predicate(
+            {"selection": {"Hashes|contains": f"SHA256={_SHA256}"}}) is True
+
+    def test_hash_pinned_rule_is_not_fp_prone(self):
+        rule = _rule(f"Hashes|contains: 'SHA256={_SHA256}'",
+                     category="process_creation", level="critical")
+        assert len(_warnings(rule)) < 2, _warnings(rule)
+
+    @pytest.mark.parametrize("selection,expected", [
+        ({"Image|contains": r"C:\Windows\System32\cmd.exe"}, False),  # substring, broad
+        ({"Image|endswith": r"\cmd.exe"}, False),                     # every cmd launch
+        ({"Image|re": _SHA256}, False),                               # regex widens
+        ({"EventID|gt": 0}, False),
+        ({"Image": r"C:\Windows\Temp\evil.exe"}, True),               # exact full path
+        ({"sha256": _SHA256}, True),
+    ])
+    def test_position_based_anchoring_still_requires_an_exact_predicate(
+            self, selection, expected):
+        """A full PATH anchors only when matched exactly: `|contains` on a system path
+        fires on any command line quoting it, and `|endswith: '\\cmd.exe'` matches
+        every cmd.exe launch. Only an intrinsically unique value (a hash) anchors
+        under a modifier. Conflating the two was a regression I introduced here and
+        the existing tests caught."""
+        assert lint._has_high_specificity_predicate({"selection": selection}) is expected
