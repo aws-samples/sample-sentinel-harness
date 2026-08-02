@@ -282,6 +282,18 @@ reader cannot infer a guarantee the code does not give.
 
 ---
 
+## INV-CLI — a presentation flag never disables a gate
+
+The CLI is where a human forms their belief about system state. A wrong exit code is a
+defect even when the library underneath is correct, because automation acts on the
+exit code and nothing else.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-CLI-1** | `detection audit --min-score N` fires in EVERY output mode. The `--navigator` branch returned 0 before reaching the gate, so `--min-score 99 --navigator layer.json` exited 0 at any health score while the same command without `--navigator` exited 1. Asking for both an export and a gate produced the export and a **green build** — worse than no gate, because a pipeline author who adds an export silently loses the check with no output saying so. The gate is about the score, not about how the report was rendered. | `cli._cmd_detection_audit` | `test_r16_self_certified.py::TestCliGateSurvivesEveryOutputMode` |
+
+---
+
 ## INV-GATE — the promotion gate never approves a verdict the judge did not give
 
 `run_evaluation` is the scoring gate the self-improvement loop promotes on. Its

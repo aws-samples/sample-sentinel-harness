@@ -747,3 +747,81 @@ class TestTheGateIsActuallyTheGate:
                               policy=sim.auto_reject)
         with pytest.raises(RuntimeError, match="boom"):
             runner.run()
+
+
+# --------------------------------------------------------------------------- #
+# INV-CLI-1 — a presentation flag never disables a CI gate                    #
+# --------------------------------------------------------------------------- #
+class TestCliGateSurvivesEveryOutputMode:
+    """`detection audit --min-score N` is a CI gate: a build goes red when the
+    detection library's health score drops. `--navigator` returned 0 BEFORE reaching
+    it, so asking for both an export and a gate produced the export and a GREEN
+    BUILD at any score.
+
+    That is worse than the gate not existing — a pipeline author who adds
+    `--navigator` to publish a layer alongside the check silently loses the check,
+    with no output saying so. The same command without `--navigator` exits 1.
+    """
+
+    _WEAK_RULE = (
+        "title: weak\nid: 11111111-0000-0000-0000-000000000001\n"
+        "status: experimental\nlevel: low\n"
+        "logsource:\n    product: windows\n"
+        "detection:\n    selection:\n        Image: '*'\n    condition: selection\n"
+    )
+
+    @staticmethod
+    def _run(argv):
+        import contextlib
+        import io
+        from sentinel_harness import cli
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = cli.main(argv)
+            except SystemExit as exc:      # argparse exits directly on bad usage
+                code = exc.code
+        return code, out.getvalue(), err.getvalue()
+
+    @pytest.fixture
+    def rules_dir(self, tmp_path):
+        d = tmp_path / "rules"
+        d.mkdir()
+        (d / "weak.yml").write_text(self._WEAK_RULE)
+        return str(d)
+
+    @pytest.mark.parametrize("extra_flags,mode", [
+        ([], "text report"),
+        (["--json"], "json report"),
+        (["--navigator", "-"], "navigator layer to stdout"),
+    ])
+    def test_the_min_score_gate_fires_in_every_output_mode(self, rules_dir,
+                                                           extra_flags, mode):
+        """The gate is about the SCORE, not about how the report was rendered."""
+        code, _out, err = self._run(
+            ["detection", "audit", rules_dir, "--min-score", "99"] + extra_flags)
+        assert code == 1, f"the --min-score gate did not fire in {mode} mode"
+        assert "min-score" in err
+
+    def test_navigator_output_is_still_produced_when_the_gate_fails(self, rules_dir):
+        """The fix must not trade one loss for another: the export the operator asked
+        for still happens, and the exit code additionally reports the gate."""
+        code, out, _err = self._run(
+            ["detection", "audit", rules_dir, "--min-score", "99", "--navigator", "-"])
+        assert code == 1
+        assert out.strip(), "the navigator layer was no longer emitted"
+        assert "domain" in out or "techniques" in out or "layer" in out.lower()
+
+    @pytest.mark.parametrize("extra_flags", [[], ["--json"], ["--navigator", "-"]])
+    def test_a_passing_score_exits_zero_in_every_mode(self, rules_dir, extra_flags):
+        """CONTROL: the gate must not fail a healthy library, in any mode."""
+        code, _out, _err = self._run(
+            ["detection", "audit", rules_dir, "--min-score", "0"] + extra_flags)
+        assert code == 0
+
+    @pytest.mark.parametrize("extra_flags", [[], ["--json"], ["--navigator", "-"]])
+    def test_no_gate_requested_exits_zero(self, rules_dir, extra_flags):
+        """CONTROL: without --min-score there is no gate to fire."""
+        code, _out, _err = self._run(
+            ["detection", "audit", rules_dir] + extra_flags)
+        assert code == 0
