@@ -164,19 +164,54 @@ def _enrich_live(cve_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         "https://www.cisa.gov/sites/default/files/feeds/"
         "known_exploited_vulnerabilities.json"
     )
+    # INV-BOUNDARY-5: `kev_data.get("vulnerabilities", [])` made an UNREADABLE KEV
+    # catalog indistinguishable from one that simply does not list the CVE. A
+    # renamed envelope, a renamed `cveID` field, a 200-OK maintenance body, an empty
+    # object or a truncated feed all yielded an empty kev_map, and every CVE then
+    # came back `in_kev: False` with `ok: True` — "I could not read CISA's
+    # actively-exploited catalog" rendered as "this CVE is not being exploited".
+    # That is the single most consequential field this tool returns: it gates
+    # emergency patching. Refuse instead, and say what we saw.
+    if not isinstance(kev_data, dict) or "vulnerabilities" not in kev_data:
+        raise RuntimeError(
+            "CISA KEV feed carries no 'vulnerabilities' key — refusing to report "
+            "in_kev=False for a catalog we could not read. Keys seen: "
+            f"{sorted(kev_data) if isinstance(kev_data, dict) else type(kev_data).__name__}"
+        )
+    kev_rows = kev_data.get("vulnerabilities")
+    if not isinstance(kev_rows, list):
+        raise RuntimeError(
+            f"CISA KEV 'vulnerabilities' must be a list, got {type(kev_rows).__name__}"
+        )
     kev_map: Dict[str, Dict[str, str]] = {}
-    for row in kev_data.get("vulnerabilities", []):
+    for row in kev_rows:
+        if not isinstance(row, dict):
+            continue
         cid = row.get("cveID")
         if cid:
-            kev_map[cid] = {
+            # Normalize the key so a case difference from a proxy/cache is not read
+            # as "not in the catalog" (the lookup below normalizes to match).
+            kev_map[str(cid).strip().upper()] = {
                 "kev_date_added": row.get("dateAdded"),
                 "kev_due_date": row.get("dueDate"),
             }
+    # A KEV catalog with zero usable rows is a read failure too: CISA's real feed
+    # has had 1000+ entries for years, and an empty one means the shape changed
+    # under us. Reporting every CVE as not-exploited off an empty catalog is the
+    # same fail-open in a different disguise.
+    if not kev_map:
+        raise RuntimeError(
+            f"CISA KEV feed parsed to zero entries out of {len(kev_rows)} row(s) — "
+            "refusing to report in_kev=False against an empty catalog (the real "
+            "feed carries 1000+ entries; the row shape has likely changed)"
+        )
 
     results: Dict[str, Dict[str, Any]] = {}
     for cid in cve_ids:
         epss = epss_map.get(cid, {})
-        kev = kev_map.get(cid)
+        # Match the normalization applied when kev_map was built. Both sides must
+        # agree or the fix above would itself become a false "not in KEV".
+        kev = kev_map.get(str(cid).strip().upper())
         results[cid] = {
             "epss": epss.get("epss"),
             "epss_percentile": epss.get("epss_percentile"),

@@ -194,11 +194,21 @@ def _derive_verdict(threat_category: str, confidence: str) -> str:
       - high confidence otherwise              -> "malicious"
       - medium / low confidence otherwise      -> "suspicious"
     """
-    if threat_category in _BENIGN_CATEGORIES:
+    # INV-BOUNDARY-6: these comparisons used to be case-sensitive against values a
+    # third-party feed controls, so the SAME data spelled differently flipped the
+    # verdict in BOTH directions:
+    #   confidence="High"  -> the `== "high"` test failed  -> malicious DOWNGRADED
+    #                         to suspicious (a real threat de-prioritised)
+    #   category="BENIGN"  -> the benign-set test failed, then fell through to the
+    #                         confidence branch -> benign UPGRADED to malicious
+    # A feed's letter case is not a security signal. Normalize before comparing.
+    cat = (threat_category or "").strip().lower()
+    conf = (confidence or "").strip().lower()
+    if cat in _BENIGN_CATEGORIES:
         return "benign"
-    if threat_category in _LOW_SIGNAL_CATEGORIES:
+    if cat in _LOW_SIGNAL_CATEGORIES:
         return "suspicious"
-    if confidence == "high":
+    if conf == "high":
         return "malicious"
     return "suspicious"
 

@@ -151,11 +151,48 @@ def _fetch_live(cve_id: str) -> Dict[str, Any]:
 
 
 def _normalize_nvd(cve_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Flatten the NVD 2.0 response into our compact contract."""
+    """Flatten the NVD 2.0 response into our compact contract.
+
+    INV-BOUNDARY-4: this used to take ``vulnerabilities[0]`` unconditionally and
+    then return ``"id": cve_id`` — the id we ASKED for, stamped onto whatever
+    record happened to be first. Nothing cross-checked the two, so a reply that
+    carried a different CVE (an upstream indexing bug, a cached/proxied response,
+    a keyword-search reply where a cveId lookup was expected) produced a
+    confidently mislabelled answer: `CVE-2021-44228` reported with a 3.1 LOW score
+    and someone else's description. A downstream triage that ranks by CVSS then
+    de-prioritises Log4Shell, and the output looks entirely normal.
+
+    We now SELECT the matching record instead of assuming position 0, comparing
+    case-insensitively (NVD is consistently upper-case, but a proxy or a cache
+    need not be, and a case difference is not a mismatch). If no record matches,
+    that is a LookupError — never a substitution.
+    """
     vulns = data.get("vulnerabilities") or []
     if not vulns:
         raise LookupError(f"CVE not found in NVD: {cve_id}")
-    cve = vulns[0].get("cve", {})
+    wanted = (cve_id or "").strip().upper()
+    match = None
+    seen = []
+    for entry in vulns:
+        if not isinstance(entry, dict):
+            continue
+        candidate = entry.get("cve")
+        if not isinstance(candidate, dict):
+            continue
+        got = str(candidate.get("id") or "").strip().upper()
+        seen.append(got or "<no id>")
+        if got == wanted:
+            match = candidate
+            break
+    if match is None:
+        # A record with NO id at all cannot be verified as the right one. Refusing
+        # is the whole point: the alternative is the mislabelling described above.
+        raise LookupError(
+            f"NVD reply does not contain {cve_id}: the {len(vulns)} record(s) "
+            f"returned are for {seen}. Refusing to report another CVE's score "
+            f"under the requested id."
+        )
+    cve = match
     descriptions = cve.get("descriptions", [])
     desc = next(
         (d.get("value") for d in descriptions if d.get("lang") == "en"),

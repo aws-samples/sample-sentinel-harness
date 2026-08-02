@@ -85,9 +85,19 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List
+
+# The repo's authoritative truthiness coercion. Imported rather than reimplemented:
+# a local `bool()` here was the audited INV-BOUNDARY-1 defect, and the helper's own
+# docstring is where the `bool("false") is True` trap is recorded. Path-appended
+# because the tools/ tree is loaded by file path, not as an installed package.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:  # pragma: no cover - import plumbing
+    sys.path.insert(0, _REPO_ROOT)
+from sentinel_harness.connectors.base import _coerce_bool  # noqa: E402
 
 # Bound the live backend call so a hung/slow upstream can never wedge the tool.
 _LIVE_TIMEOUT_SECS = 10.0
@@ -318,19 +328,61 @@ def _normalize_service(raw: Any) -> Dict[str, Any]:
     We coerce into exactly the fields the reasoner consumes
     (``port``/``proto``/``name``/``known_vuln``/``cve_id``) so a live backend
     with extra or differently-typed fields still yields the SAME contract the
-    offline surface produces. A missing/absent field is filled with a
-    conservative default (never fabricated as vulnerable): ``known_vuln``
-    defaults to False and ``cve_id`` to None.
+    offline surface produces.
+
+    Two audited defects in the old ``bool(raw.get("known_vuln", False))``
+    (INV-BOUNDARY-1, INV-BOUNDARY-2) — it was wrong in BOTH directions:
+
+    - ``bool("false") is True``, so a backend that serializes booleans as strings
+      turned a PATCHED service into a vulnerable one, manufacturing a phantom
+      exposure. Fixed by delegating to the repo's authoritative
+      ``connectors.base._coerce_bool``, which is where that trap is already
+      recorded — a shared helper existed and this call site had reimplemented it.
+    - Absent / ``None`` / a differently-named flag collapsed to ``False``, i.e.
+      "nobody has assessed this service" became "this service is not vulnerable".
+      The old docstring called that "conservative"; for a security tool the
+      conservative direction is the opposite one. ``known_vuln`` is the sole gate
+      on the CVE-vs-asset join, so a scanner that expresses vulnerability by
+      populating ``cve_id`` alone made an internet-exposed host running a
+      KEV-listed CVSS-10.0 CVE report as ``no_action_not_exposed``.
+
+    So: a populated ``cve_id`` is itself evidence of vulnerability, and an
+    UNASSESSED service is marked as such via ``vuln_assessed`` rather than being
+    silently rounded down to safe. ``vuln_assessed`` is additive — every existing
+    consumer reads ``known_vuln`` and keeps working — but it lets a caller tell
+    "checked, clean" apart from "never checked", which the old shape could not.
     """
     if not isinstance(raw, dict):
         raise ValueError(f"service entry must be an object, got {type(raw).__name__}")
     port = raw.get("port")
+    cve_id = raw.get("cve_id")
+    # Accept the flag under the names real CMDBs/scanners use. Order matters only
+    # in that the canonical name wins; the aliases exist because a renamed field
+    # silently zeroing the blast radius is the exact failure being fixed.
+    flag_raw: Any = None
+    assessed = False
+    for key in ("known_vuln", "vulnerable", "has_known_vuln", "is_vulnerable"):
+        if key in raw:
+            flag_raw = raw[key]
+            # An explicit null is an assessment that has not happened yet, NOT a
+            # negative finding — leave `assessed` False so it is distinguishable.
+            assessed = flag_raw is not None
+            break
+    known_vuln = _coerce_bool(flag_raw) if assessed else False
+    # A populated cve_id is evidence in its own right: a backend that lists the CVE
+    # affecting a service has told us it is vulnerable, whatever the flag says.
+    if cve_id:
+        known_vuln = True
+        assessed = True
     return {
         "port": port,
         "proto": raw.get("proto"),
         "name": raw.get("name"),
-        "known_vuln": bool(raw.get("known_vuln", False)),
-        "cve_id": raw.get("cve_id"),
+        "known_vuln": known_vuln,
+        "cve_id": cve_id,
+        # False = "no backend ever assessed this service". Consumers that must not
+        # treat unknown as clean branch on this; the rest ignore it.
+        "vuln_assessed": assessed,
     }
 
 
@@ -344,7 +396,13 @@ def _normalize_host(raw: Any) -> Dict[str, Any]:
     return {
         "id": raw.get("id"),
         "subnet": raw.get("subnet"),
-        "internet_exposed": bool(raw.get("internet_exposed", False)),
+        # Same INV-BOUNDARY-1 coercion as known_vuln: a string "false" from a
+        # backend that serializes booleans as text must not read as EXPOSED, and a
+        # string "true" must not read as internal. Absent stays False here — unlike
+        # known_vuln, "not listed as internet-facing" is the safe default for a
+        # field whose absence means the CMDB models exposure some other way, and
+        # exposure is a filter on the blast radius rather than the gate on it.
+        "internet_exposed": _coerce_bool(raw.get("internet_exposed", False)),
         "services": [_normalize_service(s) for s in services_raw],
     }
 
@@ -365,6 +423,17 @@ def _normalize_surface(payload: Any) -> Dict[str, Any]:
     JSON object, or whose hosts/edges are not lists, is a hard error surfaced to
     the caller as ``upstream_error`` — we never coerce a malformed reply into a
     (misleadingly empty) success.
+
+    INV-BOUNDARY-3: that last sentence used to be false. ``surface.get("hosts", [])``
+    made an UNRECOGNIZED reply indistinguishable from a genuinely empty one, so a
+    renamed envelope (``data``/``result``), a renamed collection (``assets``), or a
+    200-OK error body all produced ``ok: True`` with zero hosts — "I could not read
+    your CMDB" rendered as "you have no vulnerable, internet-exposed assets". That
+    is the most dangerous possible rendering of a read failure in this tool.
+
+    A reply must therefore CARRY the ``hosts`` key to be treated as a surface.
+    Absent it, we raise: an empty surface is only reported when the backend
+    actually said the surface is empty (``"hosts": []``), which stays valid.
     """
     if not isinstance(payload, dict):
         raise ValueError(
@@ -373,6 +442,14 @@ def _normalize_surface(payload: Any) -> Dict[str, Any]:
     surface = payload.get("surface", payload)
     if not isinstance(surface, dict):
         raise ValueError("backend 'surface' must be an object")
+    if "hosts" not in surface:
+        # Name what we did see, so a genuinely-changed upstream schema is a
+        # two-minute diagnosis rather than a silent zero.
+        raise ValueError(
+            "backend reply carries no 'hosts' key — refusing to report an empty "
+            "attack surface for a reply we could not read. Top-level keys seen: "
+            f"{sorted(payload)}; surface keys seen: {sorted(surface)}"
+        )
     hosts_raw = surface.get("hosts", [])
     edges_raw = surface.get("trust_edges", [])
     if not isinstance(hosts_raw, list):

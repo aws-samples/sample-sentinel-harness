@@ -204,11 +204,18 @@ def test_live_success_returns_normalized_surface(mock_backend, monkeypatch):
     assert host["internet_exposed"] is True
 
     svc = host["services"][0]
-    assert set(svc) == {"port", "proto", "name", "known_vuln", "cve_id"}
+    # `vuln_assessed` joined the contract with INV-BOUNDARY-2. The intent of this
+    # exact-set assertion is "no stray BACKEND field leaks through", and that still
+    # holds: this key is ours, not the backend's, and it is what lets a caller tell
+    # "assessed, clean" apart from "never assessed" — the distinction whose absence
+    # let an unassessed internet-exposed host report as not vulnerable.
+    assert set(svc) == {"port", "proto", "name", "known_vuln", "cve_id",
+                        "vuln_assessed"}
     assert svc["port"] == 443
     assert svc["proto"] == "tcp"
     assert svc["name"] == "https"
     assert svc["known_vuln"] is True
+    assert svc["vuln_assessed"] is True
     assert svc["cve_id"] == "CVE-2021-44228"
 
     edges = res["surface"]["trust_edges"]
