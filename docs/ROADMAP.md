@@ -748,7 +748,7 @@ Not code — align these with your platform/security owners before M5, or it wil
       `evidence/agent_authored_loop_result.json`
 
 **Acceptance:** `sentinel mcp serve` starts, lists 20 tools, invokes each correctly;
-Pages live at `neosun100.github.io/sentinel-harness/`; `pip install sentinel-harness`
+Pages live at `aws-samples.github.io/sample-sentinel-harness/`; `pip install sentinel-harness`
 installs 0.4.0 from PyPI; suite 2365 passed.
 
 ---

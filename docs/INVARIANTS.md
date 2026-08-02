@@ -221,3 +221,28 @@ most dangerous outcome in the suite.
 | **INV-DOC-1** | Every public export carries a docstring, and the public surface never silently regresses. | `sentinel_harness/__init__.py` | `test_docs_drift.py` |
 | **INV-DOC-2** | Counts quoted in the docs (tests, tools, evidence, scenarios) match reality, and never contradict each other between files. | docs + `tests/` | `test_docs_drift.py::test_quoted_counts_match_reality` |
 | **INV-DOC-3** | Every test named in this file exists. | this file | `test_invariants_doc.py` |
+
+---
+
+## INV-IDENTITY — every self-reference resolves to THIS repository
+
+This project was developed in a personal repository and transferred to
+`aws-samples/sample-sentinel-harness`. The transfer moved the code; it did not move
+the URLs embedded in the docs, the landing page and the issue templates.
+
+The pre-transfer repository is **still public and still answers HTTP 200**, which is
+what makes this a defect family rather than a batch of dead links: a stale reference
+does not fail visibly, it silently serves a frozen copy that looks authoritative and
+will never receive the fixes shipped here.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-IDENTITY-1** | No tracked text file references the pre-transfer `owner/repo` pair or its Pages host. A bare owner reference with no repo path is an attribution byline and is deliberately allowed. | repo-wide | `test_repo_identity.py::test_no_stale_project_url_anywhere` |
+| **INV-IDENTITY-2** | The private security-report contact link routes to THIS repository's `security/advisories/new`. Pointing it elsewhere misdelivers vulnerability reports, and because such a report is private by design the misdelivery is undetectable: the reporter believes they disclosed responsibly and the maintainers never learn of the issue. | `.github/ISSUE_TEMPLATE/config.yml` | `test_repo_identity.py::test_security_contact_link_points_at_this_repository` |
+| **INV-IDENTITY-3** | Every documented `git clone <url> && cd <dir>` names the directory clone actually creates. The rename to `sample-sentinel-harness` broke every such pair, so a reader copy-pasting the quickstart fails on line 1. | docs | `test_repo_identity.py::test_documented_clone_commands_are_copy_pasteable` |
+| **INV-IDENTITY-4** | GitHub-Pages links **to this project** use the canonical host and repo path. Scoped by SUBJECT, not by URL shape: the repo legitimately links third-party `*.github.io` docs (MITRE ATT&CK Navigator, LangGraph), and flagging those would repeat the breadth-vs-selectivity error INV-FP records. | docs + `site/` | `test_repo_identity.py::test_pages_links_use_the_canonical_host` |
+
+Each of the four is paired with a **guard-the-guard** test, because every one of them
+is a scan whose assertion goes vacuously true if the file-collection step breaks. The
+collection helper raises rather than returning an empty list for the same reason (see
+the fail-closed rule in the layering note above).

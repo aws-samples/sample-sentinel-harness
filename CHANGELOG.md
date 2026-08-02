@@ -89,7 +89,7 @@ release pipeline verified end-to-end (tag → quality gate → SBOM + SLSA → P
   human HITL approval), enforces a tool allowlist, and hard-caps spinning agents.
   17 tests. Closes the north-star gap.
 - **GitHub Pages landing site** — dark-theme animated project homepage at
-  https://neosun100.github.io/sentinel-harness/ with hero stats, architecture SVG,
+  https://aws-samples.github.io/sample-sentinel-harness/ with hero stats, architecture SVG,
   milestone timeline, and documentation grid. API docs at `/api/`.
 - **Packaging tripwire tests** (`tests/test_packaging.py`) — 10 assertions that
   fail the build if any required tree is dropped from the wheel config.
@@ -456,7 +456,7 @@ supply-chain / API-docs / CI toolchain is hardened. Test suite: **1742 offline p
   token/latency/tool-call/error signals in one call (closing the previously-dead token
   metric). New `docs/OBSERVABILITY.md`.
 - **API reference site** — pdoc → GitHub Pages (`.github/workflows/docs.yml`), live at
-  <https://neosun100.github.io/sentinel-harness/>, with a `docs-drift` test guarding
+  <https://aws-samples.github.io/sample-sentinel-harness/>, with a `docs-drift` test guarding
   public-export docstrings.
 - **Supply-chain in `release.yml`** — CycloneDX SBOM + SLSA build-provenance attestation
   + PyPI OIDC Trusted Publishing. New `docs/RELEASING.md`.
@@ -722,7 +722,7 @@ configuration on Amazon Bedrock AgentCore Harness.
 - Long-term (semantic) memory extraction is asynchronous (minutes-scale) — expected
   AgentCore behavior, documented in `SETUP.md` / `evidence/README.md`.
 
-[Unreleased]: https://github.com/neosun100/sentinel-harness/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/neosun100/sentinel-harness/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/neosun100/sentinel-harness/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/neosun100/sentinel-harness/releases/tag/v0.1.0
+[Unreleased]: https://github.com/aws-samples/sample-sentinel-harness/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/aws-samples/sample-sentinel-harness/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/aws-samples/sample-sentinel-harness/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/aws-samples/sample-sentinel-harness/releases/tag/v0.1.0
