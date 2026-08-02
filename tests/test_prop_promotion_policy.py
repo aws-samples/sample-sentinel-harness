@@ -217,11 +217,51 @@ def _run(turns, *, max_tool_calls=20, threshold=0.7, incumbent_best=None):
     return result, agent, eval_returns, promotion_evidence
 
 
+# The search budget is part of the contract, not a performance tuning knob.
+#
+# This was 250. At 250, THREE of the properties below passed while being falsifiable —
+# `max_examples=5000` produced a counterexample for each within a minute (round 19). The
+# shape needed a promotion followed by ANOTHER eval in a later turn, which 250 draws
+# never assembled. A property test that passes because it did not look is
+# indistinguishable from one that holds, which is the same failure mode as a structural
+# guard shipping blind (INV-GUARD-0).
+#
+# 2000 is the floor at which all three counterexamples reproduce with margin, at ~20s
+# for the file. `SENTINEL_PROP_EXAMPLES` raises it for a deliberate deep run without
+# editing this line — the round-19 sweep used 5000. It cannot LOWER it below the floor:
+# a green run at 50 examples would mean nothing, and making that easy is how the budget
+# silently becomes 50.
+_PROP_FLOOR = 2000
+_PROP_EXAMPLES = max(_PROP_FLOOR, int(os.environ.get("SENTINEL_PROP_EXAMPLES") or 0))
+
 _SETTINGS = settings(
-    max_examples=250,
+    max_examples=_PROP_EXAMPLES,
     deadline=None,
     suppress_health_check=[HealthCheck.too_slow],
 )
+
+
+def test_the_search_budget_is_not_silently_lowered():
+    """CONTROL for the budget itself. Every property in this file inherits `_SETTINGS`,
+    so this one number decides whether any of them can find anything."""
+    assert _PROP_EXAMPLES >= _PROP_FLOOR, (
+        f"the property search budget is {_PROP_EXAMPLES}, below the {_PROP_FLOOR} floor. "
+        "Three properties in this file passed at 250 while being falsifiable; a budget "
+        "below the floor means a green run here proves nothing."
+    )
+    assert _SETTINGS.max_examples == _PROP_EXAMPLES, (
+        "the settings object does not carry the computed budget, so the floor is "
+        "not actually applied to any property"
+    )
+
+
+def test_the_budget_env_override_can_only_raise():
+    """A lower override must be ignored, not honoured."""
+    def resolve(raw: str) -> int:
+        return max(_PROP_FLOOR, int(raw or 0))
+    assert resolve("50") == _PROP_FLOOR
+    assert resolve("") == _PROP_FLOOR
+    assert resolve("5000") == 5000
 
 
 # ========================================================================== #
@@ -233,11 +273,34 @@ def test_promotion_implies_a_witnessed_passing_eval(turns):
     """INV-PROMOTE-1: no promotion without an eval the DRIVER scored as passing.
 
     The agent cannot promote by assertion; only a handler's real return can
-    satisfy the gate."""
+    satisfy the gate.
+
+    Checked against the eval evidence AS OF the promotion, not
+    ``result.witnessed_pass``. That field is mutable driver state overwritten by every
+    later eval, so this legal stream falsified it::
+
+        eval(A, 0.7)  ->  approve(A) + promote(A)  ->  eval(A, 0.0)
+
+    The gate held when it mattered; only the end-of-session value is False. Round 19,
+    and the THIRD instance of this snapshot-vs-final-state error in this file — the two
+    comments below already record the first two. It stayed hidden because
+    ``max_examples=250`` never generated the three-turn shape; 5000 found it.
+    """
     result, _, eval_returns, promo = _run(turns)
     if result.promoted:
-        assert result.witnessed_pass is True
         assert eval_returns, "promoted with no evaluation ever executed"
+        assert promo, "promoted but the promotion handler never ran"
+        # The authorizing evidence: an eval of the PROMOTED subject, at or above the
+        # threshold, on record before the promotion executed. Re-derived from the
+        # handler's own returns rather than read off the driver, so a driver that
+        # mis-set its own flag would still be caught.
+        target = promo[-1]["target"]
+        authorizing = [e for e in promo[-1]["evals_so_far"]
+                       if e["harness_id"] == target and e["score"] >= 0.7]
+        assert authorizing, (
+            f"promoted {target!r} with no passing eval of it on record at that moment; "
+            f"evals seen by then: {promo[-1]['evals_so_far']}"
+        )
 
 
 @given(_stream)
@@ -270,9 +333,21 @@ def test_promotion_implies_human_approval_of_the_same_subject(turns):
         promoted_target = promo[-1]["target"]
         assert promoted_target is not None, \
             "a promotion executed without naming its target"
-        assert result.approved_subject == promoted_target, \
-            (f"promoted {promoted_target!r} on consent for "
-             f"{result.approved_subject!r}")
+        # `result.approved_subject` is ALSO mutable driver state — cleared on a later
+        # rejection (agent_loop.py:459) and re-set by every later eval (:566) — so
+        # reading it here is the same error as the witnessed_pass one above.
+        # Re-derive the consent from the approvals on record at that moment: a granted
+        # approval that named this target, or a granted approval that named nothing
+        # (the driver then binds it to the evaluated subject, which INV-PROMOTE-5
+        # separately requires to be the target).
+        granted = [a for a in approvals_at_promotion if a.get("_decision", True)]
+        bound = [a for a in granted
+                 if a.get("harness_id") in (promoted_target, None)]
+        assert bound, (
+            f"promoted {promoted_target!r} with no granted approval naming it (or "
+            f"naming nothing) on record at that moment; approvals seen by then: "
+            f"{approvals_at_promotion}"
+        )
 
 
 @given(_stream)
@@ -313,15 +388,52 @@ def test_promotion_implies_every_veto_dimension_was_actually_scored(turns):
 @given(_stream)
 @_SETTINGS
 def test_promotion_implies_subject_consistency_end_to_end(turns):
-    """INV-PROMOTE-5: the eval, the approval and the promotion all name ONE harness."""
+    """INV-PROMOTE-5: the eval, the approval and the promotion all name ONE harness.
+
+    All three legs read from the promotion-time snapshot. `result.approved_subject` is
+    mutable driver state (cleared by a later rejection, re-set by a later eval), so
+    reading it made this property falsifiable by the same legal stream that broke
+    INV-PROMOTE-1 above.
+    """
     result, _, eval_returns, promo = _run(turns)
     if result.promoted:
         assert promo, "promoted but the promotion handler never ran"
         target = promo[-1]["target"]
         assert target is not None
-        assert result.approved_subject == target
+        # Leg 1: an eval of the target was on record.
         assert any(e["harness_id"] == target
-                   for e in promo[-1]["evals_so_far"])
+                   for e in promo[-1]["evals_so_far"]), (
+            f"promoted {target!r} with no eval of it on record: "
+            f"{promo[-1]['evals_so_far']}"
+        )
+        # Leg 2: a granted approval bound to the target (or unbound, which the driver
+        # binds to the evaluated subject — leg 1 pins that to the target).
+        granted = [a for a in promo[-1]["approvals_so_far"]
+                   if a.get("_decision", True)]
+        assert [a for a in granted if a.get("harness_id") in (target, None)], (
+            f"promoted {target!r} with no granted approval naming it: {granted}"
+        )
+        # Leg 3: the confused-deputy shape — consent that named ONLY other harnesses,
+        # with nothing the driver could legitimately bind to this one.
+        #
+        # My first version of this asserted that a granted approval must NAME the target
+        # whenever any granted approval named something else. That is too strong, and a
+        # legal stream falsified it:
+        #
+        #     approve(A)  ->  eval(C, 0.7) + approve(<unnamed>)  ->  promote(C)
+        #
+        # An UNNAMED approval is bound by the driver to the evaluated subject
+        # (`agent_loop.py:455`, `approved_subject = named or witnessed_subject`), so that
+        # consent legitimately authorizes C. The property is that SOME granted approval is
+        # bindable to the target — either by naming it, or by naming nothing while the
+        # target was the subject on the table. An approval naming a different harness is
+        # the deputy shape only when there is nothing else to bind.
+        bindable = [a for a in granted if a.get("harness_id") in (target, None)]
+        assert bindable, (
+            f"promoted {target!r} while every granted consent named a different "
+            f"harness: {[a.get('harness_id') for a in granted]} — consent for one "
+            "harness authorized another"
+        )
 
 
 @given(_stream)
