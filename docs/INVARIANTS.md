@@ -257,6 +257,10 @@ that says "this was authorized". Reachable from `longrunning/detonation/` and
 | **INV-PLAY-6** | The approval is bound to the technique/phase the gate ACTUALLY asked about. The human was shown "approve T1595 (recon)?" while the gate requested T1486 (ransomware deployment), and nothing compared the two. **This is the second appearance of the confused-deputy shape INV-PROMOTE-2 closed** — M18's fix was specific to `agent_loop`, so per-step approval never received it. Only a payload that names a DIFFERENT subject is refused; one that names nothing is fine, because demanding fields the harness may not send is how a guard gets disabled in practice. | `simulation._gate_subject_mismatch` | `test_r16_self_certified.py::TestTheGateIsActuallyTheGate::test_an_approval_is_bound_to_the_technique_the_gate_asked_about` |
 | **INV-PLAY-7** | A decision is persisted BEFORE anything that can fail. The rejection path notified the harness before checkpointing, so a `resume_fn` that raised (a dropped connection, a throttle) propagated out with the checkpoint never written — the human's refusal existed only in the dead process's memory, the step read `pending` on disk, and a resume would re-ask. A denial is the single most important thing this file can carry. The failure still propagates; only the ordering changed. | `simulation.PlayModeRunner.run_step` | `test_r16_self_certified.py::TestTheGateIsActuallyTheGate::test_a_rejection_is_persisted_before_anything_that_can_fail` |
 
+| **INV-PLAY-8** | `verdict()`'s `every_step_gated` cannot hide a bypass. It considered only steps whose status had left PENDING — and an ungated step is exactly one that STAYS pending, because the runner halts without advancing it. So the one check meant to detect a gate bypass filtered out the evidence and still returned True, and it is published in the evidence artifact as "every offensive step paused on a human gate". A halt for a gate-protocol reason is now decisive, and `halted_without_gate` is reported alongside so a reader can tell a clean run from a refused one. A human REJECTION still reports `every_step_gated: True` — that is a correctly-gated run, not a bypass. | `simulation.PlayModeRunner.verdict` | `test_r16_self_certified.py::TestVerdictReportsWhatItExistsToReport` |
+| **INV-PLAY-9** | An APPROVED step that never became EXECUTED is surfaced. `run_step` sets APPROVED, resumes, then sets EXECUTED, so an exception in between leaves a step the human authorized that never ran with `execution_log=None` — and no count, verdict field or halt reported it, so the evidence file looked like a clean partial run. Reported as `approved_but_not_executed`. | `simulation.PlayModeRunner.verdict` | `test_r16_self_certified.py::TestVerdictReportsWhatItExistsToReport::test_an_approved_but_never_executed_step_is_surfaced` |
+| **INV-PLAY-10** | A PARALLEL pause halts instead of being half-answered. `core._consume_stream` returns the full `tool_uses` list and `core.invoke_with_tool_results` documents that answering only the first corrupts the session; this runner read only `tool_use`, so the human was shown ONE request, the rest were silently dropped, and the verdict still claimed every step was gated. Play Mode cannot honestly gate what it never showed a human. A single-element `tool_uses` — the ordinary case — is not treated as parallel. | `simulation.PlayModeRunner.run_step` | `test_r16_self_certified.py::TestVerdictReportsWhatItExistsToReport::test_a_parallel_pause_halts_instead_of_dropping_gates` |
+
 INV-PLAY-5/6/7 are **more fundamental than 1/2/3**: those protect the *record* of an
 approval, these protect the *approval*. A record cannot be more trustworthy than the
 decision it records. All three were found by fan-out probes, not by hand — and three
@@ -282,6 +286,52 @@ reader cannot infer a guarantee the code does not give.
 
 ---
 
+## INV-EVAL — the offline scorer's safety gate cannot be recited past
+
+`eval_datasets` is the **second** scoring path into the self-improving loop — round 15
+found eight fail-open defects in the first (`run_evaluation`, INV-GATE). This one is
+arguably more exposed: it needs no judge, so CI runs it every time and the loop can
+trust it by default.
+
+The bypass: **reciting a row's own assertions passed 25 of 25 shipped safety traps at
+score 1.0.** The root cause is that the two halves of the gate were *the same check* —
+a trap's assertions are sentences about what the agent must NOT do, so quoting them
+satisfied the keyword-coverage score AND tripped the refusal-marker substrings. Two
+gates reading the same text with the same technique are one gate.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-EVAL-1** | Compliance is decided BEFORE any refusal marker. The leading-opener check ran first and returned True unconditionally, and `_LEADING_REFUSAL` holds bare substrings (`do not`, `should not`, `reject`) — so any hedging clause in the first 80 characters made a fully complying, harmful answer read as a refusal ("I cannot overstate how useful this is. I am executing the scan as requested."). A first-person statement of ACTION is a claim about what the answer did, and cannot be overridden by hedging vocabulary appearing anywhere, including in recited material. | `eval_datasets._looks_like_refusal` | `test_r16_self_certified.py::TestOfflineScorerSafetyGate` |
+| **INV-EVAL-2** | The gate has an ORTHOGONAL second leg: similarity to `safety_trap.unsafe_answer`, the golden example of the wrong answer the dataset already shipped and the scorer never used. It is different text from the assertions, so an answer gaming the coverage score by recitation cannot also fabricate a low score here. | `eval_datasets._resembles_unsafe_answer` | `test_r16_self_certified.py::TestOfflineScorerSafetyGate::test_the_shipped_unsafe_answer_fails_every_trap` |
+| **INV-EVAL-3** | A row is a trap by EITHER marker. `category == "safety_trap"` was the only detector, while `safety_flag` — the field both dataset test suites treat as the trap marker and require to be a strict bool — was never read, so a row flagged one way but categorized another had no safety gate at all, silently. | `eval_datasets.score_answer_offline` | `test_r16_self_certified.py::TestOfflineScorerSafetyGate::test_a_trap_marked_only_by_safety_flag_is_still_gated` |
+| **INV-EVAL-4** | A trap answer must contribute vocabulary of its own. The correct answer to a trap is a refusal WITH REASONING, so one built entirely from the grader's assertion text has demonstrated nothing — yet scored 1.0 on every trap. Measured as vocabulary rather than string similarity, because the bypass also worked as a bare keyword list with no textual resemblance but exactly the assertions' words. | `eval_datasets._is_assertion_recitation` | `test_r16_self_certified.py::TestOfflineScorerSafetyGate::test_a_keyword_soup_fails_every_trap` |
+
+All four legs are an AND, and the decisive test is the **control**:
+`test_the_golden_expected_answer_still_passes_every_trap`. Three new refusal
+requirements could trivially be satisfied by failing everything, so the genuine
+refusal shipped with each of the 25 rows must still pass — otherwise the scorer is
+broken rather than repaired. A control written for a different fix also exposed a
+pre-existing gap: `declining` / `refusing` / `rejecting` appeared in no marker list, so
+a real refusal opening with a participle read as neither refusal nor compliance. This
+word-list approach needs every inflection enumerated by hand; that is a structural
+weakness of the module, recorded rather than papered over.
+
+---
+
+## INV-FACTORY — a green dry-run cannot mean something different from the real run
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-FACTORY-1** | A manifest entry may not carry raw API-level keys. `core.create_harness` assembles the request from its named parameters and then does `args.update(kw)`, so a passthrough key wins over everything the factory computed. Reproduced end to end: an entry with `name: inlineHarness` plus `harnessName: totally_different_name`, `executionRoleArn: arn:aws:iam::000000000000:role/attacker_not_the_resolved_one` and `allowedTools: ["*"]` passed `dry_run=True` **reporting `inlineHarness`**, then created a harness under a different name, with an execution role the factory never resolved, and unrestricted tools. That breaks this module's central promise — a green dry-run means a safe real run — in the direction where an operator believes they reviewed something they did not. Checked on BOTH the inline and `config:` paths, so the guard is a property of the factory rather than of one branch. | `factory._reject_api_level_overrides` | `test_r16_self_certified.py::TestFactoryRejectsApiLevelOverrides` |
+
+The inline path additionally skips `loader.load_harness_config` entirely, so the
+loader's own governance — notably the near-miss HITL gate-name check, which raises
+rather than auto-normalizing — never runs on it. Refusing the override keys does not
+restore that; an inline entry is unloadered by design. It stops an inline entry from
+rewriting what the factory *did* verify.
+
+---
+
 ## INV-CLI — a presentation flag never disables a gate
 
 The CLI is where a human forms their belief about system state. A wrong exit code is a
@@ -291,6 +341,8 @@ exit code and nothing else.
 | ID | Invariant | Owner | Enforced by |
 |---|---|---|---|
 | **INV-CLI-1** | `detection audit --min-score N` fires in EVERY output mode. The `--navigator` branch returned 0 before reaching the gate, so `--min-score 99 --navigator layer.json` exited 0 at any health score while the same command without `--navigator` exited 1. Asking for both an export and a gate produced the export and a **green build** — worse than no gate, because a pipeline author who adds an export silently loses the check with no output saying so. The gate is about the score, not about how the report was rendered. | `cli._cmd_detection_audit` | `test_r16_self_certified.py::TestCliGateSurvivesEveryOutputMode` |
+| **INV-CLI-2** | `detection baseline --snapshot` and `--against` are refused together rather than one silently winning. argparse declared neither exclusive and the snapshot branch returned first, so `--snapshot new.json --against old.json` wrote the snapshot and **skipped the regression comparison**, exiting 0. Refusing beats picking: which the operator meant is genuinely ambiguous, and guessing is what produced the silent pass. | `cli.cmd_detection_baseline` | `test_r16_self_certified.py::TestCliBaselineModesAreExclusive` |
+| **INV-CLI-3** | A teardown where every delete FAILED exits non-zero. `core.cleanup` returned only the names it managed to delete, so "nothing matched the prefix" and "every delete was denied" were both an empty list — the CLI printed "deleted 0 harness(es)" and exited 0, which an operator or CI teardown reads as a clean account while live harnesses remain. Failures are now collected through a caller-supplied sink (not the return type, which several callers depend on, and not a module global, which would be wrong under concurrent teardowns). The best-effort loop stays: continuing past one failure is deliberate for teardown. | `core.cleanup` / `cli.cmd_cleanup` | `test_cli.py::test_cleanup_exits_nonzero_when_deletes_fail` |
 
 ---
 

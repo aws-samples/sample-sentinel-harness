@@ -235,10 +235,21 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         for name in sorted(matched):
             print(f"  - {name}")
         return 0
-    deleted = sh.cleanup(args.prefix)
+    # INV-CLI-3: a teardown that deleted NOTHING because every delete failed used to
+    # print "deleted 0 harness(es)" and exit 0 — byte-identical to a genuinely empty
+    # estate. An operator or a CI teardown step reads that as clean and moves on,
+    # leaving live harnesses (and their managed memory) behind. `core.cleanup` is
+    # deliberately best-effort, so the failures are collected rather than raised.
+    failures: list = []
+    deleted = sh.cleanup(args.prefix, failures)
     print(f"deleted {len(deleted)} harness(es) with prefix {args.prefix!r}")
     for name in deleted:
         print(f"  - {name}")
+    if failures:
+        _eprint(f"cleanup: {len(failures)} harness(es) could NOT be deleted:")
+        for name, error in failures:
+            _eprint(f"  - {name}: {error}")
+        return 1
     return 0
 
 
@@ -469,6 +480,19 @@ def cmd_detection_baseline(args: argparse.Namespace) -> int:
         return rc
 
     baseline_tool = _load_tool_handler("detection_baseline")
+
+    # INV-CLI-2: snapshot and compare are mutually exclusive in intent but argparse
+    # declares neither as exclusive, and the snapshot branch returned 0 first — so
+    # `detection baseline DIR --snapshot new.json --against old.json` wrote the
+    # snapshot and SILENTLY SKIPPED the regression comparison the operator asked for,
+    # exiting 0. A CI job written that way reports green while never comparing
+    # anything. Refusing is right rather than picking one: which the operator meant is
+    # genuinely ambiguous, and guessing is what produced the silent pass.
+    if args.snapshot is not None and args.against:
+        _eprint("detection baseline: --snapshot and --against are mutually exclusive "
+                "(one writes a new baseline, the other compares against an existing "
+                "one). Run the command twice if you want both.")
+        return 2
 
     if args.snapshot is not None:
         snap = baseline_tool.handler({"mode": "snapshot", "audit": audit}, None)
