@@ -97,6 +97,12 @@ import sys
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List
+
+# The ONE egress guard (INV-EGRESS-1). Imported rather than copied: a local copy
+# of this check is how the same SSRF pair reached two tools before it was
+# mechanized — see sentinel_harness/egress.py.
+from sentinel_harness import egress
+
 from urllib.parse import urlsplit
 
 # This tool reads the shared single-source-of-truth world in ``mockdata.world``.
@@ -476,7 +482,7 @@ def _fetch_live(indicators: List[str]) -> Dict[str, Dict[str, Any]]:
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=_LIVE_TIMEOUT_S) as response:
+        with egress.open_checked(request, timeout=_LIVE_TIMEOUT_S) as response:
             # urlopen raises HTTPError for non-2xx, so reaching here is 2xx.
             body = response.read(_MAX_LIVE_BODY_BYTES + 1)
     except urllib.error.HTTPError as exc:  # non-2xx status

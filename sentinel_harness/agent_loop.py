@@ -74,6 +74,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from . import autonomy, observability
+from .logutil import get_logger
 
 # --------------------------------------------------------------------------- #
 # Injected-callable shapes (documentation — not enforced at runtime)          #
@@ -96,6 +97,43 @@ PromotionPredicate = Callable[[str, Dict[str, Any]], bool]
 # binding is what stops a confused-deputy promotion: score harness A, promote
 # harness B.
 SubjectFn = Callable[[Dict[str, Any]], Optional[str]]
+
+
+def _witness_approval(approve_fn: Optional[HitlApproveFn],
+                      tool_input: Dict[str, Any]) -> bool:
+    """Read the human decision, REFUSING a callback that breaks its `-> bool` contract.
+
+    INV-COERCE-3. This was `bool(approve_fn(tool_input))`, and `bool("false") is True`
+    — so a callback returning the string ``"false"``, ``"no"`` or ``"0"`` was witnessed
+    as an APPROVAL. `HitlApproveFn` is typed `-> bool`, so a string return is the
+    caller violating the contract rather than the INV-BOUNDARY-1 defect proper. But a
+    type annotation is not enforced at runtime, and the obvious ways to implement an
+    approval callback — argparse, an environment variable, an HTTP form field — all
+    produce strings natively. `bool()` accepted the violation silently and leaned
+    toward yes, on the most security-sensitive callback in the platform.
+
+    Deliberately NOT coerced with ``_coerce_bool``: that would make strings a
+    SUPPORTED input and widen this contract. A miswired approval integration should
+    fail closed and be fixed, not be quietly interpreted.
+
+    - no callback           -> False (INV-PROMOTE-8: absence is a refusal)
+    - a real ``bool``       -> that value
+    - anything else         -> False, and a warning naming the type
+    - the callback raises   -> propagates (a broken approval service is an error to
+                              fix, not a denial to record)
+    """
+    if approve_fn is None:
+        return False
+    answer = approve_fn(tool_input)
+    if answer is True or answer is False:
+        return answer
+    get_logger(__name__).warning(
+        "approve_fn returned %s (%r), not a bool — treating the gate as REFUSED. "
+        "The HitlApproveFn contract is `-> bool`; a truthy string like 'false' must "
+        "never be read as an approval.",
+        type(answer).__name__, answer,
+    )
+    return False
 
 # The scenario tag stamped on every telemetry line/span this driver emits.
 _TELEMETRY_SCENARIO = "agent_loop"
@@ -398,7 +436,7 @@ def run_agent_loop(
 
                     # 1) The HITL gate — the human answers, and the driver WITNESSES it.
                     if name == hitl_tool:
-                        decision = bool(approve_fn(tool_input)) if approve_fn is not None else False
+                        decision = _witness_approval(approve_fn, tool_input)
                         witnessed_approval = decision
                         # BIND the approval to a subject: what the gate payload named,
                         # else whatever subject was witnessed at THIS moment (what the

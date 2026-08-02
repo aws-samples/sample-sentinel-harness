@@ -56,6 +56,12 @@ import os
 import re
 from typing import Any, Dict
 
+# The ONE egress guard (INV-EGRESS-1). Imported rather than copied: a local copy
+# of this check is how the same SSRF pair reached two tools before it was
+# mechanized — see sentinel_harness/egress.py.
+from sentinel_harness import egress
+
+
 # Strict CVE identifier format: CVE-YYYY-NNNN(+). Year >= 1999 by convention.
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,19}$")
 
@@ -140,7 +146,7 @@ def _fetch_live(cve_id: str) -> Dict[str, Any]:
     # Bound the read so a hostile/oversized upstream cannot force unbounded memory
     # buffering (mirrors the sibling *_LIVE tools).
     _MAX_LIVE_BODY_BYTES = 4 * 1024 * 1024
-    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 (host is fixed NVD)
+    with egress.open_checked(req, timeout=15) as resp:  # noqa: S310 (host is fixed NVD)
         raw = resp.read(_MAX_LIVE_BODY_BYTES + 1)
     if len(raw) > _MAX_LIVE_BODY_BYTES:
         raise RuntimeError(

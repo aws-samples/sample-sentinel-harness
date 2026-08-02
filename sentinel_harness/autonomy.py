@@ -53,6 +53,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from . import loop_safety
+from .logutil import get_logger
 
 # --------------------------------------------------------------------------- #
 # Types for the injected callables (documentation — not enforced at runtime)  #
@@ -330,7 +331,23 @@ def run_improvement_loop(
 
     human_approved = False
     if machine_ok and approve_fn is not None:
-        human_approved = bool(approve_fn(candidate, last_score))
+        # INV-COERCE-3, same rule as agent_loop's HITL gate: a callback that breaks
+        # its `-> bool` contract is REFUSED, not coerced. `bool("false") is True`, and
+        # the natural ways to wire an approval (argparse, an env var, an HTTP form)
+        # all yield strings. Implemented inline rather than importing agent_loop's
+        # helper because that module imports THIS one — the cycle is why the rule is
+        # duplicated, and the duplication is named so the two cannot drift silently
+        # (test_r17_coercion_mechanized pins them to the same answers).
+        answer = approve_fn(candidate, last_score)
+        if answer is True or answer is False:
+            human_approved = answer
+        else:
+            get_logger(__name__).warning(
+                "approve_fn returned %s (%r), not a bool — treating the promotion "
+                "gate as REFUSED (a truthy string like 'false' must never approve).",
+                type(answer).__name__, answer,
+            )
+            human_approved = False
 
     promoted = machine_ok and human_approved
 

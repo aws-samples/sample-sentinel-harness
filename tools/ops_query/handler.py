@@ -71,6 +71,10 @@ import json
 import os
 import urllib.error
 import urllib.request
+
+# The ONE egress guard (INV-EGRESS-1) — this tool had the first copy of these
+# checks; sharing them is what stops the next tool from growing its own.
+from sentinel_harness import egress
 from typing import Any, Dict, List
 
 from mockdata.accounts import accounts as _load_accounts
@@ -97,121 +101,28 @@ _ALLOWED_URL_SCHEMES = frozenset({"https", "http"})
 def _assert_safe_url(url: str) -> None:
     """Refuse an outbound URL that is not plain HTTP(S) to a routable host.
 
-    Applied before ANY live request opens: enforce a scheme allowlist (https/http
-    only) and refuse link-local/metadata targets (the cloud metadata IP
-    ``169.254.169.254``) and file://. Raises ``RuntimeError`` on a rejected URL so
-    the handler maps it to ``upstream_error`` (never a silent fallback). Hostnames
-    that are not IP literals pass through (DNS resolution is the runtime egress
-    policy's job); only IP-literal hosts are range-checked. Loopback (127.0.0.1) is
-    deliberately allowed — the live-test mock server binds there.
+    INV-EGRESS-1: delegates to ``sentinel_harness.egress.assert_safe_url``. Round 16
+    implemented this check (and the alternate-IP-spelling parser, and the redirect
+    refusal) HERE, and round 17 then found the identical pair of defects in
+    ``siem_query`` — because a fix applied to one call site is not a mechanism. All
+    three now live in one module, and ``test_r17_egress_mechanized.py`` fails the build
+    if any live path grows its own copy.
     """
-    from urllib.parse import urlsplit
-
-    parts = urlsplit(url)
-    scheme = parts.scheme.lower()
-    if scheme not in _ALLOWED_URL_SCHEMES:
-        raise RuntimeError(
-            f"refusing to open non-HTTP(S) URL scheme {scheme!r}; "
-            "only https/http egress is permitted"
-        )
-    host = parts.hostname
-    if not host:
-        raise RuntimeError("backend URL has no host component")
-    ip = _parse_ip_literal(host)
-    if ip is None:
-        return
-    if (
-        ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    ):
-        raise RuntimeError(
-            f"refusing to open URL targeting non-routable/metadata address {host!r}"
-        )
+    egress.assert_safe_url(url)
 
 
 def _parse_ip_literal(host: str):
-    """Parse an IP-literal host, including the ALTERNATE spellings of one.
+    """Alternate-spelling IP parser — see ``sentinel_harness.egress.parse_ip_literal``.
 
-    ``ipaddress.ip_address()`` only accepts dotted-quad / standard IPv6, so the
-    guard above used to pass a bare integer or hex host straight through as if it
-    were a DNS name — and every one of these is 169.254.169.254, the cloud
-    metadata service:
-
-        http://2852039166/     (decimal)
-        http://0xA9FEA9FE/     (hex)
-        http://0251.0376.0251.0376/  (octal dotted)
-
-    Browsers and most HTTP stacks (including urllib, via the OS resolver) accept
-    all of them. Returning ``None`` here meant "not an IP, let DNS policy handle
-    it", which is exactly the wrong answer for a numeric host.
-
-    Returns an ``ip_address`` object, or ``None`` only for a host that genuinely is
-    not an IP literal in any spelling.
+    Kept as a thin alias because the round-16 tests call this name directly; the
+    implementation is shared so it cannot drift from siem_query's copy again.
     """
-    import ipaddress
-
-    try:
-        return ipaddress.ip_address(host)
-    except ValueError:
-        pass
-    # A wholly-numeric host is a 32-bit address in decimal/hex/octal form.
-    candidate = host.strip()
-    try:
-        if candidate.lower().startswith(("0x", "0X")):
-            value = int(candidate, 16)
-        elif candidate.isdigit():
-            # Leading zero means octal in this notation (0177.0.0.1 style handled
-            # below); a plain digit string is decimal.
-            value = int(candidate, 8) if candidate.startswith("0") else int(candidate)
-        else:
-            # Dotted form whose octets may themselves be octal/hex
-            # (0251.0376.0251.0376 == 169.254.169.254).
-            octets = candidate.split(".")
-            if len(octets) != 4:
-                return None
-            value = 0
-            for octet in octets:
-                if octet.lower().startswith("0x"):
-                    part = int(octet, 16)
-                elif octet.startswith("0") and len(octet) > 1:
-                    part = int(octet, 8)
-                else:
-                    part = int(octet)
-                if not 0 <= part <= 255:
-                    return None
-                value = (value << 8) | part
-        if not 0 <= value <= 0xFFFFFFFF:
-            return None
-        return ipaddress.ip_address(value)
-    except (ValueError, TypeError):
-        return None
+    return egress.parse_ip_literal(host)
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Refuse to follow ANY redirect on the live ops call.
-
-    ``urlopen`` follows 3xx by default and ``_assert_safe_url`` only vets the URL
-    it is HANDED, so an allowed backend answering ``302 Location:
-    http://169.254.169.254/...`` walked the request straight past the guard —
-    audited and reproduced. Worse, urllib re-sends the request headers to the
-    redirect target, so the ``Authorization: Bearer`` credential leaked to
-    whatever host the backend named.
-
-    Refusing outright (rather than re-validating and re-following) is the right
-    call here: this client POSTs a selector to ONE configured endpoint, so a
-    redirect is never a legitimate part of that contract, and re-validating still
-    leaves a TOCTOU window between the check and the socket connect.
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
-        raise RuntimeError(
-            f"refusing to follow an HTTP {code} redirect from the ops backend to "
-            f"{newurl!r}: the URL allowlist is applied before the request opens, "
-            "so following a redirect would bypass it (and forward the bearer "
-            "credential to the redirect target)"
-        )
+# Retained for the round-16 tests that assert the redirect refusal exists on this
+# tool. The behaviour is the shared handler's.
+_NoRedirect = egress._NoRedirect
 
 
 def _validate(event: Dict[str, Any]) -> Dict[str, str]:
@@ -446,12 +357,12 @@ def _fetch_live(selector: Dict[str, str]) -> Dict[str, Any]:
     request = urllib.request.Request(
         url, data=body, headers=headers, method="POST"
     )
-    # Opener with redirects REFUSED. The default global opener follows 3xx, which
-    # bypasses `_assert_safe_url` (it only vets the URL we hand it) and re-sends the
-    # Authorization header to whatever host the backend names.
-    opener = urllib.request.build_opener(_NoRedirect)
+    # INV-EGRESS-1: the SHARED guard — vets the URL and refuses redirects in one call.
+    # This tool had the first (round-16) version of both checks; keeping a local copy is
+    # what let the identical SSRF pair reach siem_query one round later, so the
+    # implementation now lives in `sentinel_harness.egress` and every live path uses it.
     try:
-        with opener.open(
+        with egress.open_checked(
             request, timeout=_LIVE_TIMEOUT_SECONDS
         ) as response:
             status = getattr(response, "status", response.getcode())

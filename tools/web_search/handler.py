@@ -63,6 +63,12 @@ import os
 import urllib.request  # noqa: F401 - module-level so `_search_live` and tests can reach urllib.request.urlopen
 from typing import Any, Dict, List
 
+# The ONE egress guard (INV-EGRESS-1). Imported rather than copied: a local copy
+# of this check is how the same SSRF pair reached two tools before it was
+# mechanized — see sentinel_harness/egress.py.
+from sentinel_harness import egress
+
+
 _MAX_QUERY_LEN = 512
 _MAX_RESULTS = 10
 _DEFAULT_RESULTS = 5
@@ -181,7 +187,7 @@ def _search_live(query: str, max_results: int) -> List[Dict[str, str]]:
 
     _MAX_RESPONSE_BYTES = 2_000_000
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 (operator-configured chokepoint)
+    with egress.open_checked(req, timeout=15) as resp:  # noqa: S310 (operator-configured chokepoint)
         # Read cap+1 then reject over-limit rather than silently truncating —
         # matches the reject pattern the other live-client tools use.
         raw = resp.read(_MAX_RESPONSE_BYTES + 1)

@@ -286,6 +286,162 @@ reader cannot infer a guarantee the code does not give.
 
 ---
 
+## INV-IAC — the permission boundary the infrastructure declares
+
+`iac-cdk/` and `iac-terraform/` had never been audited, and they define real IAM
+boundaries. **They held up** — recorded here as tests rather than as a claim, because
+"we looked and it was fine" is worth nothing a month later.
+
+Two of my initial framings were wrong, and correcting them is most of the value:
+
+1. **A wildcard is not automatically a defect — the STATEMENT TYPE decides.**
+   `network-stack.ts` carries `actions: ["*"], resources: ["*"]`, which looks alarming
+   and is right: it is a **VPC endpoint policy**, whose semantics are "what may traverse
+   this endpoint", *intersected* with the caller's own IAM, bounded by
+   `aws:PrincipalAccount`. Narrowing the actions would break AWS-managed service calls
+   while restricting nothing. In a ROLE policy a wildcard resource expands power; in an
+   endpoint/resource policy with a condition it contracts it. Same characters, opposite
+   direction.
+2. **The two stacks are COMPLEMENTARY, not parallel.** CDK names 17 IAM actions;
+   Terraform names none, because it provisions no IAM role — it does
+   Cognito/VPC/Guardrail/Observability and *accepts* an execution-role ARN by variable.
+   So "do they express the same boundary?" is the wrong question; "does the split leave
+   a gap?" is the right one, and it pointed at the variable's validation regex.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-IAC-1** | Every IAM statement using `resources: ["*"]` is one of three ARGUED exceptions, and no ROLE policy uses a wildcard ACTION at all. `cloudwatch:PutMetricData` has no resource-level scoping and is confined by a `cloudwatch:namespace` condition; the X-Ray write APIs support neither, so the account boundary is the guard — and they are kept in a SEPARATE statement, because attaching the namespace condition to them would be invalid and AWS ignores an unrecognized condition key, silently widening rather than restricting. | `iac-cdk/lib/iam.ts`, `network-stack.ts` | `test_r17_iac_boundaries.py::TestIamWildcardsAreArgued` |
+| **INV-IAC-2** | The Terraform `harness_execution_role_arn` variable is validated, has NO default, and its regex is anchored at both ends. Since that path creates no IAM role, this regex IS the boundary for every harness provisioned there. Tested against 15 shapes: it admits the four legitimate ones (including non-default partitions and a role path) and refuses a user ARN, the account root, an STS assumed-role session, malformed account ids, an empty role name, and leading junk. A test also pins that Terraform still creates no `aws_iam_role`/`aws_iam_policy` — if it starts to, those roles need INV-IAC-1's scrutiny. | `iac-terraform/variables-harness.tf` | `test_r17_iac_boundaries.py::TestTerraformExecutionRoleGate` |
+| **INV-IAC-3** | No IaC file carries a non-placeholder 12-digit account id, a hardcoded execution-role ARN, or anything shaped like an access key. Redundant with the CI secret-scan by design: here a leaked account id is also a deployment target. | `iac-cdk/`, `iac-terraform/` | `test_r17_iac_boundaries.py::TestIacCarriesNoHardcodedIdentity` |
+
+**A negative result needs a positive control**, so
+`TestTheIacGuardsCanDetectADefect` synthesizes each defect class — an unargued wildcard
+resource, a wildcard action, Terraform creating an IAM role, a hardcoded account id —
+and asserts the corresponding guard fires. All four were caught. Without that, 33
+passing tests would be indistinguishable from 33 blind ones.
+
+---
+
+## INV-EGRESS — one guard, used by every live path
+
+Round 16 found two SSRF defects in `ops_query`, fixed them there, and recorded
+INV-OPS-5. Round 17 found **the identical pair in `siem_query`** — both reproduced end
+to end, including the credential leak. A survey then showed why: of the eight tools that
+open outbound HTTP, exactly **one** was complete.
+
+| tool | url guard | redirect refused | alt-IP parsing |
+|---|---|---|---|
+| ops_query | yes | yes | yes |
+| siem_query | yes | **no** | **no** |
+| asset_lookup | yes | **no** | **no** |
+| enrich_ioc | yes | **no** | **no** |
+| web_search | yes | **no** | **no** |
+| nvd_lookup | **no** | **no** | **no** |
+| epss_kev | **no** | **no** | **no** |
+| attack_lookup | **no** | **no** | **no** |
+
+Fourth recurrence by the same route as INV-COERCE: a fix applied to one call site is not
+a mechanism. The guard now lives in `sentinel_harness/egress.py`, once.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-EGRESS-1** | Every live path opens through `egress.open_checked`, which vets the URL and refuses redirects in ONE call. No tool calls `urllib.request.urlopen` directly (it follows 3xx, which walks past any pre-flight check and re-sends `Authorization` to the target the *backend* chose), and no tool reimplements the IP parser. Enforced by an AST sweep over all eight tools plus an inventory check that a NEW live path cannot silently escape. | `sentinel_harness/egress.py` | `test_r17_egress_mechanized.py::TestEveryLivePathUsesTheSharedGuard` |
+| **INV-EGRESS-2** | The guard refuses every spelling of a forbidden target — `169.254.169.254`, `2852039166` (decimal), `0xA9FEA9FE` (hex), `0251.0376.0251.0376` (octal), IPv4-mapped IPv6, a userinfo prefix, and non-HTTP schemes — while ALLOWING a legitimate backend, loopback (a self-hosted SIEM, and what the live tests bind), and a DNS name that merely starts with a digit. `EgressError` subclasses `RuntimeError` so a refusal surfaces as `upstream_error`, never a silent empty result. | `egress.assert_safe_url` / `parse_ip_literal` / `_NoRedirect` | `test_r17_egress_mechanized.py::TestTheSharedGuardBehaviour` |
+
+**Not** defended, stated so nobody infers it: a hostname that RESOLVES to a link-local
+address (DNS rebinding). That needs resolution-time hooks — the runtime network policy's
+job. This guard covers what a URL string can express.
+
+---
+
+## INV-CONNECTOR (round 17 additions) — a value is not a query language
+
+Round 13b audited the 8 SIEM connectors on selector semantics and response fidelity.
+Round 17 audited the two dimensions it did not: **query injection** and **credential
+handling**.
+
+Seven of eight connectors place the caller's value inside a quoted literal and escape it
+— audited and fixed in an earlier round, and now pinned. Two findings remained:
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-CONNECTOR-6** | A free-text value is not evaluated as a query language. Elastic and OpenSearch put it into `query_string`, which INTERPRETS Lucene — so `web-01 OR *` widened the query to match every document (the agent reads alerts for hosts it never asked about) and `x AND NOT x` narrowed it to none (an attack hidden behind an empty result that reads as good news). Injection by construction, and the only such site: JSON quoting protects the transport and does nothing about the DSL. Now `simple_query_string` with an explicit `flags` allowlist (AND/OR/NOT/PHRASE/WHITESPACE only — no field scoping, ranges, regex or boosting) and an explicit `fields` allowlist, since the default expands to `*`. | `connectors.siem.ElasticConnector` / `OpenSearchConnector` | `test_r17_egress_mechanized.py::TestConnectorQueryInjection` |
+| **INV-CONNECTOR-8** | AQL escaping neutralises a trailing BACKSLASH, not only quotes. Doubling quotes alone emitted `host = 'x\' LIMIT 1000` for the value `x\`: a parser that honours backslash escapes reads `\'` as a literal quote, consuming the closing delimiter so the `LIMIT` clause falls inside the string. Whether Ariel honours backslash escapes is not something a caller's safety may depend on — the value is quoted for a dialect we do not control, so both readings must be safe. | `connectors.siem._escape_squote` | `test_r17_egress_mechanized.py::TestConnectorQueryInjection::test_a_string_dsl_connector_escapes_a_breakout_attempt` |
+| **INV-CONNECTOR-9** | The connectors carry no credentials and open no sockets. Their docstring claims "nothing here carries an endpoint, index name, token, or tenant" — a self-certified claim of the kind round 16 audited, so it is checked: `build_request`'s return value contains no credential material, the module reads no environment variable, and it holds no HTTP primitive. The last matters most: it is what makes an injection finding LATENT rather than live, and if it ever changes the severity of this whole family changes with it. | `connectors/siem.py` | `test_r17_egress_mechanized.py::TestConnectorsHoldNoCredentials` |
+
+### Three refinements the injection assertion needed
+
+The escaping test was wrong twice before it was right, each time for the same reason —
+and the sequence is worth recording because it is the shape of a bad security test:
+
+1. **Substring matching.** `'" | ' not in emitted` flagged all seven correctly-escaped
+   backends: Chronicle emitted `host = "x\" | delete index=*"`, where the quote IS
+   escaped, and the substring matched inside `\" | `. **Sixth** occurrence of
+   substring-for-structure in this repo.
+2. **Measuring the wrong artifact.** Counting quotes on `str(request)` measured
+   Python's repr escaping, not the DSL's.
+3. **Ignoring the dialect.** Checking BOTH quote characters flagged a double quote
+   inside single-quoted AQL, where it is not a metacharacter at all.
+
+The assertion that finally works extracts the query string, counts unescaped
+occurrences of **that backend's own delimiter**, and requires an even count — a value
+that broke out leaves an odd one. It found INV-CONNECTOR-8 immediately, and a positive
+control (re-injecting the un-escaped `_escape_dquote`) proves it can still see a
+regression.
+
+---
+
+## INV-COERCE — the invariants that recurred are now enforced structurally
+
+Nine rounds produced 106 invariants. **Three of them came back after being fixed**, and
+every recurrence had the same cause: the invariant was recorded as a CONVENTION, so the
+next author — or the same author on a different code path — reimplemented the trap.
+
+    INV-BOUNDARY-1  (r14)  bare bool() on external data, in asset_lookup
+      -> INV-GATE-3  (r15)  the SAME defect in run_evaluation, one round later
+      -> INV-COERCE-1 (r17) the SAME defect in siem_query's OFFLINE normalizer —
+                            sitting in the very file whose LIVE normalizer R13b fixed
+
+    INV-PROMOTE-2   (M18)  approval not bound to a subject, in agent_loop
+      -> INV-PLAY-6  (r16)  the SAME hole in simulation's per-step gate
+
+The third recurrence is the one that settles the argument: two rounds of hand-auditing
+`siem_query` missed it, because it was in the file the fix had already landed in —
+the last place anyone looks. An AST sweep found it immediately.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-COERCE-1** | No bare `bool()` is applied to externally-sourced data anywhere in `sentinel_harness/`, `tools/` or `intake/`. Sites delegate to `connectors.base._coerce_bool`, or appear in an allowlist keyed by **file + exact expression** with the reason the value cannot be a string. | repo-wide (AST sweep) | `test_r17_coercion_mechanized.py::TestNoBareBoolOnExternalData` |
+| **INV-COERCE-2** | Every truthiness helper is CLASSIFIED: one that reads a *backend response* is pinned to answer identically to the authority; one that parses a *different grammar* (a Sigma `\|exists` operand, a YAML boolean) declares that grammar and must be **stricter** than the backend alphabet, never looser. An unclassified helper is how INV-BOUNDARY-1 recurred twice. | `connectors.base._coerce_bool` + the classified helpers | `test_r17_coercion_mechanized.py::TestLocalCoercionHelpersAgree` |
+| **INV-COERCE-3** | A callback whose contract says `-> bool` is enforced, not widened. `bool(approve_fn(...))` at both promotion-approval sites made a callback returning the string `"false"`/`"no"`/`"0"` witness an APPROVAL. A non-bool return is REFUSED with a warning naming the type — deliberately not coerced, since coercing would make strings a supported input on the most security-sensitive callback in the platform. A raising callback still propagates. | `agent_loop._witness_approval`, `autonomy.run_improvement_loop` | `test_r17_coercion_mechanized.py::TestApprovalCallbackContract` |
+
+### Three defects in the guard itself, and why they are recorded here
+
+Building this found more about how such guards fail than about the code:
+
+1. **A file-level allowlist is a permanent file-level exemption.** Keying by file meant
+   a new violation in `feedback.py` was NOT caught, because that file already held one
+   legitimate `bool(withheld)`. I had built a fail-open into a mechanism whose only
+   purpose is to prevent fail-open — the same shape as "a lint-exempt directory is a
+   directory that never gets fixed". Keys are now file **plus exact expression**:
+   stable across edits, readable in a diff, and impossible for new code to match by
+   accident.
+2. **The provenance matcher was silently broken.** It substring-matched `ast.dump()`,
+   and every variable reference carries `ctx=Load()` — so the marker `"load"` matched
+   *everything*. The sweep classified all 24 expressions as external and only looked
+   clean because the allowlist covered them all. A matcher that flags everything is as
+   useless as one that flags nothing, and it hid its own failure. Now walks the AST
+   structure. **That was the fifth time substring-matching stood in for a structural
+   judgement in this repo** (INV-FP-3, R13b's exclusion filter, INV-GATE-1, INV-GATE-6,
+   and the guard written to stop recurrences) — the lesson evidently needs repeating:
+   if the question is "what KIND of node is this", ask the tree.
+3. **Both were found by a positive control, not by review.**
+   `TestTheSweepCanActuallyDetectAViolation` synthesizes a violation and asserts the
+   sweep names it. Without it, this whole family would have shipped green and
+   worthless. It is now a test, so a future change to the granularity fails loudly.
+
+---
+
 ## INV-EVAL — the offline scorer's safety gate cannot be recited past
 
 `eval_datasets` is the **second** scoring path into the self-improving loop — round 15

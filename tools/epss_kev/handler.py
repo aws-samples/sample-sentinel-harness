@@ -57,6 +57,12 @@ import os
 import re
 from typing import Any, Dict, List
 
+# The ONE egress guard (INV-EGRESS-1). Imported rather than copied: a local copy
+# of this check is how the same SSRF pair reached two tools before it was
+# mechanized — see sentinel_harness/egress.py.
+from sentinel_harness import egress
+
+
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,19}$")
 _MAX_BATCH = 50
 
@@ -136,7 +142,7 @@ def _enrich_live(cve_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         req = urllib.request.Request(
             url, headers={"User-Agent": "sentinel-harness"}
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
+        with egress.open_checked(req, timeout=15) as resp:  # noqa: S310
             raw = resp.read(_MAX_LIVE_BODY_BYTES + 1)
         if len(raw) > _MAX_LIVE_BODY_BYTES:
             raise RuntimeError(

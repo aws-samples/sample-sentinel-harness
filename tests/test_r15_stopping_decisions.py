@@ -896,9 +896,16 @@ class TestOpsQuerySsrfGuard:
         installed would leave the bypass open while looking fixed."""
         import inspect
         src = inspect.getsource(oq._fetch_live)
-        assert "_NoRedirect" in src, "_fetch_live no longer refuses redirects"
-        assert "urlopen" not in src or "opener.open" in src, (
-            "_fetch_live still uses the default opener, which follows redirects"
+        # Round 17 moved this guard into `sentinel_harness.egress` so all EIGHT live
+        # paths share it — the round-16 fix was applied only here, and the identical
+        # SSRF pair was then found in siem_query. `open_checked` vets the URL and
+        # refuses redirects in one call; INV-EGRESS-1's own suite pins that the opener
+        # really installs the no-redirect handler.
+        assert "egress.open_checked" in src, (
+            "_fetch_live no longer opens through the shared egress guard"
+        )
+        assert "urllib.request.urlopen" not in src, (
+            "_fetch_live calls urlopen directly again, which follows redirects"
         )
 
 
