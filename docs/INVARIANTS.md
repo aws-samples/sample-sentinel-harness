@@ -286,6 +286,42 @@ reader cannot infer a guarantee the code does not give.
 
 ---
 
+## INV-IAC — the permission boundary the infrastructure declares
+
+`iac-cdk/` and `iac-terraform/` had never been audited, and they define real IAM
+boundaries. **They held up** — recorded here as tests rather than as a claim, because
+"we looked and it was fine" is worth nothing a month later.
+
+Two of my initial framings were wrong, and correcting them is most of the value:
+
+1. **A wildcard is not automatically a defect — the STATEMENT TYPE decides.**
+   `network-stack.ts` carries `actions: ["*"], resources: ["*"]`, which looks alarming
+   and is right: it is a **VPC endpoint policy**, whose semantics are "what may traverse
+   this endpoint", *intersected* with the caller's own IAM, bounded by
+   `aws:PrincipalAccount`. Narrowing the actions would break AWS-managed service calls
+   while restricting nothing. In a ROLE policy a wildcard resource expands power; in an
+   endpoint/resource policy with a condition it contracts it. Same characters, opposite
+   direction.
+2. **The two stacks are COMPLEMENTARY, not parallel.** CDK names 17 IAM actions;
+   Terraform names none, because it provisions no IAM role — it does
+   Cognito/VPC/Guardrail/Observability and *accepts* an execution-role ARN by variable.
+   So "do they express the same boundary?" is the wrong question; "does the split leave
+   a gap?" is the right one, and it pointed at the variable's validation regex.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-IAC-1** | Every IAM statement using `resources: ["*"]` is one of three ARGUED exceptions, and no ROLE policy uses a wildcard ACTION at all. `cloudwatch:PutMetricData` has no resource-level scoping and is confined by a `cloudwatch:namespace` condition; the X-Ray write APIs support neither, so the account boundary is the guard — and they are kept in a SEPARATE statement, because attaching the namespace condition to them would be invalid and AWS ignores an unrecognized condition key, silently widening rather than restricting. | `iac-cdk/lib/iam.ts`, `network-stack.ts` | `test_r17_iac_boundaries.py::TestIamWildcardsAreArgued` |
+| **INV-IAC-2** | The Terraform `harness_execution_role_arn` variable is validated, has NO default, and its regex is anchored at both ends. Since that path creates no IAM role, this regex IS the boundary for every harness provisioned there. Tested against 15 shapes: it admits the four legitimate ones (including non-default partitions and a role path) and refuses a user ARN, the account root, an STS assumed-role session, malformed account ids, an empty role name, and leading junk. A test also pins that Terraform still creates no `aws_iam_role`/`aws_iam_policy` — if it starts to, those roles need INV-IAC-1's scrutiny. | `iac-terraform/variables-harness.tf` | `test_r17_iac_boundaries.py::TestTerraformExecutionRoleGate` |
+| **INV-IAC-3** | No IaC file carries a non-placeholder 12-digit account id, a hardcoded execution-role ARN, or anything shaped like an access key. Redundant with the CI secret-scan by design: here a leaked account id is also a deployment target. | `iac-cdk/`, `iac-terraform/` | `test_r17_iac_boundaries.py::TestIacCarriesNoHardcodedIdentity` |
+
+**A negative result needs a positive control**, so
+`TestTheIacGuardsCanDetectADefect` synthesizes each defect class — an unargued wildcard
+resource, a wildcard action, Terraform creating an IAM role, a hardcoded account id —
+and asserts the corresponding guard fires. All four were caught. Without that, 33
+passing tests would be indistinguishable from 33 blind ones.
+
+---
+
 ## INV-EGRESS — one guard, used by every live path
 
 Round 16 found two SSRF defects in `ops_query`, fixed them there, and recorded
