@@ -286,6 +286,72 @@ reader cannot infer a guarantee the code does not give.
 
 ---
 
+## INV-GUARD — the guards are code too
+
+Round 17 shipped three structural guards and **all three were broken on arrival**. Not
+one was caught by review; each was caught by a positive control:
+
+1. `_ALLOWED_BARE_BOOL` was keyed by FILE, so it exempted a whole file forever — a fresh
+   violation injected into `feedback.py` was not caught, because that file already held
+   one legitimate `bool()`. A fail-open built into a mechanism whose only purpose is to
+   prevent fail-open.
+2. The provenance matcher substring-matched `ast.dump()`, and every variable reference
+   carries `ctx=Load()` — so the marker `"load"` matched *everything*. All 24
+   expressions were classified external, and it looked clean only because the allowlist
+   covered them all.
+3. The connector-injection assertion substring-matched a quote-then-operator sequence
+   and flagged all seven **correctly escaped** backends; rewritten, it then measured
+   `str(request)` and counted Python's repr escaping instead of the DSL's.
+
+Three for three. **A guard is at least as likely to be wrong as the code it guards**, and
+nothing was checking the guards.
+
+### What the evidence supports — narrower than I first proposed
+
+I opened this round believing six control-less scanning tests were at risk. Measuring
+said otherwise:
+
+- `test_exporter`-style tests assert a violation IS present (`assert "X" in code`). A
+  broken search makes those FAIL loudly; they cannot pass vacuously. Out of scope.
+- The simple negative scans (one AST node type, one grepped word) were tested by
+  injection — a `subprocess` call added to `simulation.py`, and the grepped word removed
+  from `epss_kev`. **Both fired.** They are not blind.
+- What went blind both times in round 17 was a scan carrying an **exemption
+  mechanism**. An allowlist is the part that can swallow a real violation while the test
+  still reports clean.
+
+So the invariants govern exemptions, not scanning. Today two files qualify and both
+already comply — this family is a ratchet, not a bug report.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-GUARD-1** | An exemption is keyed to an EXPRESSION (or another single-site identifier), never to a bare file path. A file-scoped exemption is the test-suite equivalent of a lint-exempt directory: never revisited, therefore permanent. | `tests/` (AST sweep) | `test_r18_guard_the_guards.py::TestExemptionsAreExpressionScoped` |
+| **INV-GUARD-2** | A scan that carries an exemption mechanism declares a positive control. Empirically justified: every round-17 guard was broken on arrival and a control caught each one. Deliberately NOT required of simple negative scans — those were tested by injection and fired, so demanding it everywhere would be cargo-culting. | `tests/` | `test_r18_guard_the_guards.py::TestGovernedScansHaveAPositiveControl` |
+| **INV-GUARD-3** | A governed scan rejects stale exemptions, and every entry carries a reason of substance. An exemption for a violation that no longer exists trains readers to skim the list; one with no argument cannot be checked. | `tests/` | `test_r18_guard_the_guards.py::TestGovernedScansRejectStaleExemptions` |
+| **INV-GUARD-4** | A structural question is asked of the tree, not of a substring — specifically, no test substring-matches an `ast.dump()` result, in either the `in` or `not in` direction. `ast.dump()` embeds a node type and a context marker for every node, so a short marker matches everything and the matcher reports a clean tree while distinguishing nothing. **Seventh** occurrence of substring-for-structure in this repo (INV-FP-3, R13b's exclusion filter, INV-GATE-1, INV-GATE-6, INV-COERCE's matcher, INV-CONNECTOR-8's assertion, and this). | `tests/` | `test_r18_guard_the_guards.py::TestStructuralQuestionsUseTheTree` |
+
+### Three more control miscues, found while building this
+
+The pattern held: writing the guard produced three more defects, and **a control caught
+every one** — this time controls of the controls.
+
+1. **The e2e probes were named `_r18_e2e_*.py`.** `_test_files()` globs `test_*.py`
+   (correctly — pytest collects the same set), so the probes were invisible and all
+   three reported MISSED. *A "the guard is blind" conclusion can come from a broken
+   probe*, so `test_a_clean_probe_does_not_trip_anything` now asserts a COMPLIANT probe
+   leaves the suite green.
+2. **INV-GUARD-4 matched only `ast.In`**, so `assert 'load' not in dumped` slipped past.
+   The unit control had the *same blind spot as the code*, because both came from one
+   wrong mental model — which is precisely why an independent end-to-end path matters.
+3. **The nested pytest used a bare `python`**, which has no pytest, producing an empty
+   output and an exit code that read as "the guard fired". Now `sys.executable`.
+
+The lasting form of that lesson: **a unit control tests the predicate; only an
+end-to-end control tests that the predicate is wired to an assertion that runs.** Round
+16 shipped a `_NoRedirect` class that existed but was never installed — same gap.
+
+---
+
 ## INV-IAC — the permission boundary the infrastructure declares
 
 `iac-cdk/` and `iac-terraform/` had never been audited, and they define real IAM
