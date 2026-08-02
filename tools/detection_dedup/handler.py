@@ -157,6 +157,66 @@ def _canonical_logsource(parsed: Dict[str, Any]) -> Tuple[Tuple[str, str], ...]:
 Predicate = Tuple[str, str, str]
 
 
+def _has_live_wildcard(value: str) -> bool:
+    """True if the value contains an UNESCAPED ``*``/``?`` — a live wildcard.
+
+    A live wildcard makes the value's match set something other than its literal
+    text, which is the only relation ``_predicate_implies`` can reason about. Such a
+    rule is declared ``not_analyzed`` (INV-DEDUP-5).
+
+    Deliberately narrow, and the narrowing was corrected twice:
+
+    - A first cut flagged every value containing a backslash. Wrong trade-off:
+      nearly every real Sigma rule carries a Windows path, so it silenced the tool
+      on its main use case and broke three tests — the right signal that the guard,
+      not the contract, was wrong.
+    - A second cut also flagged the ESCAPES ``\\*``/``\\?``/``\\\\``. That was still
+      wrong for ``\\\\``: it merely folds two characters into one literal backslash
+      and introduces no pattern semantics, so a value using it is perfectly
+      comparable once resolved. It broke `test_detection_audit` on a rule whose
+      YAML held ``'\\\\powershell.exe'`` — a completely ordinary Sigma value.
+
+    So: RESOLVE the escapes (via the same logic ``sigma_match._unescape_sigma``
+    uses — see :func:`_unescape_value`) and refuse only what is still a wildcard
+    afterwards. Mirroring the authoritative implementation rather than inventing a
+    parallel judgement is the INV-BOUNDARY-1 lesson: this tool and ``sigma_match``
+    diverging on what an escape means is what produced the defect in the first place.
+    """
+    i = 0
+    while i < len(value):
+        c = value[i]
+        if c == "\\" and i + 1 < len(value) and value[i + 1] in ("*", "?", "\\"):
+            i += 2          # an escape — consumes the next char, not a wildcard
+            continue
+        if c in ("*", "?"):
+            return True     # unescaped: a live wildcard
+        i += 1
+    return False
+
+
+def _unescape_value(value: str) -> str:
+    """Resolve Sigma's three escapes so a literal value compares as its true text.
+
+    Byte-for-byte the algorithm of ``sigma_match._unescape_sigma``. Duplicated rather
+    than imported because ``tools/`` handlers are path-loaded, not a package — but
+    the duplication is deliberate and NAMED: if the two ever disagree about what an
+    escape is, the subset proof rests on a different value than the matcher uses,
+    which is exactly the INV-DEDUP-5 defect. ``test_r15_stopping_decisions.py`` pins
+    them to the same answers.
+    """
+    out = []
+    i = 0
+    while i < len(value):
+        c = value[i]
+        if c == "\\" and i + 1 < len(value) and value[i + 1] in ("*", "?", "\\"):
+            out.append(value[i + 1])
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _analyzable_predicates(parsed: Dict[str, Any]) -> Optional[List[Predicate]]:
     """Return the normalized predicate list for a single-selection AND rule, or
     ``None`` if the rule falls outside the provable shape (complex condition,
@@ -182,6 +242,31 @@ def _analyzable_predicates(parsed: Dict[str, Any]) -> Optional[List[Predicate]]:
         # model; a non-string scalar (int/bool/None) likewise. Bail → not analyzed.
         if not isinstance(value, str):
             return None
+        # INV-DEDUP-5: a value carrying Sigma WILDCARD or ESCAPE syntax is compared
+        # below as PLAIN TEXT (`qv in pv`, `pv.startswith(qv)`), which is not what
+        # the value means. Per the Sigma spec `\*` is a LITERAL asterisk, so
+        #
+        #     A: CommandLine|contains: 'C:\Temp\*'      (matches the literal "C:\Temp*")
+        #     B: CommandLine|contains: 'C:\Temp\'       (matches anything under C:\Temp\)
+        #
+        # are NOT in a subset relation — yet raw text made 'c:\temp\' look like a
+        # prefix of 'c:\temp\*', so dedup reported A ⊆ B: "safe to delete A". The
+        # event `del /f /q C:\Temp*` matches A and NOT B, so acting on that verdict
+        # deletes the only detection for a wildcard-mask mass-delete. An exhaustive
+        # predicate-level differential found 156 such false implications, every one
+        # involving an escape.
+        #
+        # Two things are needed, and conflating them was the trap:
+        #   - a LIVE wildcard (unescaped * or ?) makes the match set something other
+        #     than the literal text, so no text relation can decide containment →
+        #     decline;
+        #   - an ESCAPE is resolvable — `\*` means a literal asterisk — so the value
+        #     IS comparable, but only after resolving it to the text it denotes.
+        # Comparing the raw form was the defect: `'c:\temp\'` looked like a prefix of
+        # `'c:\temp\*'` while their real match sets are not nested at all.
+        if _has_live_wildcard(value):
+            return None
+        value = _unescape_value(value)
         parts = str(key).split("|")
         field = parts[0].strip().lower()
         modifiers = [p.strip().lower() for p in parts[1:] if p.strip()]

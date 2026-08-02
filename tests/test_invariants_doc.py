@@ -124,15 +124,39 @@ def test_prefix_citations_match_at_least_one_test():
         )
 
 
+def _defined_invariant_ids() -> list[str]:
+    """Every invariant ID DEFINED by a table row, in document order.
+
+    A definition is the bold ID in the FIRST cell of a table row — i.e. a line
+    starting with ``| **INV-...**``. The previous regex scanned the whole document
+    for ``**INV-X-1**`` anywhere, so bolding an ID in explanatory prose registered a
+    second "definition" and tripped the duplicate check. The docstring already said
+    "only count IDs in a bold table CELL"; the code did not implement that — the
+    exact claim-without-a-mechanism gap round 16 audits, here in the guard itself.
+    """
+    return re.findall(r"^\|\s*\*\*(INV-[A-Z]+-\d+)\*\*", _doc_text(), re.MULTILINE)
+
+
 def test_invariant_ids_are_unique_and_sequential():
     """No duplicate IDs (a duplicate makes a grep ambiguous)."""
-    text = _doc_text()
-    # Only count IDs in a bold table cell (`**INV-X-1**`) as a DEFINITION; plain
-    # mentions elsewhere are references.
-    defined = re.findall(r"\*\*(INV-[A-Z]+-\d+)\*\*", text)
+    defined = _defined_invariant_ids()
     dupes = {i for i in defined if defined.count(i) > 1}
     assert not dupes, f"duplicate invariant definitions: {sorted(dupes)}"
     assert len(defined) >= 20, f"only {len(defined)} invariants defined — expected 20+"
+
+
+def test_prose_may_reference_an_invariant_without_redefining_it():
+    """Regression for the guard above: discussing `**INV-X-1**` in prose is normal
+    (the file explains several invariants at length) and must not read as a second
+    definition."""
+    text = _doc_text()
+    # There IS at least one bold prose mention — otherwise this test is vacuous.
+    all_bold = re.findall(r"\*\*(INV-[A-Z]+-\d+)\*\*", text)
+    row_defined = _defined_invariant_ids()
+    assert len(all_bold) > len(row_defined), (
+        "no bold prose mention of an invariant found; this guard is untested "
+        "(and the duplicate check it protects would go unexercised)"
+    )
 
 
 def test_invariant_ids_referenced_in_code_are_defined():
