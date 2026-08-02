@@ -129,16 +129,22 @@ def test_parse_verdict_prose_fallback_fail():
     assert r["score"] == 0.0
 
 
-def test_parse_verdict_score_clamped_and_pass_coerced():
-    # score above 1 clamps to 1.0; a truthy non-bool pass coerces to bool.
+def test_parse_verdict_out_of_range_score_fails_closed_and_pass_coerced():
+    # CONTRACT CHANGE (round 15, INV-GATE-8): `score: 5` used to clamp to 1.0. A
+    # judge grading on a 0-10 rubric therefore scored a PERFECT 1.0 for 5/10, and
+    # 3/10 likewise. Out of [0, 1] means the judge did not use our scale, so what it
+    # meant is unknowable — fail closed rather than guess. `pass: 1` still coerces
+    # to True, and the 0.0 score then contradicts it, which INV-GATE-5 resolves to
+    # a fail.
     r = ev.handler(
         {"action": "parse_verdict",
          "params": {"text": '{"score": 5, "pass": 1, "reasons": "one", '
                             '"suggestions": "two"}'}}, None)
-    assert r["score"] == 1.0
-    assert r["passed"] is True
-    # a bare-string reasons/suggestions coerces to a one-item list.
-    assert r["reasons"] == ["one"]
+    assert r["score"] == 0.0
+    assert r["passed"] is False
+    # a bare-string reasons/suggestions coerces to a one-item list (unchanged), and
+    # the contradiction note is appended rather than replacing the judge's reasons.
+    assert r["reasons"][0] == "one"
     assert r["suggestions"] == ["two"]
 
 

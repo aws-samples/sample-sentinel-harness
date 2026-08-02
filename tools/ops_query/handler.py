@@ -105,7 +105,6 @@ def _assert_safe_url(url: str) -> None:
     policy's job); only IP-literal hosts are range-checked. Loopback (127.0.0.1) is
     deliberately allowed — the live-test mock server binds there.
     """
-    import ipaddress
     from urllib.parse import urlsplit
 
     parts = urlsplit(url)
@@ -118,9 +117,8 @@ def _assert_safe_url(url: str) -> None:
     host = parts.hostname
     if not host:
         raise RuntimeError("backend URL has no host component")
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
+    ip = _parse_ip_literal(host)
+    if ip is None:
         return
     if (
         ip.is_link_local
@@ -130,6 +128,89 @@ def _assert_safe_url(url: str) -> None:
     ):
         raise RuntimeError(
             f"refusing to open URL targeting non-routable/metadata address {host!r}"
+        )
+
+
+def _parse_ip_literal(host: str):
+    """Parse an IP-literal host, including the ALTERNATE spellings of one.
+
+    ``ipaddress.ip_address()`` only accepts dotted-quad / standard IPv6, so the
+    guard above used to pass a bare integer or hex host straight through as if it
+    were a DNS name — and every one of these is 169.254.169.254, the cloud
+    metadata service:
+
+        http://2852039166/     (decimal)
+        http://0xA9FEA9FE/     (hex)
+        http://0251.0376.0251.0376/  (octal dotted)
+
+    Browsers and most HTTP stacks (including urllib, via the OS resolver) accept
+    all of them. Returning ``None`` here meant "not an IP, let DNS policy handle
+    it", which is exactly the wrong answer for a numeric host.
+
+    Returns an ``ip_address`` object, or ``None`` only for a host that genuinely is
+    not an IP literal in any spelling.
+    """
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    # A wholly-numeric host is a 32-bit address in decimal/hex/octal form.
+    candidate = host.strip()
+    try:
+        if candidate.lower().startswith(("0x", "0X")):
+            value = int(candidate, 16)
+        elif candidate.isdigit():
+            # Leading zero means octal in this notation (0177.0.0.1 style handled
+            # below); a plain digit string is decimal.
+            value = int(candidate, 8) if candidate.startswith("0") else int(candidate)
+        else:
+            # Dotted form whose octets may themselves be octal/hex
+            # (0251.0376.0251.0376 == 169.254.169.254).
+            octets = candidate.split(".")
+            if len(octets) != 4:
+                return None
+            value = 0
+            for octet in octets:
+                if octet.lower().startswith("0x"):
+                    part = int(octet, 16)
+                elif octet.startswith("0") and len(octet) > 1:
+                    part = int(octet, 8)
+                else:
+                    part = int(octet)
+                if not 0 <= part <= 255:
+                    return None
+                value = (value << 8) | part
+        if not 0 <= value <= 0xFFFFFFFF:
+            return None
+        return ipaddress.ip_address(value)
+    except (ValueError, TypeError):
+        return None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow ANY redirect on the live ops call.
+
+    ``urlopen`` follows 3xx by default and ``_assert_safe_url`` only vets the URL
+    it is HANDED, so an allowed backend answering ``302 Location:
+    http://169.254.169.254/...`` walked the request straight past the guard —
+    audited and reproduced. Worse, urllib re-sends the request headers to the
+    redirect target, so the ``Authorization: Bearer`` credential leaked to
+    whatever host the backend named.
+
+    Refusing outright (rather than re-validating and re-following) is the right
+    call here: this client POSTs a selector to ONE configured endpoint, so a
+    redirect is never a legitimate part of that contract, and re-validating still
+    leaves a TOCTOU window between the check and the socket connect.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        raise RuntimeError(
+            f"refusing to follow an HTTP {code} redirect from the ops backend to "
+            f"{newurl!r}: the URL allowlist is applied before the request opens, "
+            "so following a redirect would bypass it (and forward the bearer "
+            "credential to the redirect target)"
         )
 
 
@@ -235,19 +316,92 @@ def _normalize_live_reply(
         raise ValueError(
             f"backend returned {type(reply).__name__}, expected a JSON object"
         )
+    # INV-OPS-2: a backend that reports a PARTIAL result must not have that dropped.
+    # "These are all the open findings in the estate" is a stopping decision — a
+    # finding that does not appear is never triaged, ticketed or fixed. Discarding
+    # `errors[]` turned "3 of 12 accounts denied access" into a confident complete
+    # view, and discarding a pagination cursor truncated the estate to page one with
+    # no signal. Both are surfaced; neither is silently swallowed.
+    _assert_complete(reply)
+
     if "finding_type" in selector:
         findings = reply.get("findings")
         if not isinstance(findings, list):
             raise ValueError(
                 "backend reply missing a 'findings' list for a finding_type query"
             )
-        return {"finding_type": selector["finding_type"], "findings": findings}
+        # INV-OPS-3: the requested type was STAMPED onto whatever list came back,
+        # without checking the list actually contains that type. A backend that
+        # ignores the filter (or a mis-routed reply) therefore had unrelated findings
+        # relabelled as the requested type — an operator triaging "all public_s3
+        # findings" would act on mfa_disabled records under the wrong heading.
+        wanted = selector["finding_type"]
+        mismatched = sorted({
+            str(f.get("finding_type")) for f in findings
+            if isinstance(f, dict) and f.get("finding_type") not in (None, wanted)
+        })
+        if mismatched:
+            raise ValueError(
+                f"backend returned findings of type(s) {mismatched} for a "
+                f"{wanted!r} query — refusing to relabel another type's findings as "
+                f"{wanted!r}"
+            )
+        return {"finding_type": wanted, "findings": findings}
     accounts = reply.get("accounts")
     if not isinstance(accounts, list):
         raise ValueError(
             "backend reply missing an 'accounts' list for an account/wildcard query"
         )
+    # INV-OPS-4: for a SINGLE-account query, the reply must be about that account.
+    # Nothing checked it, so a substituted or mis-routed reply reported another
+    # account's footprint under the requested id — the same relabelling defect
+    # INV-BOUNDARY-4 found in nvd_lookup, one selector over.
+    if "account" in selector:
+        wanted_id = selector["account"]
+        wrong = sorted({
+            str(a.get("account_id")) for a in accounts
+            if isinstance(a, dict) and a.get("account_id") not in (None, wanted_id)
+        })
+        if wrong:
+            raise ValueError(
+                f"backend returned account(s) {wrong} for a query about "
+                f"{wanted_id!r} — refusing to report another account's resources "
+                f"under the requested id"
+            )
     return {"accounts": accounts}
+
+
+def _assert_complete(reply: Dict[str, Any]) -> None:
+    """Refuse a reply the backend itself flagged as partial (INV-OPS-2).
+
+    Two markers, both of which the old normalizer dropped on the floor:
+
+    - ``errors``/``failures``/``partial_failures``: the backend telling us it could
+      not read part of the estate. Reporting the readable part as the whole answer
+      is the fail-open this repo's INV-BOUNDARY family exists to prevent.
+    - ``next_token``/``nextToken``/``next_page``/``marker``: more pages exist. This
+      client issues ONE request, so an un-followed cursor means the returned view is
+      truncated — and a truncated "all open findings" reads as "fewer problems".
+
+    Raised (→ ``upstream_error``) rather than returned-with-a-warning because the
+    caller's contract has no field to carry the caveat, and inventing a silent one
+    would be the same defect in a new shape.
+    """
+    for key in ("errors", "failures", "partial_failures"):
+        problems = reply.get(key)
+        if problems:
+            raise ValueError(
+                f"backend reported a PARTIAL result in {key!r} ({problems!r}) — "
+                "refusing to present an incomplete estate view as complete"
+            )
+    for key in ("next_token", "nextToken", "next_page", "marker", "continuation"):
+        cursor = reply.get(key)
+        if cursor:
+            raise ValueError(
+                f"backend reply carries a pagination cursor {key!r}={cursor!r}, so "
+                "more results exist; this client issues a single request and would "
+                "otherwise report page one as the whole estate"
+            )
 
 
 def _fetch_live(selector: Dict[str, str]) -> Dict[str, Any]:
@@ -292,8 +446,12 @@ def _fetch_live(selector: Dict[str, str]) -> Dict[str, Any]:
     request = urllib.request.Request(
         url, data=body, headers=headers, method="POST"
     )
+    # Opener with redirects REFUSED. The default global opener follows 3xx, which
+    # bypasses `_assert_safe_url` (it only vets the URL we hand it) and re-sends the
+    # Authorization header to whatever host the backend names.
+    opener = urllib.request.build_opener(_NoRedirect)
     try:
-        with urllib.request.urlopen(
+        with opener.open(
             request, timeout=_LIVE_TIMEOUT_SECONDS
         ) as response:
             status = getattr(response, "status", response.getcode())

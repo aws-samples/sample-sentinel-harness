@@ -187,12 +187,28 @@ def _analyzable_predicates(parsed: Dict[str, Any]) -> Optional[List[Predicate]]:
         modifiers = [p.strip().lower() for p in parts[1:] if p.strip()]
         # Pick the value-transform modifier; reject 're'/'all'/numeric/base64/cidr
         # and any unknown modifier as non-analyzable.
-        value_modifier = ""
+        #
+        # INV-DEDUP-4: this loop used to ASSIGN `value_modifier` on each iteration,
+        # so a CHAIN like `Image|contains|startswith` silently kept only the last
+        # one and discarded the rest. That is not a parse of the chain, it is a
+        # different predicate — and `sigma_match` reads the same chain as `contains`
+        # (verified: `xcmdy` matches), so the two engines disagreed about what the
+        # rule even matches while dedup went on to reason about subset relations on
+        # top of that. A provability claim cannot rest on a misread predicate.
+        #
+        # Chained value transforms have no single set-containment model here (is
+        # `|contains|startswith` "starts with, then contains" or the reverse?), so
+        # more than one is refused outright rather than guessed. Consistent with the
+        # allow-list posture that is why this tool survived the differential test.
+        value_modifiers = []
         for m in modifiers:
             if m in ("contains", "startswith", "endswith"):
-                value_modifier = m
+                value_modifiers.append(m)
             else:
                 return None  # 're', 'all', 'cidr', 'base64', numeric, unknown → bail
+        if len(value_modifiers) > 1:
+            return None  # a chain of value transforms → not soundly modelled
+        value_modifier = value_modifiers[0] if value_modifiers else ""
         preds.append((field, value_modifier, value.lower()))
     return preds
 

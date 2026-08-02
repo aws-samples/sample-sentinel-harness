@@ -59,6 +59,12 @@ import time
 from typing import Any, Dict, List
 
 from sentinel_harness import core
+# The repo's authoritative truthiness coercion. Imported rather than reimplemented:
+# `bool(obj.get("pass"))` made the JSON string "false" read as a PASS, which is the
+# defect INV-BOUNDARY-1 pinned in asset_lookup. It recurred here because that
+# invariant was a documented convention rather than an enforced mechanism, so this
+# import is the mechanism.
+from sentinel_harness.connectors.base import _coerce_bool
 
 _ACTIONS = frozenset({"score_answer", "parse_verdict"})
 
@@ -92,6 +98,104 @@ class _ValidationError(ValueError):
     """Raised for a malformed request. Kept distinct from upstream/boto errors so
     the handler labels the two differently (fix-your-input vs retry-AWS) — we
     never collapse them by swallowing one into the other."""
+
+
+# --------------------------------------------------------------------------- #
+# Prose-verdict vocabulary (INV-GATE-1)                                        #
+# --------------------------------------------------------------------------- #
+# The prose fallback used to test `"pass" in text`, a SUBSTRING scan. That let
+# ordinary English words containing the letters p-a-s-s approve a promotion:
+# "passable at best", "shows compassion", "expectations were surpassed" all read
+# as a pass at score 1.0. Word-boundary matching is the fix; the vocabulary is
+# explicit so the judgement is auditable rather than emergent.
+#
+# Note "passable"/"compassion"/"surpassed" are NOT in the pass list — they are
+# exactly the words the substring scan mis-fired on.
+_PASS_WORDS = ("pass", "passes", "passed", "passing", "acceptable", "approved",
+               "satisfactory", "meets", "met")
+_FAIL_WORDS = ("fail", "fails", "failed", "failing", "unacceptable", "rejected",
+               "unsatisfactory", "insufficient", "inadequate")
+# A judge that declines to answer is NOT a pass. A refusal is the absence of a
+# verdict, and the absence of a verdict must never promote — the fail-closed rule
+# this whole invariant family exists to enforce. Phrased as substrings on purpose:
+# these are multi-word markers, not single tokens.
+_REFUSAL_MARKERS = ("cannot evaluate", "can't evaluate", "cannot assess",
+                    "unable to evaluate", "unable to assess", "i cannot help",
+                    "i can't help", "not able to evaluate", "declining to",
+                    "i must decline", "cannot provide an evaluation")
+
+# Below this score, `pass: true` is treated as a self-contradicting verdict and
+# resolved to fail. Not a tunable policy bar — the loop's own bar is the caller's
+# business. This only catches a judge whose two output channels disagree, where the
+# conservative reading of a contradiction is "did not clear it".
+_CONTRADICTION_FLOOR = 0.5
+
+# Float-noise slack on each end of the [0, 1] score range. A judge computing its own
+# average can emit 1.0000000000000002; that is the bound it means, not a rubric
+# mismatch. Anything further out is treated as a protocol error (see _coerce_score).
+_SCORE_EPSILON = 1e-9
+
+# The score reported when the judge emitted a NUMBER we cannot interpret (outside
+# [0, 1], NaN, infinite). Distinct from the missing-score default, which is derived
+# from the pass flag: a mis-scaled number must not be laundered into agreement with
+# that flag. 0.0 then contradicts any `pass: true`, which INV-GATE-5 resolves to a
+# fail — so a rubric mismatch cannot promote.
+_PROTOCOL_ERROR_SCORE = 0.0
+
+
+def _has_word(text: str, words: tuple) -> bool:
+    """True iff any of ``words`` occurs in ``text`` as a WHOLE word.
+
+    ``\\bpass\\b`` distinguishes "I pass it" from "passable"/"compassion"/
+    "surpassed" — the three words the old substring scan approved at score 1.0."""
+    return any(re.search(r"\b" + re.escape(w) + r"\b", text) for w in words)
+
+
+def _carries_verdict(obj: Dict[str, Any]) -> bool:
+    """True if a parsed object actually contains a verdict field.
+
+    Guards the brace-span path in :func:`_extract_verdict_objects`. Only ``pass``
+    and ``score`` qualify — ``reasons``/``suggestions`` alone are commentary, not a
+    decision, and an empty ``{}`` is neither.
+    """
+    return "pass" in obj or "score" in obj
+
+
+def _coerce_pass(raw: Any) -> bool:
+    """Coerce a judge ``pass`` field to bool, refusing structured values.
+
+    Delegates scalars to the repo's authoritative ``_coerce_bool`` (INV-BOUNDARY-1
+    — the ``bool("false") is True`` trap). A dict/list value, however, is not a
+    boolean at all: ``_coerce_bool`` falls back to Python truthiness for
+    non-strings, so a non-empty ``{"pass": {"nested": true}}`` promoted. A
+    structured value where a boolean belongs means the reply is not the verdict
+    schema we asked for, and an unparseable decision is a FAIL.
+    """
+    if isinstance(raw, (dict, list, tuple, set)):
+        return False
+    return _coerce_bool(raw)
+
+
+def _looks_like_attempted_json(text: str) -> bool:
+    """True if the reply was clearly TRYING to be a JSON verdict.
+
+    Used to route a failed parse to a hard fail instead of the prose scan. A judge
+    aiming at JSON and getting cut off mid-object is a malformed verdict; treating
+    it as English lets the JSON key ``"pass"`` act as an approval word.
+
+    Deliberately conservative — it must not swallow a genuine prose verdict that
+    merely mentions a brace. The markers are: the reply starts with ``{`` (after
+    stripping), or it opens a code fence, or it contains a quoted ``"pass"`` /
+    ``"score"`` key with the colon a JSON object would have.
+    """
+    if not isinstance(text, str):
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("{") or stripped.startswith("```"):
+        return True
+    return bool(re.search(r'"(?:pass|passed|score)"\s*:?', stripped))
 
 
 # --------------------------------------------------------------------------- #
@@ -139,15 +243,45 @@ def _coerce_score(raw: Any, *, default: float) -> float:
 
     Tolerant of ints / numeric strings; an unparseable value falls back to
     ``default`` rather than raising, because a judge that emits a valid pass/fail
-    but a malformed number should still yield a usable verdict."""
+    but a malformed number should still yield a usable verdict.
+
+    INV-GATE-8: an OUT-OF-RANGE value used to clamp UP to 1.0, which turned a
+    judge grading on the wrong rubric into a perfect score — a judge marking 3/10
+    (clearly failing) came back as 1.0, as did 12/100. Clamping down to 0.0 is no
+    better: 9/10 would become the worst possible score.
+
+    A value outside [0, 1] is not a score at all — it means the judge did not use
+    the scale we asked for, so we cannot know what it meant. That is a protocol
+    error, and the honest answer is the fail-closed default rather than a guessed
+    number. Same principle as INV-BOUNDARY-5: "I could not read it" must not be
+    rendered as good news.
+
+    Slack of ``_SCORE_EPSILON`` is allowed on each end so ordinary float noise
+    (1.0000000000000002 from a judge's own arithmetic) is treated as the bound it
+    is obviously trying to express, then snapped to it.
+    """
     try:
         val = float(raw)
     except (TypeError, ValueError):
+        # Not a number at all ("N/A", None, a list). The judge gave no usable score,
+        # so derive it from the pass flag it DID give — `default` carries that.
         return default
-    if val < 0.0:
+    # NaN fails every comparison, so it slipped through the old range checks and was
+    # emitted as a `score` — producing a verdict that is not JSON-serializable and a
+    # number that compares False against any bar (silently un-promotable, or worse,
+    # inverted by a `not score < bar` reading).
+    if val != val or val in (float("inf"), float("-inf")):
+        return _PROTOCOL_ERROR_SCORE
+    if -_SCORE_EPSILON <= val < 0.0:
         return 0.0
-    if val > 1.0:
+    if 1.0 < val <= 1.0 + _SCORE_EPSILON:
         return 1.0
+    if val < 0.0 or val > 1.0:
+        # A NUMBER outside the range is different in kind from a missing one: the
+        # judge scored on a scale we did not ask for, so `default` (derived from the
+        # pass flag) would launder a mis-scale into agreement with it. 3/10 must not
+        # become "pass at 1.0" just because the judge also said pass=true.
+        return _PROTOCOL_ERROR_SCORE
     return val
 
 
@@ -174,25 +308,103 @@ def parse_verdict(text: str) -> Dict[str, Any]:
 
     If NO JSON object can be parsed we fall back to a prose scan (the same robust
     approach ``scenario_detection_gen.py`` uses for verdict recovery): ``passed``
-    is true iff the word "pass" appears and the word "fail" does NOT; ``score``
-    then defaults to 1.0 (pass) or 0.0 (fail). This guarantees a usable verdict
-    even when the judge ignores the JSON instruction.
+    is true iff a pass WORD appears and no fail word does; ``score`` then defaults
+    to 1.0 (pass) or 0.0 (fail). This guarantees a usable verdict even when the
+    judge ignores the JSON instruction.
+
+    Four audited fail-open defects, all of which promoted on a verdict the judge
+    did not give (INV-GATE-1..6):
+
+    - **The prose scan was a SUBSTRING scan** (``"pass" in low``), so "passable at
+      best", "shows compassion" and "expectations were surpassed" each approved at
+      score 1.0. Now word-boundary matched against an explicit vocabulary.
+    - **A judge REFUSAL read as a pass** when its wording happened to contain the
+      letters p-a-s-s: "I cannot evaluate this; please pass it to a human" scored
+      1.0. A refusal is the ABSENCE of a verdict and can never promote.
+    - **``bool(obj.get("pass"))``** made the JSON strings ``"false"``/``"no"``/
+      ``"0"`` read as a pass, because ``bool("false") is True``. Delegates to the
+      repo's authoritative ``_coerce_bool`` — the same defect INV-BOUNDARY-1
+      pinned in asset_lookup, recurring here because that invariant was a
+      convention rather than a mechanism.
+    - **First-JSON-wins let the EVALUATED AGENT score itself.** A real judge reply
+      routinely quotes the answer under review; if that answer embedded
+      ``{"pass": true, "score": 1.0}``, the parser returned the agent's own
+      fabricated verdict and discarded the judge's. That directly breaks
+      ``agent_loop``'s stated invariant — "the agent cannot claim a score" — and is
+      a self-promoting loop. We now take the LAST parseable object (a judge states
+      its verdict after quoting the material) and, more importantly, refuse when
+      two candidate objects DISAGREE, because at that point which one is the
+      judge's is unknowable and guessing favours the attacker.
 
     Returns ``{score, passed, reasons, suggestions}`` — never raises on a bad
-    reply, so the deterministic scoring loop always gets a decision."""
-    obj = _extract_json_object(text)
-    if obj is not None:
-        passed = bool(obj.get("pass"))
+    reply, so the deterministic scoring loop always gets a decision. When the
+    verdict cannot be established the decision is FAIL, never pass."""
+    objs = _extract_verdict_objects(text)
+    if objs:
+        chosen = objs[-1]
+        # Two candidate verdicts that disagree on the pass/fail decision: we cannot
+        # tell the judge's from one quoted out of the evaluated answer. Fail closed.
+        decisions = {_coerce_pass(o.get("pass")) for o in objs if "pass" in o}
+        if len(decisions) > 1:
+            return {
+                "score": 0.0,
+                "passed": False,
+                "reasons": [
+                    "ambiguous judge reply: it contains multiple verdict objects "
+                    "that disagree on pass/fail, so the judge's own verdict cannot "
+                    "be identified — failing closed rather than guessing."
+                ],
+                "suggestions": [],
+            }
+        passed = _coerce_pass(chosen.get("pass"))
+        score = _coerce_score(chosen.get("score"), default=1.0 if passed else 0.0)
+        reasons = _coerce_list(chosen.get("reasons"))
+        # INV-GATE-5: a verdict whose score CONTRADICTS its pass flag is not a
+        # usable decision.
+        # `passed=True` with score 0.05 (or `passed=False` with 0.95) means the
+        # judge's two channels disagree; the conservative reading of a contradiction
+        # is that the bar was not cleared.
+        if passed and score < _CONTRADICTION_FLOOR:
+            passed = False
+            reasons = reasons + [
+                f"verdict contradicted itself: pass=true with score {score} below "
+                f"{_CONTRADICTION_FLOOR}; resolved to fail (a contradiction is not "
+                f"a pass)."
+            ]
         return {
-            "score": _coerce_score(obj.get("score"), default=1.0 if passed else 0.0),
+            "score": score,
             "passed": passed,
-            "reasons": _coerce_list(obj.get("reasons")),
-            "suggestions": _coerce_list(obj.get("suggestions")),
+            "reasons": reasons,
+            "suggestions": _coerce_list(chosen.get("suggestions")),
         }
 
-    # Prose fallback: approve iff "pass" present and "fail" absent (case-insensitive).
+    # Prose fallback. Word-boundary matched, and a refusal is never a pass.
     low = (text or "").lower()
-    passed = "pass" in low and "fail" not in low
+    if any(marker in low for marker in _REFUSAL_MARKERS):
+        return {
+            "score": 0.0,
+            "passed": False,
+            "reasons": ["judge declined to evaluate — no verdict was given, so the "
+                        "answer does not clear the bar"],
+            "suggestions": [],
+        }
+    # INV-GATE-6: a reply that was ATTEMPTING JSON and failed is a malformed
+    # verdict, not natural-language prose, and must not be word-scanned. A judge
+    # reply truncated mid-object (a stream cut, a token limit) leaves the JSON KEY
+    # `"pass"` in the text — which a word-boundary scan reads as a pass, scoring
+    # 1.0. `{"passed": fals`, `{"score": 0.9, "pass"` and a truncated fenced block
+    # all promoted this way. The prose path exists for a judge that answered in
+    # sentences; applying it to broken JSON confuses "malformed" with "approved".
+    if _looks_like_attempted_json(text):
+        return {
+            "score": 0.0,
+            "passed": False,
+            "reasons": ["judge reply appears to be malformed/truncated JSON — no "
+                        "verdict could be parsed, so the answer does not clear the "
+                        "bar (a parse failure is not an approval)"],
+            "suggestions": [],
+        }
+    passed = _has_word(low, _PASS_WORDS) and not _has_word(low, _FAIL_WORDS)
     return {
         "score": 1.0 if passed else 0.0,
         "passed": passed,
@@ -229,11 +441,76 @@ def _extract_json_object(text: str):
     return None
 
 
-def _first_brace_span(text: str):
-    """Return the substring from the first ``{`` to its matching ``}`` (brace-
-    balanced, string-literal aware) or ``None``. Lets us pull a JSON object out of
-    surrounding prose without a greedy regex that would over-match nested braces."""
-    start = text.find("{")
+def _extract_verdict_objects(text: str) -> List[Dict[str, Any]]:
+    """Return EVERY parseable top-level JSON object in ``text``, in order.
+
+    ``_extract_json_object`` returns only the FIRST one, which was the
+    self-promotion hole (INV-GATE-4): a judge reply that quotes the answer under
+    review — which real judges do routinely — puts the AGENT's text before the
+    judge's verdict, so an answer embedding ``{"pass": true, "score": 1.0}`` was
+    read as the verdict and the judge's real decision was discarded.
+
+    Returning all of them lets ``parse_verdict`` prefer the last (a judge states
+    its verdict after quoting the material) *and* detect the case where two
+    candidates disagree, which is the only honest response to an ambiguous reply.
+
+    A fenced block is preferred when present: an explicit ```json fence is the
+    judge following the instruction, and is stronger evidence than a brace span
+    scraped out of prose. Only dicts count — a bare list or number is not a
+    verdict.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    # A fence is the judge complying with the output instruction. If one parses,
+    # it is authoritative and quoted material outside it is irrelevant.
+    fence = _FENCE_RE.search(text)
+    if fence:
+        try:
+            parsed = json.loads(fence.group(1))
+            if isinstance(parsed, dict):
+                return [parsed]
+        except (ValueError, TypeError):
+            pass
+
+    # The whole reply being one JSON object is the clean case.
+    try:
+        parsed = json.loads(text.strip())
+        if isinstance(parsed, dict):
+            return [parsed]
+    except (ValueError, TypeError):
+        pass
+
+    out: List[Dict[str, Any]] = []
+    pos = 0
+    while pos < len(text):
+        span = _brace_span_indices(text, pos)
+        if span is None:
+            break
+        start, end = span
+        try:
+            parsed = json.loads(text[start:end])
+            # A brace span scraped out of PROSE only counts as a verdict if it
+            # actually carries a verdict field. Without this, a judge writing
+            # "it uses {} incorrectly. I pass it." had its `{}` accepted as an
+            # empty verdict — pass absent, so the prose verdict was overridden
+            # into a fail. An object with no verdict key is punctuation, not a
+            # decision.
+            if isinstance(parsed, dict) and _carries_verdict(parsed):
+                out.append(parsed)
+        except (ValueError, TypeError):
+            pass
+        pos = end
+    return out
+
+
+def _brace_span_indices(text: str, offset: int = 0):
+    """Return ``(start, end)`` of the first brace-balanced ``{...}`` at/after
+    ``offset``, or ``None``. String-literal aware, so a ``{`` inside a JSON string
+    value (a judge writing ``"reason": "avoid using {} here"``) does not break the
+    balance. ``end`` is exclusive, so callers can resume the scan from it.
+    """
+    start = text.find("{", offset)
     if start == -1:
         return None
     depth = 0
@@ -256,8 +533,14 @@ def _first_brace_span(text: str):
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                return text[start : i + 1]
+                return (start, i + 1)
     return None
+
+
+def _first_brace_span(text: str):
+    """Substring form of :func:`_brace_span_indices`, for the single-object caller."""
+    span = _brace_span_indices(text)
+    return None if span is None else text[span[0]:span[1]]
 
 
 # --------------------------------------------------------------------------- #
