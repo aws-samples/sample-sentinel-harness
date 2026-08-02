@@ -8,10 +8,12 @@ mechanism). The happy-path suites (``tests/test_run_evaluation.py`` and
 they skip:
 
   * ``parse_verdict`` / ``_extract_json_object`` — nested verdict objects, braces
-    inside string literals, MULTIPLE candidate objects (the right one wins), a
+    inside string literals, MULTIPLE candidate objects (agreeing ones yield a
+    verdict, DISAGREEING ones fail closed — round 15 / INV-GATE-4), a
     fenced block winning over surrounding prose braces, fractional out-of-range
     scores clamped to [0, 1], a parseable string-number score, the subtle
-    truthy/falsy ``pass`` variants (a non-empty ``"false"`` string is TRUTHY),
+    truthy/falsy ``pass`` variants (a string ``"false"`` is a FAIL — round 15 /
+    INV-GATE-3 replaced the old ``bool()`` behaviour with the shared coercion),
     ``reasons``/``suggestions`` given as a bare string vs a list vs missing, and a
     pure-prose reply with no JSON.
   * ``score_answer`` validation — each missing required param, criteria as list vs
@@ -133,17 +135,40 @@ def test_parse_verdict_braces_inside_string_values():
     assert r["suggestions"] == ["wrap {x} in braces"]
 
 
-def test_parse_verdict_multiple_objects_takes_first_brace_span():
-    # Two standalone objects in prose. The whole trimmed string is not valid JSON,
-    # so the brace scanner returns the FIRST balanced {...} span — that verdict
-    # (score 0.1 / fail) is the one that must win, not the later 0.9 / pass one.
+def test_parse_verdict_disagreeing_objects_fail_closed():
+    # CONTRACT CHANGE (round 15, INV-GATE-4). This test used to assert that the
+    # FIRST brace span wins, on the reading that the judge revised itself and the
+    # first cut is authoritative. That reading is unprovable from the text, and the
+    # OTHER reading is an attack: a judge reply routinely QUOTES the answer under
+    # review, so an answer embedding `{"pass": true, "score": 1.0}` put a verdict
+    # written by the evaluated agent ahead of the judge's own. Reading it as the
+    # verdict makes `agent_loop`'s stated invariant — "the agent cannot claim a
+    # score" — false at the parser level.
+    #
+    # Nothing in the bytes distinguishes "the judge revised itself" from "the judge
+    # quoted the agent", so ANY pick is a guess, and a guess here favours whoever
+    # controls the other object. Two candidate verdicts that DISAGREE on pass/fail
+    # therefore resolve to a fail with an explicit reason.
     text = ('First cut: {"score": 0.1, "pass": false, "reasons": ["thin"]} '
             'Revised: {"score": 0.9, "pass": true, "reasons": ["good"]}')
     r = _pv(text)
     assert r["ok"] is True
-    assert r["score"] == 0.1
     assert r["passed"] is False
-    assert r["reasons"] == ["thin"]
+    assert r["score"] == 0.0
+    assert any("ambiguous" in reason.lower() for reason in r["reasons"]), r["reasons"]
+
+
+def test_parse_verdict_agreeing_objects_still_yield_a_verdict():
+    # The ambiguity rule keys on DISAGREEMENT, not on multiplicity: two objects that
+    # reach the same decision are not ambiguous, so a judge that restates its
+    # verdict still gets a usable result rather than being punished for verbosity.
+    text = ('First cut: {"score": 0.2, "pass": false, "reasons": ["thin"]} '
+            'Restated: {"score": 0.3, "pass": false, "reasons": ["still thin"]}')
+    r = _pv(text)
+    assert r["ok"] is True
+    assert r["passed"] is False
+    assert r["score"] == 0.3          # the last statement of an agreed decision
+    assert r["reasons"] == ["still thin"]
 
 
 def test_parse_verdict_fenced_block_wins_over_surrounding_prose_braces():
@@ -193,9 +218,25 @@ def test_parse_verdict_string_number_score_is_parsed():
     ("", False),         # empty string is falsy
     (None, False),       # null is falsy
     ([], False),         # empty list is falsy
-    ("false", True),     # GOTCHA: a NON-EMPTY string is TRUTHY, even "false"
-    ("no", True),        # any non-empty string is truthy under bool()
-    (["x"], True),       # non-empty list is truthy
+    # CONTRACT CHANGE (round 15, INV-GATE-3). These three used to expect True, and
+    # the parametrize comment labelled the first one a "GOTCHA: a NON-EMPTY string
+    # is TRUTHY, even 'false'". That was documenting `bool()`'s behaviour, not
+    # asserting a verdict semantics anyone wants: a judge (or a proxy) that
+    # serializes the boolean as a string promoted a FAILING answer. Round 14 ruled
+    # the identical trap a defect in asset_lookup and pinned INV-BOUNDARY-1 to the
+    # shared `_coerce_bool`; the gate now delegates to it too.
+    ("false", False),    # a string "false" is a FAIL, not a truthy non-empty string
+    ("no", False),
+    # A structured value where a boolean belongs means the reply is not the verdict
+    # schema we asked for. `_coerce_bool` falls back to Python truthiness for
+    # non-strings, so a non-empty list promoted; an unparseable decision is a fail.
+    (["x"], False),
+    # CONTROL: the affirmative string forms must still promote, so the fix is a
+    # correction and not a blanket denial.
+    ("true", True),
+    ("yes", True),
+    (True, True),
+    (1, True),
 ])
 def test_parse_verdict_pass_truthy_falsy_variants(pass_val, expected):
     import json

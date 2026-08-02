@@ -224,6 +224,72 @@ most dangerous outcome in the suite.
 
 ---
 
+## INV-GATE — the promotion gate never approves a verdict the judge did not give
+
+`run_evaluation` is the scoring gate the self-improvement loop promotes on. Its
+input — an LLM judge's reply — is untrusted: it can be malformed, truncated,
+refused, or quote material the evaluated agent wrote. Round 15 found **six** ways a
+missing or ambiguous judgement resolved into a **PASS**.
+
+The most consequential is not on this list as a separate row because it underlies
+four of them: a *stopping decision* was being reached by DEFAULT. "The judge did not
+clearly say fail" is not the same as "the judge said pass".
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-GATE-1** | The prose verdict is matched on WORDS, not substrings. `"pass" in text` approved on "passable at best", "shows compassion" and "expectations were surpassed" — at score 1.0. Same substring-for-semantics error as INV-FP-3 (`"\|contains" in field_name`) and R13b's `"not " in condition`. | `run_evaluation._has_word` | `test_r15_stopping_decisions.py::TestProseVerdictIsWordMatched` |
+| **INV-GATE-2** | A judge REFUSAL is never a pass. "I cannot evaluate this; please pass it to a human" scored 1.0. A refusal is the *absence* of a verdict, and a guardrail refusal is exactly the reply most likely to contain hedging words. | `run_evaluation._REFUSAL_MARKERS` | `test_r15_stopping_decisions.py::TestJudgeRefusalIsNotAPass` |
+| **INV-GATE-3** | The `pass` flag is parsed, never bare-`bool()`'d, and a structured value where a boolean belongs is a fail. `bool("false") is True` promoted a failing verdict. **This is INV-BOUNDARY-1 recurring one round after it was established** — the lesson being that an invariant expressed as a documented convention gets reimplemented; the import of the shared helper is the mechanism. | `run_evaluation._coerce_pass` | `test_r15_stopping_decisions.py::TestPassFlagIsCoerced` |
+| **INV-GATE-4** | The evaluated agent cannot supply its own verdict. First-JSON-wins meant a judge reply *quoting the answer under review* — normal judge behaviour — put the agent's embedded `{"pass": true, "score": 1.0}` ahead of the judge's real decision, making `agent_loop`'s stated invariant ("the agent cannot claim a score") false at the parser level. Nothing in the bytes distinguishes "the judge revised itself" from "the judge quoted the agent", so disagreeing candidates fail closed. | `run_evaluation._extract_verdict_objects` | `test_r15_stopping_decisions.py::TestAgentCannotScoreItself` |
+| **INV-GATE-5** | A self-contradicting verdict is not a pass. `pass: true` with score 0.05 promoted on the flag alone; the judge's two output channels disagreeing is not a decision. The score is still reported faithfully so an operator can see the contradiction. | `run_evaluation.parse_verdict` | `test_r15_stopping_decisions.py::TestContradictoryVerdictFailsClosed` |
+| **INV-GATE-6** | A malformed/truncated JSON reply is not word-scanned. **This defect was created by the fix for INV-GATE-1**: word-boundary matching then matched the JSON *key* `"pass"` left by a reply cut off mid-object, so a truncated failing verdict scored 1.0. A parallel probe quantified it — 73 of the 93 possible cut points in one failing verdict flipped it to a maximum-confidence approval. The root cause was a LAYER confusion, not a vocabulary gap: the prose path is for a judge that answered in sentences, and applying it to broken JSON reads "malformed" as "approved". | `run_evaluation._looks_like_attempted_json` | `test_r15_stopping_decisions.py::TestTruncatedJsonIsNotAPass` |
+| **INV-GATE-7** | `parse_verdict` is pure, as its docstring claims, and never raises on hostile input — but its decision on garbage is FAIL, never pass. | `run_evaluation.parse_verdict` | `test_r15_stopping_decisions.py::TestParseVerdictIsPure` |
+
+Two contracts in `tests/test_m2_edge.py` were deliberately **overturned** here, with
+the reasoning recorded at each site: `pass: "false" → True` (whose own comment
+called it a "GOTCHA", i.e. it documented `bool()`'s behaviour rather than asserting a
+wanted semantics) and first-brace-span-wins.
+
+---
+
+## INV-DEDUP — a redundancy verdict is provable, or it is not made
+
+`detection_dedup` tells an engineer a detection rule is safe to delete. Its docstring
+makes a claim that is a *mathematical proposition*: "It NEVER claims a rule is
+redundant unless the subset relation is provable." Round 15 mechanized that
+obligation instead of trusting it.
+
+**The tool survived.** ~200 subset/duplicate claims across every modifier
+combination, wildcard form, field-name casing and logsource granularity produced
+zero counterexamples under the repo's own Sigma matcher. The reason is design, not
+luck: `_analyzable_predicates` is an **allow-list** — only
+contains/startswith/endswith/bare-equality over string scalars pass, and everything
+else returns `None` → `not_analyzed`. Allow-listing is the only way a provability
+claim survives contact with an adversary, and it is worth contrasting with the
+denylist-shaped defects INV-FP and INV-GATE record.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-DEDUP-1** | If the tool reports A ⊆ B, then no event matches A without matching B — verified differentially against `tools/sigma_match`, **with a positive control** that injects an unsound `_predicate_implies` and asserts the harness catches it (it finds 52 violations). Without that control, "0 violations" is indistinguishable from a broken harness — the vacuous-pass failure mode this repo has hit three times. | `detection_dedup._predicate_implies` / `_subset_of` | `test_r15_stopping_decisions.py::TestSubsumptionIsSound` |
+| **INV-DEDUP-2** | Every input rule is accounted for exactly once: analyzed, or *declared* in `not_analyzed`. A silently dropped rule lets a reviewer believe the corpus was fully covered. Declining to analyze is the tool being honest; a confident verdict on an unmodelled shape is the defect. | `detection_dedup._analyze` | `test_r15_stopping_decisions.py::TestSubsumptionIsSound::test_every_rule_is_accounted_for_exactly_once` |
+| **INV-DEDUP-3** | Rules over different logsources are never compared — they never see the same events, so no relation between them is assertable. And the tool stays USEFUL: a narrow rule strictly inside a broad one is still reported, in the correct direction. | `detection_dedup._analyze` | `test_r15_stopping_decisions.py::TestSubsumptionIsSound::test_an_actually_redundant_rule_is_still_found` |
+
+---
+
+## INV-OPS — an unknown filter is refused, never answered with silence
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-OPS-1** | An unknown or mis-cased `finding_type` is a `validation_error`, not an empty result set. "These are all the open findings in the estate" is a stopping decision: a finding that does not appear is never triaged, ticketed or fixed, so a mistyped filter must not read as "all clear". Per-type counts reconcile with the estate total, and the wildcard view carries every finding. | `ops_query._validate` | `test_r15_stopping_decisions.py::TestOpsQueryRefusesUnknownFilters` |
+
+`ops_query` also **survived** round 15. The contrast with INV-GATE is the useful
+part: `ops_query` validates *caller input* and can legitimately refuse it, whereas
+`run_evaluation` parses an *upstream response* and must tolerate it. Tolerance is
+where fail-open grows — which is why rounds 14 and 15 found every defect on a
+response-parsing path.
+
+---
+
 ## INV-BOUNDARY — an external source's silence is never read as good news
 
 Every tool in this family translates a response we do **not** control into a

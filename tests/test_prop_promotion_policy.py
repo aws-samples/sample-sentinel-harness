@@ -187,7 +187,15 @@ def _run(turns, *, max_tool_calls=20, threshold=0.7, incumbent_best=None):
                                         "promote_endpoint"):
             promotion_evidence.append(
                 {"target": (tool_input.get("params") or {}).get("harness_id"),
-                 "evals_so_far": [dict(e) for e in eval_returns]})
+                 "evals_so_far": [dict(e) for e in eval_returns],
+                 # The APPROVALS as they stood too. Snapshotting the evals but not
+                 # the consent left the approval assertion reading end-of-session
+                 # state, so a stream that promoted legitimately and then had a
+                 # LATER approval denied falsified the property — the assertion was
+                 # wrong, not the gate. This is the same snapshot-vs-final-state
+                 # error the `witnessed_subject` comment below records; it was fixed
+                 # for the subject and missed for the consent.
+                 "approvals_so_far": [dict(a) for a in approvals]})
         return {"ok": True}
 
     def approve_fn(tool_input):
@@ -241,8 +249,19 @@ def test_promotion_implies_human_approval_of_the_same_subject(turns):
     consent for harness A authorized promoting harness B."""
     result, _, _, promo = _run(turns)
     if result.promoted:
-        assert result.witnessed_approval is True
         assert promo, "promoted but the promotion handler never ran"
+        # Check the consent that AUTHORIZED this promotion, not the session's final
+        # approval state. `result.witnessed_approval` is end-of-session: a stream may
+        # legitimately promote and then have a LATER approval request denied, which
+        # flips that flag without retroactively un-authorizing the promotion that
+        # already happened. Reading it here made the property falsifiable by a
+        # perfectly legal stream — the same snapshot-vs-final-state error the
+        # subject check below already corrects for.
+        approvals_at_promotion = promo[-1]["approvals_so_far"]
+        assert any(a.get("_decision", True) for a in approvals_at_promotion), (
+            "promoted with no granted approval on record at the moment it executed; "
+            f"approvals seen by then: {approvals_at_promotion}"
+        )
         # Compare against the subject the PROMOTION targeted, captured when it
         # executed. ``result.witnessed_subject`` is end-of-session state: a stream
         # may evaluate another harness AFTER the promotion (even in the same turn),
