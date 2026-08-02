@@ -31,9 +31,22 @@ import re
 from typing import Any, Dict, List, Optional
 
 from .core import _control
+from .logutil import get_logger
 
 # Descriptor types the live Registry accepts (verified against the service model).
 DESCRIPTOR_TYPES = ("MCP", "A2A", "CUSTOM", "AGENT_SKILLS")
+
+# The statuses a NOT-YET-LIVE record may legitimately report right after creation
+# (INV-REGISTRY-1). `CREATING` is the transient state before the service settles the
+# record into `DRAFT`; both mean "exists, not callable".
+#
+# Anything else — `ACTIVE`, `APPROVED`, `LIVE`, an empty string, a missing field — means
+# either the record went live without the human step this module promises, or we cannot
+# tell. Both must be refused: `approvalConfiguration` is set on the REGISTRY, and
+# `create_registry_record` cannot see it, so a `registry_id` pointing at an
+# auto-approving registry, an API version that ignores the field, or a partition with
+# different behaviour would all produce a live record while this module reported success.
+NOT_YET_LIVE_STATUSES = frozenset({"DRAFT", "CREATING"})
 
 # clientToken shape (verified against the bedrock-agentcore-control model): pattern
 # `[a-zA-Z0-9](-*[a-zA-Z0-9]){0,256}` (alphanumerics + hyphens ONLY, no trailing
@@ -88,6 +101,18 @@ def create_registry(
     if authorizer_type not in ("AWS_IAM", "CUSTOM_JWT"):
         raise RegistryLiveError(
             f"authorizer_type must be AWS_IAM or CUSTOM_JWT, got {authorizer_type!r}"
+        )
+    if auto_approval:
+        # INV-REGISTRY-2: creating an UNGOVERNED registry is allowed but never silent.
+        # Every record in it goes live with no human step, which is the opposite of the
+        # DRAFT-until-approved gate this module exists to provide. The parameter stays
+        # (an adopter may genuinely want it for a throwaway dev registry), but an
+        # operator reading the logs must be able to see that the gate was waived —
+        # the degradation-leaves-a-trace rule applied to a deliberate choice.
+        get_logger(__name__).warning(
+            "create_registry(%r, auto_approval=True): every record in this registry "
+            "will go LIVE with NO human approval step. The DRAFT-until-approved gate "
+            "is waived for this registry.", name,
         )
     args: Dict[str, Any] = {
         "name": name,
@@ -197,7 +222,32 @@ def _create_record(
         raise RegistryLiveError(
             f"create_registry_record({name!r}) failed: {exc}"
         ) from exc
-    return {"recordArn": resp.get("recordArn", ""), "status": resp.get("status", "")}
+    status = resp.get("status")
+    # INV-REGISTRY-1: VERIFY the DRAFT claim, do not merely assert it.
+    #
+    # This module's headline guarantee is "autoApproval=false => a new record lands in
+    # DRAFT and is NOT live until approved". It used to SEND that configuration and
+    # return whatever status came back — so a backend reporting ACTIVE / APPROVED /
+    # LIVE / "" / nothing was passed through as success. Reproduced across all five.
+    #
+    # The gap is structural, not hypothetical: `approvalConfiguration` is set on the
+    # REGISTRY, and this call cannot see it. A `registry_id` naming an auto-approving
+    # registry, an API version that ignores the field, or a partition with different
+    # behaviour each produce a live record while the governance report says DRAFT.
+    #
+    # A Registry record is what makes a tool or agent discoverable and callable, so an
+    # unapproved-but-live record is an ungoverned capability. Refusing is right: the
+    # caller asked for a governed record and did not get one, and INV-BOUNDARY-5's rule
+    # applies — "we could not tell" must never render as the safe answer.
+    if status not in NOT_YET_LIVE_STATUSES:
+        raise RegistryLiveError(
+            f"create_registry_record({name!r}) returned status {status!r}, not one of "
+            f"{sorted(NOT_YET_LIVE_STATUSES)}. The record may be LIVE without the human "
+            f"approval this module guarantees — check the registry's "
+            f"approvalConfiguration (autoApproval must be false) before trusting it. "
+            f"Refusing rather than reporting a governed record that is not one."
+        )
+    return {"recordArn": resp.get("recordArn", ""), "status": status}
 
 
 def list_records(registry_id: str) -> List[Dict[str, Any]]:
