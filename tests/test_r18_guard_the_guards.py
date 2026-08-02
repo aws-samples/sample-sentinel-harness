@@ -628,16 +628,25 @@ class TestTheAssembledSuiteFiresEndToEnd:
     def _run_suite() -> tuple[int, str]:
         """Run the rest of THIS module in a child pytest.
 
-        `sys.executable` rather than a bare `python`: the suite runs under `uv`, whose
-        interpreter is the only one with pytest importable. A bare `python` produced an
-        empty output and an exit code that read as "the guard fired" — a false positive
-        in the control itself, which is the third such miscue in this round and the
-        reason `test_a_clean_probe_does_not_trip_anything` exists.
+        Interpreter selection took three attempts, and the last one is a round-19
+        finding about this very test:
+
+        - a bare ``python`` has no pytest, so the child produced empty output and an
+          exit code that read as "the guard fired" — a false positive in the control;
+        - ``sys.executable`` fixed that ONLY because the parent happened to be pytest.
+          Under ``uv run python`` (a different parent) it resolves to
+          ``.venv/bin/python3``, which does NOT have pytest — verified. So the fix
+          worked by coincidence of how the suite is usually launched.
+        - ``uv run pytest`` asks the tool that owns the environment to resolve it, which
+          is correct regardless of the parent process.
+
+        `_probe_run_is_sane` below asserts the child can run at all, so a future
+        environment change surfaces as "the control is broken" rather than as a silent
+        pass.
         """
         import subprocess
-        import sys
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", f"tests/{THIS_FILE}", "-q", "--no-header",
+            ["uv", "run", "pytest", f"tests/{THIS_FILE}", "-q", "--no-header",
              "-p", "no:randomly", "-p", "no:cacheprovider",
              # Skip THIS class, or the child recurses into another child.
              "--deselect",
@@ -645,6 +654,27 @@ class TestTheAssembledSuiteFiresEndToEnd:
             cwd=REPO_ROOT, capture_output=True, text=True, timeout=600,
         )
         return result.returncode, result.stdout + result.stderr
+
+    def test_the_child_pytest_can_actually_run(self):
+        """Assert the child produces real pytest output, not an interpreter error.
+
+        Without this, ANY child-launch failure reads as "the guard fired" in the tests
+        below — which is precisely what a bare `python` did, and what `sys.executable`
+        would do again under a different parent process. An exit code alone is not
+        evidence; the output has to look like a test run.
+        """
+        code, output = self._run_suite()
+        assert "No module named pytest" not in output, (
+            f"the child interpreter has no pytest, so every failure below is a false "
+            f"positive:\n{output[-300:]}"
+        )
+        assert re.search(r"\d+ (?:passed|failed|error)", output), (
+            f"the child produced no pytest summary — it did not run:\n{output[-300:]}"
+        )
+        assert code == 0, (
+            f"the child suite fails on the CLEAN tree, so nothing below is "
+            f"interpretable:\n{output[-400:]}"
+        )
 
     def test_a_clean_probe_does_not_trip_anything(self):
         """Sanity-check the CONTROL: a compliant module must leave the suite green.
