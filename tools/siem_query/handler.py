@@ -169,7 +169,19 @@ def _normalize_event(alert: Dict[str, Any]) -> Dict[str, Any]:
         "dst_ip": alert.get("dst_ip"),
         "technique": alert["technique"],
         "summary": alert.get("raw_summary", ""),
-        "false_positive": bool(alert.get("false_positive", False)),
+        # INV-COERCE-1: the same coercion the LIVE path uses. R13b fixed
+        # `_normalize_live_event` to stop `bool("false")` reading as a false positive,
+        # but left this offline sibling on a bare `bool()` — so the two normalizers in
+        # THIS FILE disagreed about the same bytes:
+        #
+        #     offline `_normalize_event`      : "false" -> True   (dropped as noise)
+        #     live    `_normalize_live_event` : "false" -> False  (kept)
+        #
+        # That is the exact defect R13b recorded ("two paths, opposite security
+        # verdicts"), surviving in the file the fix landed in. Found by an AST sweep,
+        # not by reading — which is why INV-COERCE now mechanizes the rule instead of
+        # trusting a convention.
+        "false_positive": _coerce_fp(alert.get("false_positive", False)),
     }
 
 

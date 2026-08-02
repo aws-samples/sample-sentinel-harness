@@ -286,6 +286,57 @@ reader cannot infer a guarantee the code does not give.
 
 ---
 
+## INV-COERCE — the invariants that recurred are now enforced structurally
+
+Nine rounds produced 106 invariants. **Three of them came back after being fixed**, and
+every recurrence had the same cause: the invariant was recorded as a CONVENTION, so the
+next author — or the same author on a different code path — reimplemented the trap.
+
+    INV-BOUNDARY-1  (r14)  bare bool() on external data, in asset_lookup
+      -> INV-GATE-3  (r15)  the SAME defect in run_evaluation, one round later
+      -> INV-COERCE-1 (r17) the SAME defect in siem_query's OFFLINE normalizer —
+                            sitting in the very file whose LIVE normalizer R13b fixed
+
+    INV-PROMOTE-2   (M18)  approval not bound to a subject, in agent_loop
+      -> INV-PLAY-6  (r16)  the SAME hole in simulation's per-step gate
+
+The third recurrence is the one that settles the argument: two rounds of hand-auditing
+`siem_query` missed it, because it was in the file the fix had already landed in —
+the last place anyone looks. An AST sweep found it immediately.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-COERCE-1** | No bare `bool()` is applied to externally-sourced data anywhere in `sentinel_harness/`, `tools/` or `intake/`. Sites delegate to `connectors.base._coerce_bool`, or appear in an allowlist keyed by **file + exact expression** with the reason the value cannot be a string. | repo-wide (AST sweep) | `test_r17_coercion_mechanized.py::TestNoBareBoolOnExternalData` |
+| **INV-COERCE-2** | Every truthiness helper is CLASSIFIED: one that reads a *backend response* is pinned to answer identically to the authority; one that parses a *different grammar* (a Sigma `\|exists` operand, a YAML boolean) declares that grammar and must be **stricter** than the backend alphabet, never looser. An unclassified helper is how INV-BOUNDARY-1 recurred twice. | `connectors.base._coerce_bool` + the classified helpers | `test_r17_coercion_mechanized.py::TestLocalCoercionHelpersAgree` |
+| **INV-COERCE-3** | A callback whose contract says `-> bool` is enforced, not widened. `bool(approve_fn(...))` at both promotion-approval sites made a callback returning the string `"false"`/`"no"`/`"0"` witness an APPROVAL. A non-bool return is REFUSED with a warning naming the type — deliberately not coerced, since coercing would make strings a supported input on the most security-sensitive callback in the platform. A raising callback still propagates. | `agent_loop._witness_approval`, `autonomy.run_improvement_loop` | `test_r17_coercion_mechanized.py::TestApprovalCallbackContract` |
+
+### Three defects in the guard itself, and why they are recorded here
+
+Building this found more about how such guards fail than about the code:
+
+1. **A file-level allowlist is a permanent file-level exemption.** Keying by file meant
+   a new violation in `feedback.py` was NOT caught, because that file already held one
+   legitimate `bool(withheld)`. I had built a fail-open into a mechanism whose only
+   purpose is to prevent fail-open — the same shape as "a lint-exempt directory is a
+   directory that never gets fixed". Keys are now file **plus exact expression**:
+   stable across edits, readable in a diff, and impossible for new code to match by
+   accident.
+2. **The provenance matcher was silently broken.** It substring-matched `ast.dump()`,
+   and every variable reference carries `ctx=Load()` — so the marker `"load"` matched
+   *everything*. The sweep classified all 24 expressions as external and only looked
+   clean because the allowlist covered them all. A matcher that flags everything is as
+   useless as one that flags nothing, and it hid its own failure. Now walks the AST
+   structure. **That was the fifth time substring-matching stood in for a structural
+   judgement in this repo** (INV-FP-3, R13b's exclusion filter, INV-GATE-1, INV-GATE-6,
+   and the guard written to stop recurrences) — the lesson evidently needs repeating:
+   if the question is "what KIND of node is this", ask the tree.
+3. **Both were found by a positive control, not by review.**
+   `TestTheSweepCanActuallyDetectAViolation` synthesizes a violation and asserts the
+   sweep names it. Without it, this whole family would have shipped green and
+   worthless. It is now a test, so a future change to the granularity fails loudly.
+
+---
+
 ## INV-EVAL — the offline scorer's safety gate cannot be recited past
 
 `eval_datasets` is the **second** scoring path into the self-improving loop — round 15
