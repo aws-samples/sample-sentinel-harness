@@ -179,14 +179,40 @@ def test_list_command_offline(monkeypatch, capsys):
 
 def test_cleanup_command_offline(monkeypatch, capsys):
     seen = {}
-    def fake_cleanup(prefix):
+    # `cleanup` now takes an optional `failures` sink so the CLI can distinguish
+    # "nothing matched" from "every delete failed" (INV-CLI-3). The fake accepts it
+    # and leaves it empty — the all-succeeded path.
+    def fake_cleanup(prefix, failures=None):
         seen["prefix"] = prefix
+        seen["failures_passed"] = failures is not None
         return ["sentinel_a", "sentinel_b"]
     monkeypatch.setattr(sh, "cleanup", fake_cleanup)
     rc = cli.main(["cleanup", "sentinel_"])
     assert rc == 0
     assert seen["prefix"] == "sentinel_"
+    assert seen["failures_passed"] is True, (
+        "the CLI no longer collects delete failures, so a wholly-failed teardown "
+        "would exit 0 again"
+    )
     assert "deleted 2 harness(es)" in capsys.readouterr().out
+
+
+def test_cleanup_exits_nonzero_when_deletes_fail(monkeypatch, capsys):
+    """INV-CLI-3: a teardown where every delete failed used to print
+    "deleted 0 harness(es)" and exit 0 — byte-identical to a genuinely empty estate.
+    An operator or CI teardown step reads that as clean and leaves live harnesses
+    (and their managed memory) behind."""
+    def fake_cleanup(prefix, failures=None):
+        if failures is not None:
+            failures.append(("sentinel_a", "AccessDeniedException"))
+            failures.append(("sentinel_b", "AccessDeniedException"))
+        return []
+    monkeypatch.setattr(sh, "cleanup", fake_cleanup)
+    rc = cli.main(["cleanup", "sentinel_"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "could NOT be deleted" in captured.err
+    assert "sentinel_a" in captured.err
 
 
 def test_main_reports_error_and_exits_nonzero(monkeypatch, capsys):

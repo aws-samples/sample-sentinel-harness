@@ -107,6 +107,54 @@ def _load_manifest(manifest_or_path: Any) -> dict:
 
 
 # ------------------------------------------------------------- config resolution
+# API-level keys that `core.create_harness` builds itself and then lets `**kw`
+# overwrite via `args.update(kw)` (core.py). A manifest entry carrying any of these
+# defeats the validation this module just performed — see _reject_api_level_overrides.
+_FORBIDDEN_OVERRIDE_KEYS = frozenset({
+    "harnessName", "executionRoleArn", "allowedTools", "systemPrompt",
+    "maxIterations", "maxTokens", "timeoutSeconds",
+})
+
+
+def _reject_api_level_overrides(kwargs: dict, index: int, *, source: str = "inline") -> None:
+    """Refuse a manifest entry that carries raw API-level keys (INV-FACTORY-1).
+
+    ``core.create_harness`` assembles the CreateHarness request from its named
+    parameters and then does ``args.update(kw)`` — so a passthrough key wins over
+    everything the factory computed. Reproduced end to end: a manifest entry with
+
+        name: inlineHarness                       <- what dry-run showed the operator
+        harnessName: totally_different_name       <- what the API actually received
+        executionRoleArn: arn:...:999999999999:role/attacker
+        allowedTools: ["*"]
+
+    passed `dry_run=True` reporting ``inlineHarness``, then created a harness under a
+    different name, with an execution role the factory never resolved, and
+    ``allowedTools: ["*"]``. That breaks this module's central promise — a green
+    dry-run means a safe real run — and it does so in the direction where an operator
+    believes they reviewed something they did not.
+
+    The inline path additionally skips ``loader.load_harness_config`` entirely, so the
+    loader's own governance (notably the near-miss HITL gate-name check, which raises
+    rather than auto-normalizing) never runs on it. Refusing these keys does not
+    restore that — an inline entry is still unloadered by design — but it does stop an
+    inline entry from rewriting what the factory verified.
+
+    Named keys (``name``, ``system_prompt``, ``allowed_tools``, …) remain the supported
+    surface. Only the API spellings are refused, so the error is actionable: the caller
+    almost always wants the snake_case parameter of the same meaning.
+    """
+    offenders = sorted(_FORBIDDEN_OVERRIDE_KEYS & set(kwargs))
+    if offenders:
+        raise FactoryError(
+            f"harnesses[{index}] ({source}) carries API-level key(s) {offenders} that "
+            f"would override values this factory validated (name rule, execution role, "
+            f"allowed tools). Use the documented parameters instead — e.g. `name:` not "
+            f"`harnessName:`, `allowed_tools:` not `allowedTools:`, `system_prompt:` "
+            f"not `systemPrompt:`."
+        )
+
+
 def _resolve_entry(entry: Any, fleet_tags: dict, env: str, index: int) -> dict:
     """Resolve ONE manifest ``harnesses`` entry into create_harness kwargs + tags.
 
@@ -130,6 +178,10 @@ def _resolve_entry(entry: Any, fleet_tags: dict, env: str, index: int) -> dict:
         if not isinstance(config_path, str):
             raise FactoryError(f"harnesses[{index}].config must be a path string")
         kwargs = loader.load_harness_config(config_path)
+        # The loader emits snake_case kwargs, so an API-level key here would mean a
+        # YAML author smuggled one through it. Checked on BOTH paths so the guard is
+        # a property of the factory rather than of one branch.
+        _reject_api_level_overrides(kwargs, index, source=config_path)
     else:
         # Inline kwargs: shallow-copy and strip the factory-only 'tags' key so the
         # rest passes straight to core.create_harness.
@@ -139,6 +191,7 @@ def _resolve_entry(entry: Any, fleet_tags: dict, env: str, index: int) -> dict:
                 f"harnesses[{index}] inline entry needs both 'name' and 'system_prompt' "
                 f"(or use {{config: <harness.yaml>}})"
             )
+        _reject_api_level_overrides(kwargs, index)
 
     name = kwargs.get("name")
     if not isinstance(name, str) or not _NAME_RE.match(name):

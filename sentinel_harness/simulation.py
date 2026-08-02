@@ -573,6 +573,28 @@ class PlayModeRunner:
             self._checkpoint()
             return step
 
+        # INV-PLAY-10: a PARALLEL pause is refused rather than half-answered.
+        # `core._consume_stream` returns `tool_uses` (the full list, >1 when the model
+        # opens several gates in one turn) alongside `tool_use` (the first, "for the
+        # single-gate case"), and `core.invoke_with_tool_results`'s docstring states
+        # that answering only the first corrupts the session. This runner read only
+        # `tool_use`, so on a parallel pause the human was shown ONE request, the
+        # others were silently dropped, and `verdict()` still reported
+        # `every_step_gated: True`. Play Mode cannot honestly gate what it did not
+        # show a human, so it halts — supporting parallel gates properly means asking
+        # about each one, which is a feature, not something to fake here.
+        pending = r1.get("tool_uses")
+        if isinstance(pending, (list, tuple)) and len(pending) > 1:
+            names = [str((t or {}).get("name")) for t in pending]
+            self.state.halted = True
+            self.state.halted_reason = (
+                f"step {step.index} ({step.technique}) paused on {len(pending)} "
+                f"parallel tool calls {names} — Play Mode gates ONE offensive step at "
+                f"a time and will not answer some while dropping the rest")
+            self._log(f"[HALT] {self.state.halted_reason}")
+            self._checkpoint()
+            return step
+
         # INV-PLAY-5: the paused tool must BE the approval gate. `GATE_NAME` existed
         # as a constant but was never used to check anything, so ANY tool_use was
         # accepted as the human-approval gate — a pause on `code_interpreter` (with
@@ -660,12 +682,43 @@ class PlayModeRunner:
         """Summarize the Play Mode invariants for an evidence file."""
         gated = [s for s in self.state.steps if s.tool_use_id]
         reached = [s for s in self.state.steps if s.status != PENDING]
-        every_step_gated = all(s.tool_use_id is not None for s in reached) and bool(reached)
+        # INV-PLAY-8: `every_step_gated` used to consider only steps whose status had
+        # left PENDING — and an UNGATED step is exactly one that stays PENDING (the
+        # runner halts without advancing it). So the one check meant to detect a gate
+        # bypass filtered out the evidence of the bypass and still reported True. It
+        # is published in the evidence artifact as "every offensive exec_technique step
+        # paused on a human gate", which is the claim it could not actually falsify.
+        #
+        # A halt is now decisive: if the plan stopped without every reached step
+        # carrying a gate id, or stopped for a gate-protocol reason at all, the answer
+        # is False. `halted_without_gate` is reported alongside so a reader can tell
+        # "clean run" from "stopped BECAUSE the gate contract was violated".
+        halted_without_gate = bool(
+            self.state.halted
+            and self.state.halted_reason
+            and ("gate" in self.state.halted_reason or "asked about" in self.state.halted_reason)
+        )
+        every_step_gated = (
+            bool(reached)
+            and all(s.tool_use_id is not None for s in reached)
+            and not halted_without_gate
+        )
         approved_resumed = any(s.status == EXECUTED for s in self.state.steps)
         rejected = [s for s in self.state.steps if s.status == REJECTED]
         reject_halts = bool(rejected) and self.state.halted
+        # INV-PLAY-9: an APPROVED step that never became EXECUTED is a limbo state —
+        # `run_step` sets APPROVED, resumes, then sets EXECUTED, so an exception in
+        # between leaves a step the human authorized that never ran, with
+        # execution_log=None. No count, verdict field or halt reported it, so the
+        # evidence file looked like a clean partial run. Surfaced explicitly.
+        approved_not_executed = [
+            s.index for s in self.state.steps
+            if s.status == APPROVED and not s.execution_log
+        ]
         return {
             "every_step_gated": every_step_gated,
+            "halted_without_gate": halted_without_gate,
+            "approved_but_not_executed": approved_not_executed,
             "approved_step_resumed": approved_resumed,
             "reject_halts_plan": reject_halts,
             "closed_loop": approved_resumed or reject_halts,

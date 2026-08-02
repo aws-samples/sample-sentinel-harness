@@ -580,7 +580,7 @@ def _all_harnesses():
     return out
 
 
-def cleanup(prefix: str):
+def cleanup(prefix: str, failures: list | None = None):
     """Delete every harness whose name starts with ``prefix`` (cascade-deletes managed memory).
 
     Paginates ListHarnesses so harnesses beyond the first page are not orphaned.
@@ -595,6 +595,7 @@ def cleanup(prefix: str):
             "EVERY harness in the account. Pass a specific non-empty prefix."
         )
     deleted = []
+    failed: list[tuple[str, str]] = []
     for h in _all_harnesses():
         if h["harnessName"].startswith(prefix):
             try:
@@ -602,6 +603,22 @@ def cleanup(prefix: str):
             except Exception as e:  # noqa: BLE001 — best-effort teardown
                 _log.warning("cleanup: skip harness %s: %s", h["harnessName"], e)
                 _log.debug("cleanup: skip harness %s (full error)", h["harnessName"], exc_info=True)
+                failed.append((h["harnessName"], str(e)))
+    # INV-CLI-3: report the FAILURES, not only the successes. Returning just the
+    # deleted names made "nothing matched the prefix" and "every delete failed"
+    # indistinguishable — both are an empty list — so `cli cleanup` printed
+    # "deleted 0 harness(es)" and exited 0 while the estate was untouched. An operator
+    # (or a CI teardown step) reads that as a clean account and moves on, leaving live
+    # harnesses behind.
+    #
+    # Surfaced through a caller-supplied sink rather than the return value, because
+    # the list return is an established contract with several callers — and rather
+    # than a module/function global, which would be wrong under concurrent teardowns.
+    # The best-effort loop and its warning stay: continuing past one failure is
+    # deliberate for teardown. This is about the CALLER being able to SEE what
+    # happened, not about swallowing less.
+    if failures is not None:
+        failures.extend(failed)
     return deleted
 
 

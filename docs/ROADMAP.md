@@ -51,7 +51,7 @@ live) · 🟡 skeleton / partial · 🔴 gap.
 | `specialists/` | `cve-intel` (docker-build + live-validated on AgentCore Runtime) + `attack-mapper` / `threat-hunt` (real graph/plan builders) + `adversarial-reviewer` (agent_a2a + local_a2a + two-stage Dockerfile + contract test) | ✅ | all four specialists shipped |
 | `longrunning/` | `bas-runner` (BAS case-gen + detection-replay) + `detonation` (full simulated microVM lifecycle + orchestrator) | 🟩 | both built + tested; detonation stays an honest SIMULATED no-op |
 | `iac-cdk/lib/` | 9 synth-green stacks — `gateway` / `registry` / `memory` / `network` / `identity` / `guardrail` / `observability` / `harness` / `runtime` (+ `iam`); `iac-terraform/` mirror is `terraform validate`-clean | ✅ | `guardrail` / `identity` / `observability` LIVE-deployed (us-east-1); the Registry + `runtime` custom-resource/raw-CfnResource stacks synth clean but fail on deploy until their CFN types are GA (both control-plane APIs are separately live-verified — Registry via `registry_live.py`, `CreateAgentRuntime` via a real arm64 microVM that served a live A2A call, HTTP 200, real Bedrock model, on a non-prod test account, then torn down — `evidence/live_a2a_runtime_result.json`) |
-| `tests/` | 137 files, **3271 offline passing** (+6 skipped) | ✅ | add tests with each new module |
+| `tests/` | 137 files, **3308 offline passing** (+6 skipped) | ✅ | add tests with each new module |
 | `evidence/` | 37 evidence sets | ✅ | add one per milestone |
 
 ### 0.3 Fit score (vs. a full three-layer SecOps agent program)
@@ -181,8 +181,8 @@ Each milestone gives: **goal / files / reused APIs / acceptance (live evidence) 
 Suggest one feature branch per milestone.
 
 ### M0 — Environment & baseline reproduction (half a day)
-**Goal:** on a fresh machine, get all 3271 offline tests green and reproduce ≥1 live scenario.
-- [ ] `uv sync` + `uv run pytest -q` → 3271 passing (+6 skipped) (offline).
+**Goal:** on a fresh machine, get all 3308 offline tests green and reproduce ≥1 live scenario.
+- [ ] `uv sync` + `uv run pytest -q` → 3308 passing (+6 skipped) (offline).
 - [ ] Configure `SENTINEL_EXECUTION_ROLE_ARN` / `SENTINEL_REGION` / `AWS_PROFILE` (non-prod) — see `docs/SETUP.md`.
 - [ ] Run `scenarios/scenario_cve_triage.py`; compare `evidence/cve_triage_result.json` shape.
 - [ ] Run `scenarios/scenario_hitl_resume.py`; reproduce pause→approve→resume.
@@ -419,7 +419,7 @@ hand-off reuses the live-capable M1/M2 engine (driven offline here, labeled a wi
       (`make deploy`, cost note, `make destroy`) + the no-lock-in export. — `docs/QUICKSTART.md`
 - [x] `tests/smoke/`: offline acceptance suite (default offline; `SENTINEL_SMOKE_LIVE=1` opt-in for live). — `tests/smoke/`
 
-**Acceptance:** `make test` → 3271 offline tests green; `make seed-registry` → dual-gate `ok`;
+**Acceptance:** `make test` → 3308 offline tests green; `make seed-registry` → dual-gate `ok`;
 `make create-harnesses` (DRY_RUN=1) → 8 harnesses validate offline with zero AWS; `sentinel export` → valid
 compilable Strands Python; `make smoke` → the offline acceptance suite green. A fresh non-prod account can then
 run `make deploy` (free-tier foundation) and the live scenarios; `make destroy` tears it all down.
@@ -837,7 +837,7 @@ with a harness that ever carried an extra endpoint taking >5 min to clear versus
       consistency, scoped to present-tense claims so ROADMAP changelog entries
       ("2126 → 2352") are not falsely flagged.
 
-**Acceptance:** suite 2493 → **3271** offline passing (+8 skipped), ruff clean,
+**Acceptance:** suite 2493 → **3308** offline passing (+8 skipped), ruff clean,
 coverage 90% (gate 88), both mypy gates green, docs-drift + invariant-doc guards
 green, and `evidence/m18_gates_live_result.json` `closed: true` with zero residue
 on a real account.
@@ -891,7 +891,7 @@ needs to become more specific, not filtered.
 
 **Tests:** `tests/test_r9_semantic_gates.py` — 59 tests, of which **37 fail on
 pre-R9 source**. The other 22 are the solid-surface tripwires and false-positive
-guards, expected green in both states. Suite 2590 → **3271**; ruff clean; both
+guards, expected green in both states. Suite 2590 → **3308**; ruff clean; both
 mypy gates green; docs-drift + invariant-doc guards green.
 
 **Recommendation for round 10:** the remaining unprobed semantic surfaces are
@@ -940,7 +940,7 @@ still parses.
   untranslatable rather than silently inverted.
 
 **Tests:** `tests/test_r10_semantic_gates.py` — 22 tests, of which **11 fail on
-pre-R10 source** (verified by reverting the three modules). Suite 2649 → **3271**;
+pre-R10 source** (verified by reverting the three modules). Suite 2649 → **3308**;
 ruff clean; both mypy gates green; docs-drift + invariant-doc guards green.
 `docs/INVARIANTS.md` now carries 37 invariants across five families.
 
@@ -998,7 +998,7 @@ normalised rule text — cannot quietly turn a sound proof into fuzzy matching.
 
 **Tests:** `tests/test_r11_semantic_gates.py` — 59 tests, of which **32 fail on
 pre-R11 source** (verified by reverting the three modules). The other 27 are the
-dedup tripwires and regression guards, green in both states. Suite 2671 → **3271**
+dedup tripwires and regression guards, green in both states. Suite 2671 → **3308**
 collected; ruff clean (it caught a genuinely missing `Optional` import that the
 runtime never touches thanks to `from __future__ import annotations`); both mypy
 gates green; docs-drift + invariant-doc guards green. `docs/INVARIANTS.md` now
@@ -1052,7 +1052,7 @@ round 13 does not re-litigate settled ground.
 
 **Tests:** `tests/test_r12_semantic_gates.py` — 45 tests, of which **36 fail on
 pre-R12 source** (verified by reverting the three modules). The other 9 are the
-happy-path and fail-closed regression guards. Suite 2730 → **3271** collected; ruff
+happy-path and fail-closed regression guards. Suite 2730 → **3308** collected; ruff
 clean; both mypy gates green; docs-drift + invariant-doc guards green.
 `docs/INVARIANTS.md` now carries 47 invariants across eleven families.
 
