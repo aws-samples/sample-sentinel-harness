@@ -11,6 +11,11 @@ evidence/*.local.json
 dist/
 build/
 .ruff_cache/
+# Hypothesis's example database. Local-only by design: it caches per-machine
+# counterexamples, and committing it would replay one machine's failures onto
+# every other checkout. It is also why a property-test stability check must
+# `rm -rf .hypothesis` first — a stale entry replays as a phantom failure.
+.hypothesis/
 uv.lock
 
 # CDK (iac-cdk/) build artifacts and deps
