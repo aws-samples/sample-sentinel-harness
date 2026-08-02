@@ -80,6 +80,22 @@ attack = _load("attack_lookup_r14", "tools/attack_lookup/handler.py")
 from sentinel_harness.connectors.base import _coerce_bool  # noqa: E402
 
 LOG4SHELL = "CVE-2021-44228"
+
+# The two upstreams `epss_kev._enrich_live` contacts. Dispatch below compares the
+# parsed HOST for equality rather than substring-matching the URL: `"first.org" in
+# url` is true for `https://evil.com/?x=first.org` too, and CodeQL flags it
+# (py/incomplete-url-substring-sanitization) even inside a test stub. It is the
+# right call — a test that models URL identity with a substring check teaches the
+# pattern, and here it would also let a future URL change silently route the KEV
+# request to the EPSS fixture, making the KEV guard tests vacuous.
+_EPSS_HOST = "api.first.org"
+_KEV_HOST = "www.cisa.gov"
+
+
+def _is_epss_url(url: str) -> bool:
+    """True iff `url`'s host IS the EPSS API host (exact match, not substring)."""
+    import urllib.parse
+    return urllib.parse.urlsplit(url).hostname == _EPSS_HOST
 _HOST = {"id": "prod-web-01", "subnet": "192.0.2.0/24", "internet_exposed": True,
          "services": [{"port": 443, "proto": "tcp", "name": "https",
                        "known_vuln": True, "cve_id": LOG4SHELL}]}
@@ -342,7 +358,7 @@ class TestKevReadFailureIsNotANegativeFinding:
 
         def fake_urlopen(req, *a, **kw):
             url = req.full_url if hasattr(req, "full_url") else str(req)
-            body = epss_payload if "first.org" in url else kev_payload
+            body = epss_payload if _is_epss_url(url) else kev_payload
             return _Resp(json.dumps(body).encode())
 
         monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -397,7 +413,7 @@ class TestKevReadFailureIsNotANegativeFinding:
         def fake_urlopen(req, *a, **kw):
             url = req.full_url if hasattr(req, "full_url") else str(req)
             body = ({"data": [{"cve": LOG4SHELL, "epss": "0.97",
-                               "percentile": "0.9"}]} if "first.org" in url
+                               "percentile": "0.9"}]} if _is_epss_url(url)
                     else {"error": "maintenance"})
             return _Resp(json.dumps(body).encode())
 
@@ -415,6 +431,27 @@ class TestKevReadFailureIsNotANegativeFinding:
             {"cveID": LOG4SHELL.lower(), "dateAdded": "2021-12-10"}]},
             monkeypatch=monkeypatch)
         assert out[LOG4SHELL]["in_kev"] is True
+
+    def test_this_suites_url_dispatch_is_exact(self):
+        """Guard the guard: if `_is_epss_url` mis-routed, the KEV payloads above
+        would never reach the KEV parser and every test in this class would pass
+        vacuously — the same fail-open the class exists to prevent, reintroduced
+        via the harness. Exact host equality, not a substring scan.
+        """
+        assert _is_epss_url("https://api.first.org/data/v1/epss?cve=CVE-2021-44228")
+        assert not _is_epss_url(
+            "https://www.cisa.gov/sites/default/files/feeds/"
+            "known_exploited_vulnerabilities.json")
+        # A substring check would wrongly call each of these EPSS.
+        assert not _is_epss_url("https://evil.example/?redirect=api.first.org")
+        assert not _is_epss_url("https://api.first.org.evil.example/data")
+        # And the two real URLs the shipped code uses must dispatch differently.
+        import inspect
+        src = inspect.getsource(ek._enrich_live)
+        assert _EPSS_HOST in src and _KEV_HOST in src, (
+            "the upstream hosts changed; this suite's dispatch would silently send "
+            "both requests to one fixture"
+        )
 
 
 # --------------------------------------------------------------------------- #
