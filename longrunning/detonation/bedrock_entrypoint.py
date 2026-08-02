@@ -154,7 +154,15 @@ def build_runner(
         resume_fn=resume_fn,
     )
     if resume and os.path.isfile(ckpt):
-        runner = sim.PlayModeRunner.resume_from_checkpoint(harness_arn, ckpt, **runner_kwargs)
+        # Bind the resume to the plan THIS invocation was asked to run (INV-PLAY-3).
+        # Without it the checkpoint is the only source of the plan, so a substituted
+        # one resumes unchallenged — it would be internally consistent and its digest
+        # can be recomputed, so no other layer can catch it.
+        runner = sim.PlayModeRunner.resume_from_checkpoint(
+            harness_arn, ckpt,
+            expected_plan=plan or DEFAULT_DETONATION_PLAN,
+            **runner_kwargs,
+        )
     else:
         runner = sim.PlayModeRunner(
             harness_arn,

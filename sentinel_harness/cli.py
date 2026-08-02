@@ -380,14 +380,20 @@ def cmd_detection_audit(args: argparse.Namespace) -> int:
         # --navigator with no value (const '-') means stdout; a value is a file path.
         out_path = None if args.navigator == "-" else args.navigator
         _emit_json(nav["layer"], out_path)
-        return 0
-
-    if args.json:
+        # INV-CLI-1: fall through to the --min-score gate rather than returning here.
+        # This branch used to `return 0`, so `--navigator` SILENTLY DISABLED the CI
+        # gate: `detection audit rules/ --min-score 99 --navigator layer.json` exited
+        # 0 at any health score, while the same command without --navigator exited 1.
+        # An operator asking for both an export and a gate got the export and a
+        # green build — the gate's whole purpose, inverted, with no output saying so.
+    elif args.json:
         _emit_json(result, None)
     else:
         _print_audit_report(result)
 
-    # CI gate: fail when the health score is below --min-score.
+    # CI gate: fail when the health score is below --min-score. Reached from EVERY
+    # output mode — the gate is about the score, not about how the report was
+    # rendered, so no presentation flag may skip it.
     if args.min_score is not None and result["health_score"] < args.min_score:
         _eprint(f"detection audit: health_score {result['health_score']} "
                 f"< --min-score {args.min_score}")

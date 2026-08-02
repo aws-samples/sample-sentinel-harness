@@ -15,8 +15,11 @@ ships it, and a missed finding is never revisited.
 self-improvement loop promotes on, every one of which resolved a missing or
 ambiguous judgement into a PASS (INV-GATE-1..8). ``ops_query`` survived the
 offline path but not the live seam — FIVE more, all variations on "this is the
-whole estate" (INV-OPS-2..5). ``detection_dedup`` survived outright, and the
-survival is recorded here as executable evidence rather than prose (INV-DEDUP).
+whole estate" (INV-OPS-2..5). ``detection_dedup`` survived every dimension I
+exercised by hand and TWO it did not — a chained modifier (INV-DEDUP-4) and a Sigma
+escape sequence (INV-DEDUP-5), both found by the fan-out probe. The escape one
+overturned a REFUTED verdict I had already published; see
+``TestSigmaEscapesAreNotComparedAsText`` for why my refutation was wrong.
 
 Three method notes worth more than any individual defect
 --------------------------------------------------------
@@ -984,4 +987,161 @@ class TestChainedModifiersAreNotAnalyzed:
             ("Image", r"C:\Windows\cmd.exe"),
         ]
         claims, violations = _soundness_violations(preds=preds)
+        assert not violations, violations
+
+
+# --------------------------------------------------------------------------- #
+# INV-DEDUP-5 — a wildcard/escape value leaves the provable shape             #
+# --------------------------------------------------------------------------- #
+class TestSigmaEscapesAreNotComparedAsText:
+    """**This class corrects a conclusion I published in round 15.**
+
+    I reported the escape-sequence claim as REFUTED after re-running it with
+    single-quoted YAML rules and seeing zero violations. That test was wrong: YAML
+    consumed the backslash before Sigma ever saw it, so I was measuring the YAML
+    layer, not Sigma escaping. The fan-out probe passed rules as PARSED DICTS —
+    which `_parse_rule` explicitly accepts and a real caller is most likely to use —
+    and the defect reproduced immediately.
+
+    THE DEFECT. `_predicate_implies` compares values as plain text (`qv in pv`,
+    `pv.startswith(qv)`). Per the Sigma spec `\\*` is a LITERAL asterisk, so:
+
+        A: CommandLine|contains: 'C:\\Temp\\*'   -> matches the literal "C:\\Temp*"
+        B: CommandLine|contains: 'C:\\Temp\\'    -> matches anything under C:\\Temp\\
+
+    are NOT in a subset relation — but as raw text `'c:\\temp\\'` looks like a prefix
+    of `'c:\\temp\\*'`, so dedup reported A ⊆ B: "safe to delete A". The event
+    `del /f /q C:\\Temp*` matches A and NOT B, so acting on that verdict deletes the
+    only detection for a wildcard-mask mass-delete. The probe's exhaustive
+    predicate-level differential found 156 such false implications, every single one
+    involving an escape.
+
+    THE FIX took three attempts, and the two wrong ones are worth recording because
+    each was corrected by a TEST rather than by more reasoning:
+
+    1. Decline every value containing a backslash. Wrong trade-off — nearly every
+       real Sigma rule carries a Windows path, so it silenced the tool on its main
+       use case and broke three tests.
+    2. Decline only the escapes `\\*`/`\\?`/`\\\\`. Still wrong for `\\\\`, which
+       merely folds two characters into one literal backslash and introduces no
+       pattern semantics. It broke `test_detection_audit` on a rule whose YAML held
+       `'\\\\powershell.exe'` — a completely ordinary value.
+    3. **Separate the two cases.** A LIVE wildcard (unescaped `*`/`?`) genuinely
+       cannot be decided by any text relation → decline. An ESCAPE is resolvable →
+       resolve it, then compare. This fixes the defect while declining NOTHING: the
+       escaped-wildcard pair above now compares correctly as `C:\\Temp*` vs
+       `C:\\Temp\\`, which are not nested.
+
+    The resolution logic mirrors `sigma_match._unescape_sigma` byte for byte, and
+    `test_the_two_engines_agree_on_escapes` pins them together — the two disagreeing
+    about what an escape means is what produced this defect, and INV-BOUNDARY-1's
+    lesson is that a shared understanding left as a convention drifts.
+    """
+
+    @staticmethod
+    def _dict_rule(rid, sel, logsource=None):
+        """A PARSED-DICT rule — the input form that exposed this, and which
+        `_parse_rule` accepts alongside a YAML string."""
+        return {"id": rid, "title": rid,
+                "logsource": logsource or {"product": "windows",
+                                           "category": "process_creation"},
+                "detection": {"selection": sel, "condition": "selection"}}
+
+    def test_the_escaped_wildcard_case_makes_no_subset_claim(self):
+        a = self._dict_rule("A", {"CommandLine|contains": "C:\\Temp\\*"})
+        b = self._dict_rule("B", {"CommandLine|contains": "C:\\Temp\\"})
+        res = dd.handler({"rules": [a, b]}, None)
+        assert res["ok"] is True
+        assert res["subsumptions"] == [], (
+            "dedup still claims a subset relation across a Sigma escape — acting on "
+            "it deletes the only detection for a wildcard-mask mass-delete"
+        )
+        # Resolving beats declining: nothing needs to be surrendered to
+        # `not_analyzed` here, because once the escapes are resolved the two values
+        # simply are not in a prefix relation.
+        assert res["not_analyzed"] == [], res["not_analyzed"]
+
+    def test_the_counterexample_event_is_real(self):
+        """Pins the ORACLE, so this class cannot go vacuous if the matcher changes:
+        the event must genuinely match the claimed-subset rule and not the superset.
+        """
+        a = self._dict_rule("A", {"CommandLine|contains": "C:\\Temp\\*"})
+        b = self._dict_rule("B", {"CommandLine|contains": "C:\\Temp\\"})
+        event = {"CommandLine": "cmd.exe /c del /f /q C:\\Temp*"}
+        ra = sm.handler({"rule": a, "log_event": event}, None)
+        rb = sm.handler({"rule": b, "log_event": event}, None)
+        assert ra["ok"] is True and rb["ok"] is True
+        assert ra["matched"] is True, "the escaped-wildcard rule no longer matches"
+        assert rb["matched"] is False, "the path-prefix rule now matches too"
+
+    @pytest.mark.parametrize("value,why", [
+        ("cmd*", "unescaped trailing wildcard"),
+        ("*cmd*", "unescaped surrounding wildcards"),
+        ("c?d", "unescaped single-char wildcard"),
+        ("*", "bare wildcard"),
+        ("C:\\Temp\\\\*", "a live wildcard after an escaped backslash"),
+    ])
+    def test_a_live_wildcard_is_declined(self, value, why):
+        """Only an UNESCAPED wildcard is undecidable by a text relation."""
+        assert dd._has_live_wildcard(value) is True, why
+
+    @pytest.mark.parametrize("value,why", [
+        ("C:\\Temp\\*", "an ESCAPED asterisk is a literal, not a wildcard"),
+        ("/search\\?", "an escaped question mark"),
+        ("a\\\\b", "an escaped backslash — folds to one literal, no pattern"),
+        ("\\cmd.exe", "a Windows path suffix — \\c is NOT an escape"),
+        ("C:\\Windows\\System32\\cmd.exe", "a full Windows path"),
+        ("cmd.exe", "no backslash at all"),
+        ("HKLM\\Software\\Microsoft", "a registry path"),
+        ("", "the empty string"),
+    ])
+    def test_an_escapable_value_is_still_analyzable(self, value, why):
+        """CONTROL for both wrong turns: an over-broad guard silenced the tool on
+        Windows paths, and a narrower-but-still-wrong one silenced it on `\\\\`."""
+        assert dd._has_live_wildcard(value) is False, why
+
+    @pytest.mark.parametrize("value,expected", [
+        ("C:\\Temp\\*", "C:\\Temp*"),
+        ("/search\\?", "/search?"),
+        ("a\\\\b", "a\\b"),
+        ("\\cmd.exe", "\\cmd.exe"),
+        ("C:\\Windows\\System32", "C:\\Windows\\System32"),
+        ("plain", "plain"),
+    ])
+    def test_escape_resolution_matches_the_authoritative_implementation(
+            self, value, expected):
+        """`test_the_two_engines_agree_on_escapes` in spirit: dedup's resolution must
+        be byte-identical to `sigma_match._unescape_sigma`, because the subset proof
+        is only sound if it reasons about the value the MATCHER will use."""
+        assert dd._unescape_value(value) == expected
+        assert dd._unescape_value(value) == sm._unescape_sigma(value), (
+            "dedup and sigma_match now disagree about what a Sigma escape means — "
+            "which is precisely the divergence that produced INV-DEDUP-5"
+        )
+
+    def test_ordinary_windows_path_rules_are_still_compared(self):
+        """CONTROL end-to-end: the tool must remain USEFUL. If the escape guard made
+        it decline the common case, the soundness tests above would pass only because
+        it stopped concluding anything."""
+        narrow = self._dict_rule("N", {"Image|endswith": "\\cmd.exe",
+                                       "CommandLine|contains": "whoami"})
+        broad = self._dict_rule("B", {"Image|endswith": "\\cmd.exe"})
+        res = dd.handler({"rules": [narrow, broad]}, None)
+        assert res["not_analyzed"] == [], res["not_analyzed"]
+        assert len(res["subsumptions"]) == 1
+        assert res["subsumptions"][0]["subset"] == "N"
+
+    def test_soundness_over_a_predicate_space_that_includes_escapes(self):
+        """Re-runs the differential obligation over values with escape syntax — the
+        gap that let this through, now closed."""
+        preds = [
+            ("CommandLine|contains", "C:\\Temp\\*"),
+            ("CommandLine|contains", "C:\\Temp\\"),
+            ("CommandLine|contains", "C:\\Temp"),
+            ("CommandLine|contains", "a\\\\b"),
+            ("CommandLine|contains", "temp"),
+            ("Image|endswith", "\\cmd.exe"),
+            ("Image", "C:\\Windows\\cmd.exe"),
+        ]
+        _claims, violations = _soundness_violations(preds=preds)
         assert not violations, violations

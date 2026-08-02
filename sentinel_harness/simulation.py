@@ -40,6 +40,12 @@ import tempfile
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Dict, List, Optional
 
+# hashlib/hmac back the checkpoint integrity digest (INV-PLAY-1). hmac only for
+# compare_digest — a constant-time comparison, so a caller cannot learn the expected
+# digest byte-by-byte from timing.
+import hashlib
+import hmac
+
 from .logutil import get_logger
 
 # ------------------------------------------------------------------ statuses
@@ -127,14 +133,51 @@ class PlanState:
 
 
 # ---------------------------------------------------------------- checkpoint
+class CheckpointError(Exception):
+    """Raised when a checkpoint fails its integrity or consistency checks.
+
+    Distinct from an I/O error so a caller can tell "the file is not there" from
+    "the file was altered after it was written" — those need different responses.
+    """
+
+
+# Digest sidecar key. Kept INSIDE the checkpoint (not a separate file) because the
+# runner is handed one path; the digest covers everything except itself.
+_DIGEST_KEY = "state_digest"
+_DIGEST_VERSION = "sha256-v1"
+
+
+def _canonical_state(payload: Dict[str, Any]) -> str:
+    """Canonical JSON of a checkpoint body for digesting.
+
+    Keys sorted and no incidental whitespace, so the digest depends only on the
+    VALUES — never on dict ordering or indentation. Mirrors
+    ``provenance._canonical``; the two are deliberately the same shape because they
+    solve the same problem (a record that must not change without detection).
+    """
+    body = {k: v for k, v in payload.items() if k != _DIGEST_KEY}
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _state_digest(payload: Dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_state(payload).encode("utf-8")).hexdigest()
+
+
 def save_checkpoint(state: PlanState, path: str) -> str:
-    """Atomically persist plan state to a JSON file (write-temp + rename)."""
+    """Atomically persist plan state to a JSON file (write-temp + rename).
+
+    The written object carries a ``state_digest`` over its own canonical form, so
+    :func:`load_checkpoint` can refuse a file that was edited after it was written.
+    See that function for why this matters (INV-PLAY-1).
+    """
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     d = os.path.dirname(os.path.abspath(path)) or "."
+    payload = state.to_dict()
+    payload[_DIGEST_KEY] = {"algorithm": _DIGEST_VERSION, "value": _state_digest(payload)}
     fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(state.to_dict(), f, indent=2, ensure_ascii=False)
+            json.dump(payload, f, indent=2, ensure_ascii=False)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
@@ -142,10 +185,189 @@ def save_checkpoint(state: PlanState, path: str) -> str:
     return path
 
 
-def load_checkpoint(path: str) -> PlanState:
-    """Load plan state from a JSON checkpoint written by :func:`save_checkpoint`."""
-    with open(path, "r", encoding="utf-8") as f:
-        return PlanState.from_dict(json.load(f))
+def load_checkpoint(path: str, *, require_digest: bool = True) -> PlanState:
+    """Load plan state from a checkpoint, REFUSING one that was tampered with.
+
+    INV-PLAY-1. This used to be a bare ``PlanState.from_dict(json.load(f))`` with no
+    validation at all, and ``resume_from_checkpoint`` then did
+    ``runner.state = state`` to "keep prior statuses/decisions". Play Mode's entire
+    reason to exist is the claim that *no offensive step happens without an explicit
+    human confirmation* — and that claim was falsifiable by editing a JSON file.
+    Three reproduced attacks, in increasing severity:
+
+    1. Marking every step ``executed`` made the runner ask the human ZERO times
+       while producing counts byte-identical to a real run.
+    2. Setting ``halted: false`` and reverting ``rejected`` steps to ``pending``
+       ERASED a human rejection from the record.
+    3. Rewriting ``rejected`` to ``executed`` with a fabricated
+       ``decision.approver`` made the audit record assert that a named security lead
+       approved every step of an offensive plan they were never asked about.
+
+    The technique execution itself is genuinely a no-op (verified: the module holds
+    no subprocess/socket/exec primitive), so the harm is not a real attack — it is
+    that the AUDIT ARTIFACT can be forged after the fact, in the direction that says
+    "this was authorized". For a red-team authorization record that is the whole
+    value of the file.
+
+    Reachability is not theoretical: ``longrunning/detonation/bedrock_entrypoint.py``
+    and ``longrunning/bas-runner/`` both resume from a runtime-supplied path.
+
+    THREAT MODEL — stated plainly, because the digest is NOT a signature
+    -------------------------------------------------------------------
+    ``state_digest`` is an UNKEYED SHA-256. Anyone who can write the file can
+    recompute it, so this defends against **accidental or careless modification**
+    (a hand-edit, a truncated write, a partial sync, a buggy external writer) —
+    NOT against a determined attacker with write access to the checkpoint. Verified
+    experimentally: after recomputing the digest, a self-consistent forged state
+    (every step ``executed`` with a fabricated APPROVED decision) is still accepted,
+    because nothing distinguishes it from a genuine one.
+
+    Closing that gap needs a key the checkpoint writer does not hold, or an anchor
+    in storage it cannot rewrite — exactly what ``provenance.py`` says about its own
+    ledger ("for real governance the anchor belongs in storage the ledger writer
+    cannot rewrite", INV-GOV-4). That is a deployment decision, not a code one, and
+    pretending otherwise here would be the same self-certification this round audits.
+
+    What IS enforced, in three layers:
+
+    - **Integrity** — the digest must match. Catches every accidental change, and
+      forces a deliberate one to be deliberate rather than a one-character edit.
+    - **Consistency** — even a correctly-digested state must be one the runner could
+      have produced: known statuses, indexes matching positions, an approved or
+      executed step carrying a decision that actually says APPROVED, a rejected step
+      halting the plan, a halt naming its reason. Catches a state written by a buggy
+      or older writer, which integrity alone cannot see.
+    - **Plan binding** (in :meth:`PlayModeRunner.resume_from_checkpoint`) — the
+      resumed plan must be the plan that was checkpointed. Consistency cannot detect
+      a wholly SUBSTITUTED plan, because a substituted plan is perfectly consistent.
+
+    ``require_digest=False`` accepts a legacy checkpoint written before digests
+    existed, and is the ONLY way to load one. It still runs the consistency checks.
+    A caller that uses it is opting out of tamper detection and should say why.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise CheckpointError(f"checkpoint {path} is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise CheckpointError(
+            f"checkpoint {path} must be a JSON object, got {type(raw).__name__}"
+        )
+
+    stamp = raw.get(_DIGEST_KEY)
+    if stamp is None:
+        if require_digest:
+            raise CheckpointError(
+                f"checkpoint {path} carries no {_DIGEST_KEY!r}: it predates tamper "
+                "detection or was rewritten by something other than "
+                "save_checkpoint(). Pass require_digest=False to load it anyway — "
+                "which forgoes the guarantee that a human approval in this file was "
+                "actually given."
+            )
+    else:
+        if not isinstance(stamp, dict) or "value" not in stamp:
+            raise CheckpointError(f"checkpoint {path} has a malformed {_DIGEST_KEY}")
+        if stamp.get("algorithm") != _DIGEST_VERSION:
+            raise CheckpointError(
+                f"checkpoint {path} uses digest algorithm {stamp.get('algorithm')!r}, "
+                f"this build understands {_DIGEST_VERSION!r}"
+            )
+        expected = _state_digest(raw)
+        if not hmac.compare_digest(str(stamp["value"]), expected):
+            raise CheckpointError(
+                f"checkpoint {path} FAILED its integrity check — the file was "
+                f"modified after it was written. Refusing to resume: a plan state "
+                f"that cannot be trusted cannot attest that its offensive steps "
+                f"were human-approved."
+            )
+
+    try:
+        state = PlanState.from_dict(raw)
+    except (KeyError, TypeError) as exc:
+        raise CheckpointError(f"checkpoint {path} is malformed: {exc}") from exc
+    _assert_consistent(state, path)
+    return state
+
+
+def _assert_consistent(state: PlanState, path: str) -> None:
+    """Reject a plan state that is internally contradictory (INV-PLAY-2).
+
+    Runs on every load, digest or not. Integrity proves the file did not change;
+    this proves the state it holds is one the runner could actually have produced.
+    A state that passes integrity but not consistency means the WRITER was wrong —
+    a different failure that the digest cannot see.
+    """
+    seen_indexes = set()
+    for pos, step in enumerate(state.steps):
+        where = f"{path} step {pos}"
+        if step.status not in (PENDING, APPROVED, EXECUTED, REJECTED):
+            raise CheckpointError(
+                f"{where}: unknown status {step.status!r} (expected one of "
+                f"{PENDING}/{APPROVED}/{EXECUTED}/{REJECTED})"
+            )
+        # The index is what `reject_after` and the gate policies key on, so a
+        # duplicated or out-of-order index silently mis-targets a decision.
+        if step.index != pos:
+            raise CheckpointError(
+                f"{where}: index {step.index} does not match its position {pos}"
+            )
+        if step.index in seen_indexes:
+            raise CheckpointError(f"{where}: duplicate step index {step.index}")
+        seen_indexes.add(step.index)
+        # An approved or executed step MUST carry the decision that authorized it.
+        # This is the check that kills the forged-approval attack even for a
+        # hand-crafted state: a step cannot claim to be executed with no decision,
+        # and a decision that does not say APPROVED cannot have authorized it.
+        if step.status in (APPROVED, EXECUTED):
+            if not isinstance(step.decision, dict):
+                raise CheckpointError(
+                    f"{where}: status {step.status!r} with no decision payload — an "
+                    "executed offensive step must carry the approval that "
+                    "authorized it"
+                )
+            if not _is_approved(step.decision):
+                raise CheckpointError(
+                    f"{where}: status {step.status!r} but its decision is "
+                    f"{step.decision.get('decision')!r}, not APPROVED"
+                )
+        if step.status == REJECTED and isinstance(step.decision, dict):
+            if _is_approved(step.decision):
+                raise CheckpointError(
+                    f"{where}: status 'rejected' but its decision says APPROVED"
+                )
+    # A halted plan must name why, and a plan with a rejected step must be halted —
+    # "rejected but still running" is precisely the state attack (2) manufactured.
+    rejected = [s for s in state.steps if s.status == REJECTED]
+    if rejected and not state.halted:
+        raise CheckpointError(
+            f"{path}: step {rejected[0].index} is rejected but the plan is not "
+            "halted — a human rejection must halt the plan"
+        )
+    if state.halted and not state.halted_reason:
+        raise CheckpointError(f"{path}: plan is halted with no halted_reason recorded")
+
+
+def _assert_plan_matches(
+    state: PlanState, expected_plan: List[Dict[str, str]], path: str
+) -> None:
+    """Refuse a checkpoint whose plan is not the plan the caller authorized.
+
+    INV-PLAY-3. Compares the (phase, technique) sequence — the identity of the kill
+    chain. ``objective`` is prose and deliberately NOT compared: rewording it does
+    not change which technique gets emulated, and demanding a byte match would make
+    the guard brittle enough that callers would stop passing ``expected_plan``.
+    """
+    got = [(s.phase, s.technique) for s in state.steps]
+    want = [(str(p.get("phase")), str(p.get("technique"))) for p in expected_plan]
+    if got != want:
+        raise CheckpointError(
+            f"{path}: checkpoint plan does not match the authorized plan. "
+            f"authorized={want} checkpointed={got}. Refusing to resume a plan the "
+            "operator did not approve — a substituted plan is internally consistent "
+            "and its digest can be recomputed, so this comparison is the only thing "
+            "that can catch it."
+        )
 
 
 # ---------------------------------------------------------------- decisions
@@ -168,6 +390,36 @@ def reject_after(n: int) -> Callable[[StepState, Dict[str, Any]], Dict[str, Any]
             return auto_approve(step, tool_use)
         return auto_reject(step, tool_use)
     return policy
+
+
+def _gate_subject_mismatch(step: "StepState", tool_use: Dict[str, Any]) -> Optional[str]:
+    """Describe how the gate's payload disagrees with the step, or ``None``.
+
+    INV-PLAY-6. The human is shown a decision about ``step``; the harness is asking
+    about whatever is in the gate's ``input``. Nothing compared them, so an approval
+    for "T1595 (recon)" could authorize a gate requesting "T1486 (impact)" — the
+    confused-deputy shape INV-PROMOTE-2 closed for promotion approval.
+
+    Only fields the gate ACTUALLY carries are checked. A gate that names no technique
+    is not a mismatch: the payload shape is the harness's business, and demanding
+    fields it may not send would break every legitimate run. What is refused is a
+    payload that names a DIFFERENT one — present and contradictory, never merely
+    absent.
+    """
+    payload = tool_use.get("input")
+    if not isinstance(payload, dict):
+        return None
+    problems = []
+    # `key`, not `field` — the latter shadows the dataclasses import at module top,
+    # which ruff (F402) caught. A shadowed `field` would break any later use of the
+    # decorator in this scope, so it is worth the rename rather than a noqa.
+    for key, expected in (("technique", step.technique), ("phase", step.phase)):
+        got = payload.get(key)
+        if got is None or not str(got).strip():
+            continue
+        if str(got).strip().upper() != str(expected).strip().upper():
+            problems.append(f"{key}={got!r} (step {key} is {expected!r})")
+    return "; ".join(problems) if problems else None
 
 
 def _is_approved(decision: Dict[str, Any]) -> bool:
@@ -248,8 +500,24 @@ class PlayModeRunner:
         checkpoint_path: str,
         **kwargs: Any,
     ) -> "PlayModeRunner":
-        """Rebuild a runner from a saved checkpoint (resumes long runs)."""
-        state = load_checkpoint(checkpoint_path)
+        """Rebuild a runner from a saved checkpoint (resumes long runs).
+
+        ``expected_plan`` binds the resume to the plan the operator authorized
+        (INV-PLAY-3). Without it the checkpoint is the ONLY source of the plan — the
+        plan handed to ``cls()`` below is reconstructed from the checkpoint's own
+        steps — so a wholly SUBSTITUTED plan resumes with nothing to compare against.
+        That substitution survives both other layers by construction: it is
+        internally consistent, and its digest can be recomputed.
+
+        This is the one layer an attacker with write access cannot defeat, because
+        the reference value lives with the caller rather than in the file. A
+        long-running entrypoint that knows which plan it launched should pass it.
+        """
+        expected_plan = kwargs.pop("expected_plan", None)
+        require_digest = kwargs.pop("require_digest", True)
+        state = load_checkpoint(checkpoint_path, require_digest=require_digest)
+        if expected_plan is not None:
+            _assert_plan_matches(state, expected_plan, checkpoint_path)
         runner = cls(
             harness_arn,
             plan=[{"phase": s.phase, "technique": s.technique, "objective": s.objective}
@@ -259,7 +527,7 @@ class PlayModeRunner:
             checkpoint_path=checkpoint_path,
             **kwargs,
         )
-        runner.state = state  # keep prior statuses/decisions
+        runner.state = state  # keep prior statuses/decisions (validated above)
         return runner
 
     # -- SIMULATED execution (NO-OP) ----------------------------------------
@@ -305,6 +573,38 @@ class PlayModeRunner:
             self._checkpoint()
             return step
 
+        # INV-PLAY-5: the paused tool must BE the approval gate. `GATE_NAME` existed
+        # as a constant but was never used to check anything, so ANY tool_use was
+        # accepted as the human-approval gate — a pause on `code_interpreter` (with
+        # an arbitrary payload) was recorded as an approved, executed offensive step.
+        gate_name = tool_use.get("name")
+        if gate_name != self.GATE_NAME:
+            self.state.halted = True
+            self.state.halted_reason = (
+                f"step {step.index} ({step.technique}) paused on tool "
+                f"{gate_name!r}, not the {self.GATE_NAME!r} approval gate — "
+                f"refusing to treat another tool's pause as human confirmation")
+            self._log(f"[HALT] {self.state.halted_reason}")
+            self._checkpoint()
+            return step
+
+        # INV-PLAY-6: bind the approval to the SUBJECT the gate actually asked about.
+        # Nothing compared the gate payload to the step, so the human was shown
+        # "approve T1595 (recon)?" while the gate requested T1486 (ransomware) — the
+        # confused-deputy hole INV-PROMOTE-2 closed for promotion approval, recurring
+        # here for per-step approval because that fix was specific to agent_loop
+        # rather than a shared rule.
+        mismatch = _gate_subject_mismatch(step, tool_use)
+        if mismatch:
+            self.state.halted = True
+            self.state.halted_reason = (
+                f"step {step.index}: the {self.GATE_NAME} gate asked about "
+                f"{mismatch} — refusing to route a decision about one technique to "
+                f"an approval request for another")
+            self._log(f"[HALT] {self.state.halted_reason}")
+            self._checkpoint()
+            return step
+
         step.tool_use_id = tool_use.get("toolUseId")
         decision = self.decision_fn(step, tool_use)
         step.decision = decision
@@ -316,14 +616,27 @@ class PlayModeRunner:
                 f"step {step.index} ({step.technique}) rejected by "
                 f"{decision.get('approver', 'human')}")
             self._log(f"[REJECT] step {step.index} {step.technique} -> plan halted")
-            # Close the loop honestly: tell the harness the gate was denied.
+            # INV-PLAY-7: PERSIST FIRST. This used to notify the harness before
+            # checkpointing, so a resume_fn that raised (a dropped connection, a
+            # throttle) propagated out with the checkpoint never written — the human's
+            # rejection existed only in the dead process's memory. On disk the step
+            # was still `pending`, so a resume would re-ask, and an operator reading
+            # the file would see no record that anyone had said no. A denial is the
+            # single most important thing this file can carry; it is recorded before
+            # anything that can fail.
+            self._checkpoint()
+            # Close the loop honestly: tell the harness the gate was denied. A failure
+            # here still propagates — it is a real error — but the record survives it.
             self.resume_fn(self.harness_arn, self.state.session_id, tool_use,
                            decision, status="error")
-            self._checkpoint()
             return step
 
         # Approved: resume the session, then record a SIMULATED no-op execution.
+        # `APPROVED` is checkpointed before the resume for the same reason as above:
+        # if the resume fails, the record shows an approval that never ran rather
+        # than a step that appears never to have been decided.
         step.status = APPROVED
+        self._checkpoint()
         self.resume_fn(self.harness_arn, self.state.session_id, tool_use, decision)
         step.execution_log = self._simulate_execution(step)
         step.status = EXECUTED

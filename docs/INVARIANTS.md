@@ -224,6 +224,76 @@ most dangerous outcome in the suite.
 
 ---
 
+## INV-PLAY — a Play Mode audit record cannot be forged after the fact
+
+`simulation.py` makes the strongest safety claim in the codebase: *"no offensive
+action happens without an explicit human confirmation — that is what Play Mode
+means."* Round 16 found that claim was falsifiable by **editing a JSON file**.
+
+`load_checkpoint` was a bare `PlanState.from_dict(json.load(f))` with no validation,
+and `resume_from_checkpoint` then did `runner.state = state` to "keep prior
+statuses/decisions". Three reproduced attacks:
+
+1. Marking every step `executed` → the runner asked the human **zero** times, with
+   counts byte-identical to a real run.
+2. `halted: false` + reverting `rejected` to `pending` → **erased a human rejection**.
+3. Rewriting `rejected` to `executed` with a fabricated `decision.approver` → the
+   audit record asserted a **named security lead approved every step of an offensive
+   plan they were never asked about**.
+
+Technique execution really is a no-op (verified by AST walk, not by trusting the
+docstring), so the harm is not a live attack — it is that the **audit artifact**, the
+only evidence a red-team action was authorized, can be rewritten in the direction
+that says "this was authorized". Reachable from `longrunning/detonation/` and
+`longrunning/bas-runner/`, the latter mirroring the checkpoint to S3.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-PLAY-1** | A checkpoint edited after it was written is refused. `save_checkpoint` stamps a `state_digest` over the canonical body; `load_checkpoint` verifies it with a constant-time compare. Re-indenting or reordering keys does not trip it; changing any *value* does. A digest-less file is refused by default — "unanchored" is not "verified", the same distinction `provenance.read_anchor` draws. | `simulation.save_checkpoint` / `load_checkpoint` | `test_r16_self_certified.py::TestCheckpointIntegrity` |
+| **INV-PLAY-2** | Even a correctly-digested state must be one the runner could have produced: known statuses, indexes matching positions, an approved/executed step carrying a decision that actually says APPROVED, a rejected step halting the plan, a halt naming its reason. Every test for this **re-seals the digest first**, because an unkeyed digest is recomputable — a guard that only catches an attacker who forgot to re-seal is not a guard. | `simulation._assert_consistent` | `test_r16_self_certified.py::TestCheckpointConsistency` |
+| **INV-PLAY-3** | A resumed plan is the plan the caller authorized (`expected_plan=`). This is the only layer an attacker with write access **cannot** defeat, because the reference value lives with the caller rather than in the file: a substituted plan is internally consistent and its digest can be recomputed, so nothing inside the file can catch it. Compares `(phase, technique)` identity, not `objective` prose. Both long-running entrypoints pass it. | `simulation._assert_plan_matches` | `test_r16_self_certified.py::TestPlanBinding` |
+| **INV-PLAY-4** | The gate is asked exactly once per offensive step (zero = silent execution, two = double-charging one human decision), a rejection halts the plan leaving later steps pending, and only an explicit `"APPROVED"` string counts — `{"decision": "false"}` and `{"decision": True}` both read as NOT approved, so the `bool("false")` trap of INV-BOUNDARY-1/INV-GATE-3 cannot reach this predicate. Technique execution carries no side-effect primitive, checked by AST walk. | `simulation.PlayModeRunner` / `_is_approved` | `test_r16_self_certified.py::TestPlayModeGateItself` |
+| **INV-PLAY-5** | Only the tool named by `GATE_NAME` counts as the approval gate. That constant EXISTED and was never used to check anything, so any `tool_use` was accepted as human confirmation — a pause on `code_interpreter` carrying an arbitrary payload was recorded as an approved, executed offensive step. The human is not even asked about a non-gate pause: asking someone to approve something that is not the gate trains them to click through. | `simulation.PlayModeRunner.run_step` | `test_r16_self_certified.py::TestTheGateIsActuallyTheGate` |
+| **INV-PLAY-6** | The approval is bound to the technique/phase the gate ACTUALLY asked about. The human was shown "approve T1595 (recon)?" while the gate requested T1486 (ransomware deployment), and nothing compared the two. **This is the second appearance of the confused-deputy shape INV-PROMOTE-2 closed** — M18's fix was specific to `agent_loop`, so per-step approval never received it. Only a payload that names a DIFFERENT subject is refused; one that names nothing is fine, because demanding fields the harness may not send is how a guard gets disabled in practice. | `simulation._gate_subject_mismatch` | `test_r16_self_certified.py::TestTheGateIsActuallyTheGate::test_an_approval_is_bound_to_the_technique_the_gate_asked_about` |
+| **INV-PLAY-7** | A decision is persisted BEFORE anything that can fail. The rejection path notified the harness before checkpointing, so a `resume_fn` that raised (a dropped connection, a throttle) propagated out with the checkpoint never written — the human's refusal existed only in the dead process's memory, the step read `pending` on disk, and a resume would re-ask. A denial is the single most important thing this file can carry. The failure still propagates; only the ordering changed. | `simulation.PlayModeRunner.run_step` | `test_r16_self_certified.py::TestTheGateIsActuallyTheGate::test_a_rejection_is_persisted_before_anything_that_can_fail` |
+
+INV-PLAY-5/6/7 are **more fundamental than 1/2/3**: those protect the *record* of an
+approval, these protect the *approval*. A record cannot be more trustworthy than the
+decision it records. All three were found by fan-out probes, not by hand — and three
+independent probes converged on the same function, which is itself corroboration.
+Fixing them also revealed that two test fakes emitted a synthetic `T{n}` technique in
+the gate payload, a shape no real harness would produce; they only passed because
+nothing compared it to the step.
+
+### Threat model, stated rather than implied
+
+`state_digest` is an **unkeyed SHA-256, not a signature**. Anyone who can write the
+file can recompute it — verified experimentally: after re-sealing, a self-consistent
+forged state still loads. So INV-PLAY-1 defends against *accidental or careless*
+modification and forces a deliberate forgery to be deliberate; INV-PLAY-2 catches a
+sloppy forgery and a buggy writer; only INV-PLAY-3 resists a determined one.
+
+Closing the gap fully needs a key the checkpoint writer does not hold, or an anchor
+in storage it cannot rewrite — precisely what INV-GOV-4 already says about the
+provenance ledger. That is a deployment decision, and claiming otherwise in code
+would be the same self-certification this round exists to audit.
+`test_an_unbound_resume_does_NOT_catch_substitution` pins the residual gap so a
+reader cannot infer a guarantee the code does not give.
+
+---
+
+## INV-CLI — a presentation flag never disables a gate
+
+The CLI is where a human forms their belief about system state. A wrong exit code is a
+defect even when the library underneath is correct, because automation acts on the
+exit code and nothing else.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-CLI-1** | `detection audit --min-score N` fires in EVERY output mode. The `--navigator` branch returned 0 before reaching the gate, so `--min-score 99 --navigator layer.json` exited 0 at any health score while the same command without `--navigator` exited 1. Asking for both an export and a gate produced the export and a **green build** — worse than no gate, because a pipeline author who adds an export silently loses the check with no output saying so. The gate is about the score, not about how the report was rendered. | `cli._cmd_detection_audit` | `test_r16_self_certified.py::TestCliGateSurvivesEveryOutputMode` |
+
+---
+
 ## INV-GATE — the promotion gate never approves a verdict the judge did not give
 
 `run_evaluation` is the scoring gate the self-improvement loop promotes on. Its
@@ -276,11 +346,40 @@ denylist-shaped defects INV-FP and INV-GATE record.
 | **INV-DEDUP-3** | Rules over different logsources are never compared — they never see the same events, so no relation between them is assertable. And the tool stays USEFUL: a narrow rule strictly inside a broad one is still reported, in the correct direction. | `detection_dedup._analyze` | `test_r15_stopping_decisions.py::TestSubsumptionIsSound::test_an_actually_redundant_rule_is_still_found` |
 | **INV-DEDUP-4** | A CHAIN of value modifiers is refused, never read as its last link. The modifier loop assigned on each pass, so `Image\|contains\|startswith` kept only `startswith` — not a parse of the chain but a *different predicate*. `sigma_match` reads the same chain as `contains` (`xcmdy` matches), so the two engines disagreed about what the rule matches while dedup reasoned about subsets on top of that. A chain has no single set-containment model, so it is refused rather than guessed. | `detection_dedup._analyzable_predicates` | `test_r15_stopping_decisions.py::TestChainedModifiersAreNotAnalyzed` |
 
-INV-DEDUP-4 is the one defect the hand-run differential test missed, and the reason
-is instructive: I varied wildcards, casing, logsource granularity and predicate
-count, but **every predicate in my space had at most one modifier**. The fan-out
-probe varied that dimension and found it immediately. The differential space now
-includes chains.
+| **INV-DEDUP-5** | Sigma escapes are RESOLVED before values are compared, and only a live (unescaped) wildcard leaves the provable shape. `_predicate_implies` compares values as plain TEXT, but per the spec `\*` is a LITERAL asterisk — so `contains: 'C:\Temp\*'` (matching the literal `C:\Temp*`) is not a subset of `contains: 'C:\Temp\'` (matching anything under that directory), yet as RAW text one looked like a prefix of the other. dedup reported "safe to delete", and the event `del /f /q C:\Temp*` matches the deleted rule and not the survivor. An exhaustive predicate-level differential found **156 false implications, every one involving an escape**. Resolution is byte-identical to `sigma_match._unescape_sigma` and pinned equal to it by test — the two engines disagreeing about what an escape means is what produced this defect. | `detection_dedup._has_live_wildcard` / `_unescape_value` | `test_r15_stopping_decisions.py::TestSigmaEscapesAreNotComparedAsText` |
+
+### Two corrections to what round 15 originally recorded
+
+**INV-DEDUP-4** was the defect the hand-run differential missed: I varied wildcards,
+casing, logsource granularity and predicate count, but **every predicate in my space
+had at most one modifier**. The fan-out probe varied that dimension and found it at
+once.
+
+**INV-DEDUP-5 overturns a conclusion I published.** I recorded the escape-sequence
+claim as REFUTED after re-running it with single-quoted YAML rules and seeing zero
+violations — but YAML consumed the backslash before Sigma ever saw it, so I was
+measuring the YAML layer, not Sigma escaping. The probe passed **parsed dicts**,
+which `_parse_rule` explicitly accepts and a real caller is most likely to use, and
+the defect reproduced immediately. So the round-15 statement that "detection_dedup
+survived outright" was wrong; it survived every dimension I exercised, which is not
+the same thing — the same overstatement this file already records for `ops_query`.
+
+The fix needed correcting **twice**, and each time a test caught it rather than more
+reasoning:
+
+1. Decline every value containing a backslash — wrong trade-off, since nearly every
+   real Sigma rule carries a Windows path. Broke three tests.
+2. Decline only the escapes `\*`/`\?`/`\\` — still wrong for `\\`, which folds two
+   characters into one literal backslash and introduces no pattern semantics. Broke
+   `test_detection_audit` on a rule whose YAML held `'\\powershell.exe'`.
+3. **Separate the cases.** A live wildcard cannot be decided by any text relation →
+   decline. An escape is resolvable → resolve, then compare. This closes the defect
+   while declining *nothing*.
+
+Worth generalizing: both wrong turns came from reaching for "refuse it" — the posture
+that is right elsewhere in this file — when the actual problem was that the value was
+being read in the wrong form. Declining is the correct answer when a thing cannot be
+modelled, not when it merely has not been decoded yet.
 
 ---
 

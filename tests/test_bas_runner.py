@@ -53,6 +53,19 @@ PLAN = [
 # --------------------------------------------------------------------------- #
 # Fakes: scripted invoke/resume that make ZERO AWS calls                      #
 # --------------------------------------------------------------------------- #
+def _technique_from_prompt(prompt: str) -> str:
+    """Pull the technique id out of the runner's step prompt.
+
+    The prompt carries ``Technique: T1595.`` — a real harness reads it and asks the
+    gate about that technique. Parsing it keeps this fake faithful to the contract
+    INV-PLAY-6 now enforces (the gate must ask about the step it was handed), instead
+    of emitting a synthetic id that only worked because nothing checked.
+    """
+    import re
+    match = re.search(r"Technique:\s*([^.\s]+)", prompt or "")
+    return match.group(1) if match else "T0000"
+
+
 class FakeHarness:
     """Scripted harness that pauses on the gate every invoke (no AWS/network)."""
 
@@ -67,10 +80,17 @@ class FakeHarness:
         if not self.pause:
             return {"stop_reason": "end_turn", "tool_use": None, "text": "no gate"}
         self._n += 1
+        # The gate payload must name the technique it is ACTUALLY asking about
+        # (INV-PLAY-6). This stub used to emit a synthetic `T{n}` counter, which no
+        # real harness would do — the gate exists to ask "may I run step X?", so a
+        # payload naming a different technique than the step is now refused as a
+        # confused-deputy risk. Deriving it from the prompt keeps the stub faithful
+        # to the contract instead of relying on the runner not checking.
+        technique = _technique_from_prompt(text)
         return {
             "stop_reason": "tool_use",
             "tool_use": {"toolUseId": f"tu-{self._n}", "name": sim.PlayModeRunner.GATE_NAME,
-                         "input": {"technique": f"T{self._n}"}},
+                         "input": {"technique": technique}},
             "text": "",
         }
 
