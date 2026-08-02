@@ -49,6 +49,12 @@ import os
 import re
 from typing import Any, Dict
 
+# The ONE egress guard (INV-EGRESS-1). Imported rather than copied: a local copy
+# of this check is how the same SSRF pair reached two tools before it was
+# mechanized — see sentinel_harness/egress.py.
+from sentinel_harness import egress
+
+
 # ATT&CK technique id: Tnnnn optionally followed by .nnn sub-technique.
 _TECHNIQUE_RE = re.compile(r"^T\d{4}(\.\d{3})?$")
 
@@ -155,7 +161,7 @@ def _fetch_live(technique_id: str) -> Dict[str, Any]:
     # so cap generously at 64MB and refuse anything larger rather than OOM.
     _MAX_LIVE_BODY_BYTES = 64 * 1024 * 1024
     req = urllib.request.Request(url, headers={"User-Agent": "sentinel-harness"})
-    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+    with egress.open_checked(req, timeout=30) as resp:  # noqa: S310
         raw = resp.read(_MAX_LIVE_BODY_BYTES + 1)
     if len(raw) > _MAX_LIVE_BODY_BYTES:
         raise RuntimeError(

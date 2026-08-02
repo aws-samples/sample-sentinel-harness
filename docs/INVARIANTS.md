@@ -286,6 +286,75 @@ reader cannot infer a guarantee the code does not give.
 
 ---
 
+## INV-EGRESS — one guard, used by every live path
+
+Round 16 found two SSRF defects in `ops_query`, fixed them there, and recorded
+INV-OPS-5. Round 17 found **the identical pair in `siem_query`** — both reproduced end
+to end, including the credential leak. A survey then showed why: of the eight tools that
+open outbound HTTP, exactly **one** was complete.
+
+| tool | url guard | redirect refused | alt-IP parsing |
+|---|---|---|---|
+| ops_query | yes | yes | yes |
+| siem_query | yes | **no** | **no** |
+| asset_lookup | yes | **no** | **no** |
+| enrich_ioc | yes | **no** | **no** |
+| web_search | yes | **no** | **no** |
+| nvd_lookup | **no** | **no** | **no** |
+| epss_kev | **no** | **no** | **no** |
+| attack_lookup | **no** | **no** | **no** |
+
+Fourth recurrence by the same route as INV-COERCE: a fix applied to one call site is not
+a mechanism. The guard now lives in `sentinel_harness/egress.py`, once.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-EGRESS-1** | Every live path opens through `egress.open_checked`, which vets the URL and refuses redirects in ONE call. No tool calls `urllib.request.urlopen` directly (it follows 3xx, which walks past any pre-flight check and re-sends `Authorization` to the target the *backend* chose), and no tool reimplements the IP parser. Enforced by an AST sweep over all eight tools plus an inventory check that a NEW live path cannot silently escape. | `sentinel_harness/egress.py` | `test_r17_egress_mechanized.py::TestEveryLivePathUsesTheSharedGuard` |
+| **INV-EGRESS-2** | The guard refuses every spelling of a forbidden target — `169.254.169.254`, `2852039166` (decimal), `0xA9FEA9FE` (hex), `0251.0376.0251.0376` (octal), IPv4-mapped IPv6, a userinfo prefix, and non-HTTP schemes — while ALLOWING a legitimate backend, loopback (a self-hosted SIEM, and what the live tests bind), and a DNS name that merely starts with a digit. `EgressError` subclasses `RuntimeError` so a refusal surfaces as `upstream_error`, never a silent empty result. | `egress.assert_safe_url` / `parse_ip_literal` / `_NoRedirect` | `test_r17_egress_mechanized.py::TestTheSharedGuardBehaviour` |
+
+**Not** defended, stated so nobody infers it: a hostname that RESOLVES to a link-local
+address (DNS rebinding). That needs resolution-time hooks — the runtime network policy's
+job. This guard covers what a URL string can express.
+
+---
+
+## INV-CONNECTOR (round 17 additions) — a value is not a query language
+
+Round 13b audited the 8 SIEM connectors on selector semantics and response fidelity.
+Round 17 audited the two dimensions it did not: **query injection** and **credential
+handling**.
+
+Seven of eight connectors place the caller's value inside a quoted literal and escape it
+— audited and fixed in an earlier round, and now pinned. Two findings remained:
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-CONNECTOR-6** | A free-text value is not evaluated as a query language. Elastic and OpenSearch put it into `query_string`, which INTERPRETS Lucene — so `web-01 OR *` widened the query to match every document (the agent reads alerts for hosts it never asked about) and `x AND NOT x` narrowed it to none (an attack hidden behind an empty result that reads as good news). Injection by construction, and the only such site: JSON quoting protects the transport and does nothing about the DSL. Now `simple_query_string` with an explicit `flags` allowlist (AND/OR/NOT/PHRASE/WHITESPACE only — no field scoping, ranges, regex or boosting) and an explicit `fields` allowlist, since the default expands to `*`. | `connectors.siem.ElasticConnector` / `OpenSearchConnector` | `test_r17_egress_mechanized.py::TestConnectorQueryInjection` |
+| **INV-CONNECTOR-8** | AQL escaping neutralises a trailing BACKSLASH, not only quotes. Doubling quotes alone emitted `host = 'x\' LIMIT 1000` for the value `x\`: a parser that honours backslash escapes reads `\'` as a literal quote, consuming the closing delimiter so the `LIMIT` clause falls inside the string. Whether Ariel honours backslash escapes is not something a caller's safety may depend on — the value is quoted for a dialect we do not control, so both readings must be safe. | `connectors.siem._escape_squote` | `test_r17_egress_mechanized.py::TestConnectorQueryInjection::test_a_string_dsl_connector_escapes_a_breakout_attempt` |
+| **INV-CONNECTOR-9** | The connectors carry no credentials and open no sockets. Their docstring claims "nothing here carries an endpoint, index name, token, or tenant" — a self-certified claim of the kind round 16 audited, so it is checked: `build_request`'s return value contains no credential material, the module reads no environment variable, and it holds no HTTP primitive. The last matters most: it is what makes an injection finding LATENT rather than live, and if it ever changes the severity of this whole family changes with it. | `connectors/siem.py` | `test_r17_egress_mechanized.py::TestConnectorsHoldNoCredentials` |
+
+### Three refinements the injection assertion needed
+
+The escaping test was wrong twice before it was right, each time for the same reason —
+and the sequence is worth recording because it is the shape of a bad security test:
+
+1. **Substring matching.** `'" | ' not in emitted` flagged all seven correctly-escaped
+   backends: Chronicle emitted `host = "x\" | delete index=*"`, where the quote IS
+   escaped, and the substring matched inside `\" | `. **Sixth** occurrence of
+   substring-for-structure in this repo.
+2. **Measuring the wrong artifact.** Counting quotes on `str(request)` measured
+   Python's repr escaping, not the DSL's.
+3. **Ignoring the dialect.** Checking BOTH quote characters flagged a double quote
+   inside single-quoted AQL, where it is not a metacharacter at all.
+
+The assertion that finally works extracts the query string, counts unescaped
+occurrences of **that backend's own delimiter**, and requires an even count — a value
+that broke out leaves an odd one. It found INV-CONNECTOR-8 immediately, and a positive
+control (re-injecting the un-escaped `_escape_dquote`) proves it can still see a
+regression.
+
+---
+
 ## INV-COERCE — the invariants that recurred are now enforced structurally
 
 Nine rounds produced 106 invariants. **Three of them came back after being fixed**, and

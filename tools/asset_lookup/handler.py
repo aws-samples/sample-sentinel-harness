@@ -90,6 +90,12 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List
 
+# The ONE egress guard (INV-EGRESS-1). Imported rather than copied: a local copy
+# of this check is how the same SSRF pair reached two tools before it was
+# mechanized — see sentinel_harness/egress.py.
+from sentinel_harness import egress
+
+
 # The repo's authoritative truthiness coercion. Imported rather than reimplemented:
 # a local `bool()` here was the audited INV-BOUNDARY-1 defect, and the helper's own
 # docstring is where the `bool("false") is True` trap is recorded. Path-appended
@@ -506,7 +512,7 @@ def _fetch_live(query: str) -> Dict[str, Any]:
         request.add_header("Authorization", f"Bearer {token}")
 
     try:
-        with urllib.request.urlopen(request, timeout=_LIVE_TIMEOUT_SECS) as resp:
+        with egress.open_checked(request, timeout=_LIVE_TIMEOUT_SECS) as resp:
             status = getattr(resp, "status", None) or resp.getcode()
             if not (200 <= int(status) < 300):
                 raise RuntimeError(f"backend returned HTTP {status}")

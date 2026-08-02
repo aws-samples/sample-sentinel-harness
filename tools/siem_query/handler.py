@@ -89,6 +89,11 @@ from typing import Any, Dict, List
 
 import mockdata
 
+# The ONE egress guard (INV-EGRESS-1). Imported rather than copied: a LOCAL copy of
+# this check is precisely how the same SSRF pair reached two tools — INV-OPS-5 fixed
+# ops_query, and the identical defects were then found here one round later.
+from sentinel_harness import egress
+
 # The selector keys this tool understands. Exactly one must be present per call.
 # Kept explicit (not inferred) so a typo'd key is a loud validation_error rather
 # than a silently-empty query. ``query`` is the wildcard ("*" -> everything).
@@ -111,44 +116,24 @@ _ALLOWED_URL_SCHEMES = frozenset({"https", "http"})
 def _assert_safe_url(url: str) -> None:
     """Refuse an outbound URL that is not plain HTTP(S) to a routable host.
 
-    Applied before ANY live request opens: enforce a scheme allowlist (https/http
-    only) and refuse link-local/loopback/metadata targets (the cloud metadata IP
-    ``169.254.169.254`` and ``file://``). Raises ``RuntimeError`` on a rejected URL
-    so the handler maps it to ``upstream_error`` (never a silent fallback).
-    Hostnames that are not IP literals pass through (DNS resolution is the runtime
-    egress policy's job); only IP-literal hosts are range-checked.
-    """
-    import ipaddress
-    from urllib.parse import urlsplit
+    INV-EGRESS-1: delegates to ``sentinel_harness.egress.assert_safe_url``. This used
+    to be a local copy whose range check called ``ipaddress.ip_address()`` directly —
+    which parses only dotted-quad / standard IPv6, so ``http://2852039166/``,
+    ``http://0xA9FEA9FE/`` and ``http://0251.0376.0251.0376/`` (all three are
+    169.254.169.254, the cloud metadata service) fell through as if they were DNS
+    names. Reproduced.
 
-    parts = urlsplit(url)
-    scheme = parts.scheme.lower()
-    if scheme not in _ALLOWED_URL_SCHEMES:
-        raise RuntimeError(
-            f"refusing to open non-HTTP(S) URL scheme {scheme!r}; "
-            "only https/http egress is permitted"
-        )
-    host = parts.hostname
-    if not host:
-        raise RuntimeError("backend URL has no host component")
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return  # not an IP literal — leave DNS-name egress to the network policy
-    # Block the genuinely-dangerous ranges (cloud metadata + unspecified/multicast/
-    # reserved). Loopback is deliberately NOT blocked: an on-box / self-hosted SIEM
-    # backend at 127.0.0.1 is a legitimate operator choice (and is what the mock
-    # server in the test suite uses); the SSRF threat we care about is the metadata
-    # endpoint and link-local, which stay refused.
-    if (
-        ip.is_link_local          # 169.254.0.0/16 (incl. 169.254.169.254) & fe80::/10
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified      # 0.0.0.0, ::
-    ):
-        raise RuntimeError(
-            f"refusing to open URL targeting non-routable/metadata address {host!r}"
-        )
+    That is the SAME defect INV-OPS-5 fixed in ops_query one round earlier. It recurred
+    because the fix was applied to one call site instead of becoming a mechanism, so
+    the implementation now lives in one module and ``test_r17_egress_mechanized.py``
+    fails the build if a live path grows its own copy.
+
+    Loopback stays allowed (a self-hosted SIEM at 127.0.0.1 is a legitimate operator
+    choice, and the live tests bind a mock there). Raised as ``RuntimeError`` —
+    ``EgressError`` is a subclass — so the handler's existing ``upstream_error``
+    mapping is unchanged.
+    """
+    egress.assert_safe_url(url)
 
 
 def _normalize_event(alert: Dict[str, Any]) -> Dict[str, Any]:
@@ -400,9 +385,17 @@ def _fetch_live(key: str, value: str) -> List[Dict[str, Any]]:
 
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        # noqa: S310 — the endpoint is operator-configured via env, not attacker
-        # controlled; timeout + bounded read keep a bad backend from wedging us.
-        with urllib.request.urlopen(req, timeout=_LIVE_TIMEOUT_S) as resp:  # noqa: S310
+        # INV-EGRESS-1: opened through the SHARED guard, which vets the URL and refuses
+        # redirects. The old comment here said "the endpoint is operator-configured via
+        # env, not attacker controlled" — a redirect falsifies exactly that premise,
+        # because the REDIRECT TARGET is chosen by the backend. Reproduced: an allowed
+        # endpoint answering `302 Location: http://169.254.169.254/...` had this client
+        # fetch the metadata service AND forward the `Authorization: Bearer` header to
+        # it. Same pair of defects INV-OPS-5 fixed in ops_query one round earlier; they
+        # recurred here because that fix was applied to one call site instead of being
+        # made a mechanism. Timeout + bounded read still keep a bad backend from
+        # wedging us.
+        with egress.open_checked(req, timeout=_LIVE_TIMEOUT_S) as resp:
             # Read cap+1 then reject over-limit, rather than silently truncating —
             # matches the ops_query/asset_lookup/enrich_ioc reject pattern so the
             # whole tool family behaves identically on an oversized reply.

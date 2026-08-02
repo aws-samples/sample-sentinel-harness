@@ -108,12 +108,36 @@ def _escape_dquote(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+# The fields a FREE-TEXT query may search (INV-CONNECTOR-6). Deliberately the neutral
+# event's own field set — that is exactly the data this tool's contract exposes, so a
+# free-text search cannot reach a document field the caller could not have selected
+# directly. Passed to `simple_query_string.fields`, which otherwise defaults to `*`.
+_FREE_TEXT_FIELDS = ("alert_id", "ts", "severity", "rule_name", "host",
+                     "src_ip", "dst_ip", "technique", "summary")
+
+
 def _escape_squote(value: str) -> str:
     """Escape a value for interpolation inside a single-quoted AQL string (QRadar).
 
     Doubles single quotes (``'`` → ``''``) — the standard SQL/AQL escaping — so
-    the value cannot break out of the quoted literal."""
-    return value.replace("'", "''")
+    the value cannot break out of the quoted literal.
+
+    INV-CONNECTOR-8: a TRAILING BACKSLASH also has to be neutralised. Doubling quotes
+    alone emitted::
+
+        host = 'x\\' LIMIT 1000        for the value  x\\
+
+    A parser that treats ``\\`` as an escape character reads ``\\'`` as a literal quote,
+    so the closing delimiter is consumed and the rest of the statement — including the
+    ``LIMIT`` clause — falls inside the string or shifts meaning. Whether Ariel actually
+    honours backslash escapes is not something a caller's safety should depend on: the
+    value is quoted for a dialect we do not control, so both plausible readings must be
+    safe. Doubling the backslash makes the literal unambiguous under either.
+
+    Order matters: backslashes FIRST, or the escaping introduced for quotes would then
+    be re-escaped and change the value.
+    """
+    return value.replace("\\", "\\\\").replace("'", "''")
 
 
 class SplunkConnector:
@@ -175,7 +199,33 @@ class _EsFamilyConnector:
             # A lower time bound is a RANGE query, not a term on a `since` field.
             query = {"range": {"@timestamp": {"gte": val}}}
         elif kind == "free_text":
-            query = {"query_string": {"query": val}}
+            # INV-CONNECTOR-6: `query_string` INTERPRETS Lucene syntax, so a
+            # caller-supplied value was a query-language injection by construction —
+            # the only such site among the 8 connectors, because the other seven place
+            # the value inside a quoted literal and escape it (_escape_dquote /
+            # _escape_squote). Here JSON quoting protects the transport and does
+            # nothing about the DSL.
+            #
+            #     value "web-01 OR *"  ->  query_string: matches EVERY document
+            #                              (the agent reads alerts for hosts outside
+            #                               the one it asked about)
+            #     value "x AND NOT x"  ->  matches NOTHING (an attack hidden, and the
+            #                              empty result reads as good news)
+            #
+            # `simple_query_string` is the fix rather than escaping: it never throws on
+            # malformed input and, with an explicit `flags` allowlist, the operators a
+            # value can reach are enumerated instead of being whatever Lucene supports.
+            # AND/OR/NOT and phrase quoting stay available — free text still works —
+            # while field-scoping (`host:*`), ranges, regex (`/.../`) and boosting are
+            # not parsed at all.
+            query = {"simple_query_string": {
+                "query": val,
+                "flags": "AND|OR|NOT|PHRASE|WHITESPACE",
+                # Without this a value naming a field the caller was not scoped to
+                # would still be honoured by the default `*` field expansion.
+                "fields": list(_FREE_TEXT_FIELDS),
+                "default_operator": "and",
+            }}
         else:
             query = {"term": {f"{field}.keyword": val}}
         return {"body": {"query": query, "size": DEFAULT_RESULT_LIMIT}, "path": "/_search"}
