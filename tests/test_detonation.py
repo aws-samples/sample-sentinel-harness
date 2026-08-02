@@ -102,10 +102,16 @@ class FakeHarness:
         if not self.pause:
             return {"stop_reason": "end_turn", "tool_use": None, "text": "no gate"}
         self._n += 1
+        # The gate payload names the technique it is ACTUALLY asking about
+        # (INV-PLAY-6). The old synthetic `T{n}` counter is a shape no real harness
+        # would produce; it only passed while nothing compared the payload to the
+        # step, which is the confused-deputy hole the runner now refuses.
+        import re as _re
+        match = _re.search(r"Technique:\s*([^.\s]+)", text or "")
         return {
             "stop_reason": "tool_use",
             "tool_use": {"toolUseId": f"tu-{self._n}", "name": sim.PlayModeRunner.GATE_NAME,
-                         "input": {"technique": f"T{self._n}"}},
+                         "input": {"technique": match.group(1) if match else "T0000"}},
             "text": "",
         }
 

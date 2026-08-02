@@ -561,3 +561,189 @@ class TestPlayModeGateItself:
             "execution is a pure no-op' claim must be re-verified before this test "
             "is relaxed"
         )
+
+
+# --------------------------------------------------------------------------- #
+# INV-PLAY-5/6/7 — the gate itself, found by three converging probes          #
+# --------------------------------------------------------------------------- #
+class TestTheGateIsActuallyTheGate:
+    """These are MORE fundamental than the checkpoint layers above, and I did not
+    find them by hand — three independent fan-out probes converged on the same
+    function (`run_step`), which is itself strong corroboration.
+
+    The checkpoint work protected the RECORD of approvals. These protect the
+    APPROVAL: a record cannot be more trustworthy than the decision it records.
+    """
+
+    _ONE_STEP = [{"phase": "recon", "technique": "T1595", "objective": "emulate"}]
+
+    def _runner(self, invoke, resume=None, policy=None, ckpt=None):
+        return sim.PlayModeRunner(
+            "arn:x", plan=self._ONE_STEP, invoke_fn=invoke,
+            resume_fn=resume or _gate_resume,
+            session_id="s", plan_id="p", checkpoint_path=ckpt,
+            decision_fn=policy or sim.auto_approve, logger=lambda _m: None)
+
+    # -- INV-PLAY-5 -------------------------------------------------------- #
+    @pytest.mark.parametrize("tool_name", [
+        "code_interpreter", "browser", "exec_techniques", "EXEC_TECHNIQUE",
+        "", None,
+    ])
+    def test_only_the_named_gate_counts_as_the_approval_gate(self, tool_name):
+        """`GATE_NAME` existed as a constant and was never used to check anything, so
+        ANY tool_use was accepted as the human-approval gate. A pause on
+        `code_interpreter` — carrying an arbitrary payload — was recorded as an
+        approved, executed offensive step."""
+        def invoke(arn, session, prompt, **kw):
+            return {"stop_reason": "tool_use", "text": "",
+                    "tool_use": {"toolUseId": "tu", "name": tool_name, "input": {}}}
+        runner = self._runner(invoke)
+        runner.run()
+        assert runner.state.steps[0].status == sim.PENDING, (
+            f"a pause on {tool_name!r} was treated as the approval gate"
+        )
+        assert runner.state.halted is True
+        assert "approval gate" in (runner.state.halted_reason or "")
+
+    def test_the_real_gate_is_still_accepted(self):
+        """CONTROL: the guard must not reject the gate it is guarding."""
+        runner = self._runner(_gate_invoke)
+        runner.run()
+        assert runner.state.steps[0].status == sim.EXECUTED
+
+    def test_the_human_is_never_asked_about_a_non_gate_pause(self):
+        """The decision callback must not even fire: asking a human to approve
+        something that is not the gate trains them to click through."""
+        asked = []
+
+        def invoke(arn, session, prompt, **kw):
+            return {"stop_reason": "tool_use", "text": "",
+                    "tool_use": {"toolUseId": "tu", "name": "code_interpreter",
+                                 "input": {}}}
+
+        def spy(step, tool_use):
+            asked.append(step.index)
+            return sim.auto_approve(step, tool_use)
+
+        self._runner(invoke, policy=spy).run()
+        assert asked == [], "the human was asked to approve a non-gate pause"
+
+    # -- INV-PLAY-6 -------------------------------------------------------- #
+    def test_an_approval_is_bound_to_the_technique_the_gate_asked_about(self):
+        """THE most consequential finding of round 16, and the SECOND appearance of
+        the confused-deputy shape INV-PROMOTE-2 closed for promotion approval: the
+        human was shown "approve T1595 (recon)?" while the gate requested T1486
+        (ransomware deployment), and nothing compared the two.
+
+        M18's fix was specific to `agent_loop`, so per-step approval never got it.
+        """
+        def invoke(arn, session, prompt, **kw):
+            return {"stop_reason": "tool_use", "text": "",
+                    "tool_use": {"toolUseId": "tu", "name": sim.PlayModeRunner.GATE_NAME,
+                                 "input": {"technique": "T1486", "phase": "impact",
+                                           "objective": "deploy ransomware"}}}
+        runner = self._runner(invoke)
+        runner.run()
+        assert runner.state.steps[0].status == sim.PENDING, (
+            "an approval for T1595 authorized a gate requesting T1486"
+        )
+        assert runner.state.halted is True
+        reason = runner.state.halted_reason or ""
+        assert "T1486" in reason and "T1595" in reason, reason
+
+    @pytest.mark.parametrize("payload", [
+        {"technique": "T1595", "phase": "recon"},
+        {"technique": "t1595"},                    # case is not a mismatch
+        {"technique": " T1595 "},                  # nor is whitespace
+        {"objective": "something else entirely"},   # objective is not compared
+        {},                                        # a gate naming nothing is fine
+        {"technique": None},                       # nor is an explicit null
+        {"technique": ""},
+    ])
+    def test_a_matching_or_silent_payload_is_accepted(self, payload):
+        """CONTROL. Only a payload that names a DIFFERENT technique/phase is refused
+        — present and contradictory, never merely absent. Demanding fields the
+        harness may not send would break every legitimate run, which is how a guard
+        gets disabled in practice."""
+        def invoke(arn, session, prompt, **kw):
+            return {"stop_reason": "tool_use", "text": "",
+                    "tool_use": {"toolUseId": "tu", "name": sim.PlayModeRunner.GATE_NAME,
+                                 "input": payload}}
+        runner = self._runner(invoke)
+        runner.run()
+        assert runner.state.steps[0].status == sim.EXECUTED, payload
+
+    def test_a_mismatched_phase_is_also_caught(self):
+        def invoke(arn, session, prompt, **kw):
+            return {"stop_reason": "tool_use", "text": "",
+                    "tool_use": {"toolUseId": "tu", "name": sim.PlayModeRunner.GATE_NAME,
+                                 "input": {"technique": "T1595", "phase": "impact"}}}
+        runner = self._runner(invoke)
+        runner.run()
+        assert runner.state.halted is True
+        assert "phase" in (runner.state.halted_reason or "")
+
+    def test_a_non_dict_payload_is_not_treated_as_a_mismatch(self):
+        """The payload shape is the harness's business; only a contradiction is ours."""
+        def invoke(arn, session, prompt, **kw):
+            return {"stop_reason": "tool_use", "text": "",
+                    "tool_use": {"toolUseId": "tu", "name": sim.PlayModeRunner.GATE_NAME,
+                                 "input": "a bare string"}}
+        runner = self._runner(invoke)
+        runner.run()
+        assert runner.state.steps[0].status == sim.EXECUTED
+
+    # -- INV-PLAY-7 -------------------------------------------------------- #
+    def test_a_rejection_is_persisted_before_anything_that_can_fail(self, tmp_path):
+        """A human said NO, the resume call telling the harness so failed, and the
+        exception propagated with the checkpoint NEVER WRITTEN — the rejection existed
+        only in the dead process's memory. On disk the step was still `pending`, so a
+        resume would re-ask, and an operator reading the file would see no record that
+        anyone had refused.
+
+        A denial is the single most important thing this file can carry.
+        """
+        ckpt = tmp_path / "denied.json"
+
+        def exploding_resume(*a, **kw):
+            raise RuntimeError("connection dropped while reporting the denial")
+
+        runner = self._runner(_gate_invoke, resume=exploding_resume,
+                              policy=sim.auto_reject, ckpt=str(ckpt))
+        with pytest.raises(RuntimeError):
+            runner.run()
+        assert ckpt.exists(), "the human's rejection was never written to disk"
+        state = sim.load_checkpoint(str(ckpt))
+        assert state.steps[0].status == sim.REJECTED
+        assert state.halted is True
+        assert state.halted_reason
+
+    def test_an_approval_is_persisted_before_the_resume(self, tmp_path):
+        """Same ordering on the approve path: if the resume fails, the record shows an
+        approval that never ran, rather than a step that appears never to have been
+        decided. "Approved but not executed" is a state an operator can investigate;
+        "no record at all" is not."""
+        ckpt = tmp_path / "approved.json"
+
+        def exploding_resume(*a, **kw):
+            raise RuntimeError("connection dropped after approval")
+
+        runner = self._runner(_gate_invoke, resume=exploding_resume,
+                              policy=sim.auto_approve, ckpt=str(ckpt))
+        with pytest.raises(RuntimeError):
+            runner.run()
+        assert ckpt.exists()
+        state = sim.load_checkpoint(str(ckpt))
+        assert state.steps[0].status == sim.APPROVED
+        assert state.steps[0].decision is not None
+
+    def test_the_failure_still_propagates(self):
+        """Persisting first must not turn a real error into silence — the repo forbids
+        swallowing an exception absolutely."""
+        def exploding_resume(*a, **kw):
+            raise RuntimeError("boom")
+
+        runner = self._runner(_gate_invoke, resume=exploding_resume,
+                              policy=sim.auto_reject)
+        with pytest.raises(RuntimeError, match="boom"):
+            runner.run()

@@ -392,6 +392,36 @@ def reject_after(n: int) -> Callable[[StepState, Dict[str, Any]], Dict[str, Any]
     return policy
 
 
+def _gate_subject_mismatch(step: "StepState", tool_use: Dict[str, Any]) -> Optional[str]:
+    """Describe how the gate's payload disagrees with the step, or ``None``.
+
+    INV-PLAY-6. The human is shown a decision about ``step``; the harness is asking
+    about whatever is in the gate's ``input``. Nothing compared them, so an approval
+    for "T1595 (recon)" could authorize a gate requesting "T1486 (impact)" — the
+    confused-deputy shape INV-PROMOTE-2 closed for promotion approval.
+
+    Only fields the gate ACTUALLY carries are checked. A gate that names no technique
+    is not a mismatch: the payload shape is the harness's business, and demanding
+    fields it may not send would break every legitimate run. What is refused is a
+    payload that names a DIFFERENT one — present and contradictory, never merely
+    absent.
+    """
+    payload = tool_use.get("input")
+    if not isinstance(payload, dict):
+        return None
+    problems = []
+    # `key`, not `field` — the latter shadows the dataclasses import at module top,
+    # which ruff (F402) caught. A shadowed `field` would break any later use of the
+    # decorator in this scope, so it is worth the rename rather than a noqa.
+    for key, expected in (("technique", step.technique), ("phase", step.phase)):
+        got = payload.get(key)
+        if got is None or not str(got).strip():
+            continue
+        if str(got).strip().upper() != str(expected).strip().upper():
+            problems.append(f"{key}={got!r} (step {key} is {expected!r})")
+    return "; ".join(problems) if problems else None
+
+
 def _is_approved(decision: Dict[str, Any]) -> bool:
     return str(decision.get("decision", "")).strip().upper() == "APPROVED"
 
@@ -543,6 +573,38 @@ class PlayModeRunner:
             self._checkpoint()
             return step
 
+        # INV-PLAY-5: the paused tool must BE the approval gate. `GATE_NAME` existed
+        # as a constant but was never used to check anything, so ANY tool_use was
+        # accepted as the human-approval gate — a pause on `code_interpreter` (with
+        # an arbitrary payload) was recorded as an approved, executed offensive step.
+        gate_name = tool_use.get("name")
+        if gate_name != self.GATE_NAME:
+            self.state.halted = True
+            self.state.halted_reason = (
+                f"step {step.index} ({step.technique}) paused on tool "
+                f"{gate_name!r}, not the {self.GATE_NAME!r} approval gate — "
+                f"refusing to treat another tool's pause as human confirmation")
+            self._log(f"[HALT] {self.state.halted_reason}")
+            self._checkpoint()
+            return step
+
+        # INV-PLAY-6: bind the approval to the SUBJECT the gate actually asked about.
+        # Nothing compared the gate payload to the step, so the human was shown
+        # "approve T1595 (recon)?" while the gate requested T1486 (ransomware) — the
+        # confused-deputy hole INV-PROMOTE-2 closed for promotion approval, recurring
+        # here for per-step approval because that fix was specific to agent_loop
+        # rather than a shared rule.
+        mismatch = _gate_subject_mismatch(step, tool_use)
+        if mismatch:
+            self.state.halted = True
+            self.state.halted_reason = (
+                f"step {step.index}: the {self.GATE_NAME} gate asked about "
+                f"{mismatch} — refusing to route a decision about one technique to "
+                f"an approval request for another")
+            self._log(f"[HALT] {self.state.halted_reason}")
+            self._checkpoint()
+            return step
+
         step.tool_use_id = tool_use.get("toolUseId")
         decision = self.decision_fn(step, tool_use)
         step.decision = decision
@@ -554,14 +616,27 @@ class PlayModeRunner:
                 f"step {step.index} ({step.technique}) rejected by "
                 f"{decision.get('approver', 'human')}")
             self._log(f"[REJECT] step {step.index} {step.technique} -> plan halted")
-            # Close the loop honestly: tell the harness the gate was denied.
+            # INV-PLAY-7: PERSIST FIRST. This used to notify the harness before
+            # checkpointing, so a resume_fn that raised (a dropped connection, a
+            # throttle) propagated out with the checkpoint never written — the human's
+            # rejection existed only in the dead process's memory. On disk the step
+            # was still `pending`, so a resume would re-ask, and an operator reading
+            # the file would see no record that anyone had said no. A denial is the
+            # single most important thing this file can carry; it is recorded before
+            # anything that can fail.
+            self._checkpoint()
+            # Close the loop honestly: tell the harness the gate was denied. A failure
+            # here still propagates — it is a real error — but the record survives it.
             self.resume_fn(self.harness_arn, self.state.session_id, tool_use,
                            decision, status="error")
-            self._checkpoint()
             return step
 
         # Approved: resume the session, then record a SIMULATED no-op execution.
+        # `APPROVED` is checkpointed before the resume for the same reason as above:
+        # if the resume fails, the record shows an approval that never ran rather
+        # than a step that appears never to have been decided.
         step.status = APPROVED
+        self._checkpoint()
         self.resume_fn(self.harness_arn, self.state.session_id, tool_use, decision)
         step.execution_log = self._simulate_execution(step)
         step.status = EXECUTED
