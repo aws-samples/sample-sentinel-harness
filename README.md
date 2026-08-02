@@ -13,15 +13,15 @@
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-2997ff"/>
   <img alt="bedrock-agentcore" src="https://img.shields.io/badge/Amazon%20Bedrock-AgentCore%20Harness-ff9900"/>
   <img alt="version" src="https://img.shields.io/badge/version-0.4.0-2997ff"/>
-  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-2923%20passing-1D8102"/>
+  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-3025%20passing-1D8102"/>
   <img alt="coverage" src="https://img.shields.io/badge/coverage-90%25-1D8102"/>
   <img alt="milestones" src="https://img.shields.io/badge/milestones-M0--M15%20delivered-1D8102"/>
   <img alt="hardening" src="https://img.shields.io/badge/adversarial%20audit-100%20defects%20fixed-8b5cf6"/>
   <img alt="live" src="https://img.shields.io/badge/live--validated-Runtime%20A2A%20%C2%B7%20closed%20loop%20%C2%B7%20JWT%20%C2%B7%20eval%20%C2%B7%20memory-8b5cf6"/>
-  <a href="https://neosun100.github.io/sentinel-harness/"><img alt="api docs" src="https://img.shields.io/badge/API%20docs-live-2997ff"/></a>
+  <a href="https://aws-samples.github.io/sample-sentinel-harness/"><img alt="api docs" src="https://img.shields.io/badge/API%20docs-live-2997ff"/></a>
 </p>
 
-[Quickstart](#-quickstart) · [Architecture](#-architecture) · [Live on AWS](#-live-validated-on-aws) · [Scenarios](#-scenarios--evidence) · [Status matrix](#-status-validated--designed--missing) · [API reference](https://neosun100.github.io/sentinel-harness/) · [Docs map](#-documentation-map) · [Roadmap](#-roadmap)
+[Quickstart](#-quickstart) · [Architecture](#-architecture) · [Live on AWS](#-live-validated-on-aws) · [Scenarios](#-scenarios--evidence) · [Status matrix](#-status-validated--designed--missing) · [API reference](https://aws-samples.github.io/sample-sentinel-harness/) · [Docs map](#-documentation-map) · [Roadmap](#-roadmap)
 
 </div>
 
@@ -33,7 +33,7 @@
 
 A mature security team usually already owns the pieces — models, internal MCP servers, a pile of analyst skills. What's missing is a **framework to circulate them** so that "what one analyst has, everyone has." `sentinel-harness` is a reference implementation of that framework on the [Amazon Bedrock AgentCore **Harness**](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/harness.html): it reverse-engineers a common three-layer SecOps agent architecture (Strategy / Simulation / Foundation) into AgentCore primitives, borrowing verified patterns from four AWS samples.
 
-Everything here is **generic SecOps content** built and tested against a **non-production** account — no proprietary data, no real vulnerable assets, no real malware. Delivered across milestones **M0–M12**, with the full `[EXTERNAL]` live-proof set — Registry, AgentCore Runtime A2A, CUSTOM_JWT gateway, managed + online Evaluate, cross-session Memory recall, and the end-to-end self-improvement closed loop — **live-validated on AWS** (see below). Full API reference: <https://neosun100.github.io/sentinel-harness/>.
+Everything here is **generic SecOps content** built and tested against a **non-production** account — no proprietary data, no real vulnerable assets, no real malware. Delivered across milestones **M0–M12**, with the full `[EXTERNAL]` live-proof set — Registry, AgentCore Runtime A2A, CUSTOM_JWT gateway, managed + online Evaluate, cross-session Memory recall, and the end-to-end self-improvement closed loop — **live-validated on AWS** (see below). Full API reference: <https://aws-samples.github.io/sample-sentinel-harness/>.
 
 > **What's real vs. aspirational — read this first.** Layer 1 ships **live-validated scenarios** (including a real Gateway create→READY→delete on the GA API) and a library-grade core. Layer 2 Play Mode is live-validated, BAS detection-replay is real (a deterministic Sigma matcher finds detection blind spots offline), and sample detonation is a built+tested full-lifecycle orchestrator that stays an **honest SIMULATED no-op** (no real malware/VM/network — sample-by-reference, sandbox-refused actions, HITL-gated, always destroyed after use). Layer 3 ships a built+tested tool/skill registry, sandbox hooks, and Agent Factory; a dual-track IaC foundation (CDK + a `terraform validate`-clean Terraform mirror) where the Guardrail, Cognito JWT identity, and CloudWatch/Budgets observability stacks are **live-deployed and validated on a real dev account** (a Guardrail really masked a fake AWS key; the private-VPC PrivateLink endpoints stay cost-gated off); plus an A2A specialist container that really `docker build`s (pinned deps, non-root) with a mocked-model zero-network contract test. The four core data-plane tools (`siem_query`/`asset_lookup`/`enrich_ioc`/`ops_query`) are backend-pluggable: offline mock by default, a real stdlib-HTTP client behind a `*_LIVE` env, so connecting a real backend is a config change, not a rebuild. The [status matrix](#-status-validated--designed--missing) is precise about what's proven, built, designed, or skeleton — 🟡 rows are honest about their limits. This honesty is deliberate — see the self-audit in [`docs/FIDELITY-REPORT.md`](docs/FIDELITY-REPORT.md).
 
@@ -99,12 +99,12 @@ Honest build status per capability — mirrors the self-audit.
 | **Tools** | `nvd_lookup` / `epss_kev` / `attack_lookup` / `web_search` | 🟡 **reference stubs** (offline-safe, contract-tested) | `tools/`, `tests/test_tool_handlers.py` |
 | **Tools** | `siem_query` / `asset_lookup` / `enrich_ioc` / `ops_query` — backend-pluggable | 🟢 **built + tested** (offline mock default; `*_LIVE`=1 switches to a real stdlib-HTTP client — env-driven URL + bearer, timeouts, all failures→`upstream_error` with no silent fallback — proven end-to-end against an in-process 127.0.0.1 mock server, zero external network) | `tools/{siem_query,asset_lookup,enrich_ioc,ops_query}/`, `tests/test_*_live.py` |
 
-🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **2923 offline tests pass** (+6 skipped when optional deps absent).
+🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **3025 offline tests pass** (+6 skipped when optional deps absent).
 
 ## 🚀 Quickstart
 
 ```bash
-git clone https://github.com/neosun100/sentinel-harness && cd sentinel-harness
+git clone https://github.com/aws-samples/sample-sentinel-harness && cd sample-sentinel-harness
 pip install -e '.[test]'  # Python 3.10+ ; the `sentinel` CLI + test deps
                           # (pytest, hypothesis, coverage). Plain `pip install -e .`
                           # gives just the library + CLI, without the test deps.
@@ -247,10 +247,10 @@ Borrowed patterns (see [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md)): supervisor→s
 | [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md) | Registry dual-gate, HITL, sandbox hooks, and tag-guard controls |
 | [`docs/COMPLIANCE.md`](docs/COMPLIANCE.md) | Capability → SOC 2 / ISO 27001 / NIST CSF 2.0 control mapping (anchors machine-verified) |
 | [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | Logging (`logutil`), metrics (token/latency/tool-call/error/eval), the OTEL/Transaction-Search path |
-| [`docs/TESTING.md`](docs/TESTING.md) | The 2923-test offline suite: layout, determinism, how to run |
+| [`docs/TESTING.md`](docs/TESTING.md) | The 3025-test offline suite: layout, determinism, how to run |
 | [`docs/FIDELITY-REPORT.md`](docs/FIDELITY-REPORT.md) | The self-audit — real vs. built vs. designed, with limits stated |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Delivered milestones (M0–M12) and what's next |
-| [**API reference (live)**](https://neosun100.github.io/sentinel-harness/) | Rendered `sentinel_harness` API docs (pdoc → GitHub Pages) |
+| [**API reference (live)**](https://aws-samples.github.io/sample-sentinel-harness/) | Rendered `sentinel_harness` API docs (pdoc → GitHub Pages) |
 | [`CHANGELOG.md`](CHANGELOG.md) | Versioned change history |
 | [`docs/RELEASING.md`](docs/RELEASING.md) | The tag-driven release runbook (SBOM · SLSA provenance · PyPI publish) |
 | [`docs/RELEASE-v0.4.0.md`](docs/RELEASE-v0.4.0.md) | The v0.4.0 release notes — detection-engineering suite + 100-defect hardening |
@@ -285,7 +285,7 @@ sentinel-harness/
 ├── iac-cdk/              L3 CDK stacks (9; guardrail/identity/obs/vpc live) 🟢
 ├── iac-terraform/        deployable Terraform mirror (validate-clean)  🟢
 ├── docs/                 QUICKSTART · ARCHITECTURE · BLUEPRINT · SETUP · HARNESSES · GOVERNANCE · TESTING · FIDELITY-REPORT · ROADMAP
-├── tests/                offline unit + config tests (2923)     🟢
+├── tests/                offline unit + config tests (3025)     🟢
 └── .github/workflows/    CI incl. a customer-name / secret gate
 ```
 

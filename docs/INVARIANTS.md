@@ -221,3 +221,59 @@ most dangerous outcome in the suite.
 | **INV-DOC-1** | Every public export carries a docstring, and the public surface never silently regresses. | `sentinel_harness/__init__.py` | `test_docs_drift.py` |
 | **INV-DOC-2** | Counts quoted in the docs (tests, tools, evidence, scenarios) match reality, and never contradict each other between files. | docs + `tests/` | `test_docs_drift.py::test_quoted_counts_match_reality` |
 | **INV-DOC-3** | Every test named in this file exists. | this file | `test_invariants_doc.py` |
+
+---
+
+## INV-BOUNDARY — an external source's silence is never read as good news
+
+Every tool in this family translates a response we do **not** control into a
+judgement an analyst acts on. A defect here is never a crash — it is a *confident
+wrong answer* derived from data that was absent, malformed, or shaped differently
+than assumed. Round 14 found seven, and six of them leaned the same way:
+
+> **"I could not read it" was rendered as "there is nothing there."**
+
+The remaining class is direction-blind rather than fail-open (a bare `bool()`,
+case-sensitive equality against feed-controlled values) and was wrong in **both**
+directions — which is precisely why no single test case caught it.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-BOUNDARY-1** | A backend truthiness value is *parsed*, never bare-`bool()`'d, and the tools delegate to the repo's authoritative `connectors.base._coerce_bool` rather than reimplementing it. `bool("false") is True`, so a backend that serializes booleans as strings turned a patched service into a vulnerable one and an internal host into an internet-facing one. | `asset_lookup._normalize_service` / `_normalize_host` | `test_r14_boundary_fidelity.py::TestTruthinessIsParsedNotCoerced` |
+| **INV-BOUNDARY-2** | "Never assessed" is distinguishable from "assessed clean". `known_vuln` is the sole gate on the CVE-vs-asset join, so an absent/null/renamed flag collapsing to `False` made an internet-exposed host running a KEV-listed CVSS-10.0 CVE report `no_action_not_exposed`. A populated `cve_id` is evidence in its own right. | `asset_lookup._normalize_service` | `test_r14_boundary_fidelity.py::TestUnassessedIsNotClean` |
+| **INV-BOUNDARY-3** | An unrecognized CMDB reply raises; it never renders as an *empty attack surface*. A renamed envelope, a renamed collection or a 200-OK error body all produced `ok: True` with zero hosts — "I could not read your asset inventory" shown as "you have no exposed assets". A reply that genuinely says `"hosts": []` is still believed. | `asset_lookup._normalize_surface` | `test_r14_boundary_fidelity.py::TestUnreadableReplyIsNotAnEmptySurface` |
+| **INV-BOUNDARY-4** | A CVE record is selected by *matching id*, never taken from position 0 and relabelled with the id we asked for. The old code returned another CVE's score and description under the requested id — Log4Shell reported as 3.1 LOW. Case differences are not mismatches. | `nvd_lookup._normalize_nvd` | `test_r14_boundary_fidelity.py::TestNvdRecordIdentityIsVerified` |
+| **INV-BOUNDARY-5** | An unreadable CISA KEV catalog is an `upstream_error`, never `in_kev: False`. `in_kev` gates emergency patching; reading the feed wrong turned CISA's strongest possible signal into silence. A catalog we *could* read that omits the CVE is still a genuine `in_kev: False`. | `epss_kev._enrich_live` | `test_r14_boundary_fidelity.py::TestKevReadFailureIsNotANegativeFinding` |
+| **INV-BOUNDARY-6** | A feed's letter case is not a security signal. Case-sensitive comparison against third-party values flipped the verdict both ways: `confidence="High"` downgraded malicious→suspicious, `category="BENIGN"` escalated benign→malicious. | `enrich_ioc._derive_verdict` | `test_r14_boundary_fidelity.py::TestVerdictIsCaseInsensitive` |
+| **INV-BOUNDARY-7** | A revoked or deprecated ATT&CK technique is reported as such (STIX `revoked` / `x_mitre_deprecated`), on both the live and offline paths. Dropping them let a dead target be counted toward coverage the *replacement* technique governs — INV-COVERAGE's capability-vs-intent error arriving from upstream. | `attack_lookup._normalize_technique` + stub path | `test_r14_boundary_fidelity.py::TestRevokedTechniquesAreSurfaced` |
+
+Each invariant is paired with **CONTROL** tests asserting the correct input still
+works. A guard that only proves the broken input now raises cannot tell "we fixed
+the defect" from "we broke the tool" — round 13 published a wrong conclusion from
+exactly that gap, and the ratio here (53 assertions fail pre-fix, 34 controls pass
+either way) is what makes the suite meaningful rather than merely red.
+
+---
+
+## INV-IDENTITY — every self-reference resolves to THIS repository
+
+This project was developed in a personal repository and transferred to
+`aws-samples/sample-sentinel-harness`. The transfer moved the code; it did not move
+the URLs embedded in the docs, the landing page and the issue templates.
+
+The pre-transfer repository is **still public and still answers HTTP 200**, which is
+what makes this a defect family rather than a batch of dead links: a stale reference
+does not fail visibly, it silently serves a frozen copy that looks authoritative and
+will never receive the fixes shipped here.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-IDENTITY-1** | No tracked text file references the pre-transfer `owner/repo` pair or its Pages host. A bare owner reference with no repo path is an attribution byline and is deliberately allowed. | repo-wide | `test_repo_identity.py::test_no_stale_project_url_anywhere` |
+| **INV-IDENTITY-2** | The private security-report contact link routes to THIS repository's `security/advisories/new`. Pointing it elsewhere misdelivers vulnerability reports, and because such a report is private by design the misdelivery is undetectable: the reporter believes they disclosed responsibly and the maintainers never learn of the issue. | `.github/ISSUE_TEMPLATE/config.yml` | `test_repo_identity.py::test_security_contact_link_points_at_this_repository` |
+| **INV-IDENTITY-3** | Every documented `git clone <url> && cd <dir>` names the directory clone actually creates. The rename to `sample-sentinel-harness` broke every such pair, so a reader copy-pasting the quickstart fails on line 1. | docs | `test_repo_identity.py::test_documented_clone_commands_are_copy_pasteable` |
+| **INV-IDENTITY-4** | GitHub-Pages links **to this project** use the canonical host and repo path. Scoped by SUBJECT, not by URL shape: the repo legitimately links third-party `*.github.io` docs (MITRE ATT&CK Navigator, LangGraph), and flagging those would repeat the breadth-vs-selectivity error INV-FP records. | docs + `site/` | `test_repo_identity.py::test_pages_links_use_the_canonical_host` |
+
+Each of the four is paired with a **guard-the-guard** test, because every one of them
+is a scan whose assertion goes vacuously true if the file-collection step breaks. The
+collection helper raises rather than returning an empty list for the same reason (see
+the fail-closed rule in the layering note above).

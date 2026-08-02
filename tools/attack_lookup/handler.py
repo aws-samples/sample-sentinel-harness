@@ -180,6 +180,14 @@ def _fetch_live(technique_id: str) -> Dict[str, Any]:
             for phase in obj.get("kill_chain_phases", [])
             if phase.get("kill_chain_name") == "mitre-attack"
         ]
+        # INV-BOUNDARY-7: MITRE marks superseded techniques with STIX `revoked` and
+        # retired ones with `x_mitre_deprecated`. Both were dropped, so a revoked
+        # technique was reported as a current one — indistinguishable from a live
+        # entry. A coverage/detection-engineering consumer then invests in a dead
+        # target and, worse, counts it toward coverage of a tactic the replacement
+        # technique actually governs. Surfaced rather than raised: the lookup is
+        # still legitimate (a rule may reference an id that has since been revoked,
+        # and the caller needs to be TOLD, not stonewalled).
         return {
             "id": technique_id,
             "name": obj.get("name"),
@@ -188,6 +196,8 @@ def _fetch_live(technique_id: str) -> Dict[str, Any]:
             "platforms": obj.get("x_mitre_platforms", []),
             "description": obj.get("description", ""),
             "references": refs,
+            "revoked": bool(obj.get("revoked")),
+            "deprecated": bool(obj.get("x_mitre_deprecated")),
         }
     raise LookupError(f"technique not found in ATT&CK: {technique_id}")
 
@@ -218,7 +228,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         "ATTACK_LIVE=1 to query the full ATT&CK bundle"
                     ),
                 }
-            technique = _STUB_DB[technique_id]
+            # Carry the same shape the live path returns, so a caller cannot get a
+            # KeyError on `revoked`/`deprecated` depending on which path served it
+            # (the offline/live contract divergence audited in INV-CONNECTOR).
+            # The curated stub set contains only current techniques, so both are
+            # False here — but they are PRESENT, which is the contract.
+            technique = {"revoked": False, "deprecated": False,
+                         **_STUB_DB[technique_id]}
             source = "stub"
     except LookupError as exc:
         return {"ok": False, "error": "not_found", "message": str(exc)}

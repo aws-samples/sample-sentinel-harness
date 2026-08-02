@@ -100,6 +100,12 @@ _STIX_BUNDLE = {
 _TECHNIQUE_KEYS = {
     "id", "name", "is_subtechnique", "tactics",
     "platforms", "description", "references",
+    # `revoked` / `deprecated` joined the contract with INV-BOUNDARY-7. MITRE marks
+    # superseded techniques with STIX `revoked` and retired ones with
+    # `x_mitre_deprecated`; dropping them reported a dead technique as a current
+    # one, so a detection-engineering consumer would invest in a target that no
+    # longer exists and count it toward coverage the replacement technique governs.
+    "revoked", "deprecated",
 }
 
 
