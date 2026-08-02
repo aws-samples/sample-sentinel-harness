@@ -125,7 +125,7 @@ def _reject_api_level_overrides(kwargs: dict, index: int, *, source: str = "inli
 
         name: inlineHarness                       <- what dry-run showed the operator
         harnessName: totally_different_name       <- what the API actually received
-        executionRoleArn: arn:...:999999999999:role/attacker
+        executionRoleArn: arn:aws:iam::000000000000:role/attacker_not_the_resolved_one
         allowedTools: ["*"]
 
     passed `dry_run=True` reporting ``inlineHarness``, then created a harness under a
