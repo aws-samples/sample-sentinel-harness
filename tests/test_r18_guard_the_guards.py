@@ -53,6 +53,8 @@ import re
 
 import pytest
 
+import child_pytest
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 TESTS_DIR = REPO_ROOT / "tests"
 THIS_FILE = pathlib.Path(__file__).name
@@ -625,55 +627,44 @@ class TestTheAssembledSuiteFiresEndToEnd:
     }
 
     @staticmethod
-    def _run_suite() -> tuple[int, str]:
-        """Run the rest of THIS module in a child pytest.
+    def _run_suite():
+        """Run the rest of THIS module in a child pytest, via the ONE shared launcher.
 
-        Interpreter selection took three attempts, and the last one is a round-19
-        finding about this very test:
+        Interpreter selection took FOUR attempts, and the shape of the mistake never
+        changed — only the environment it was wrong for:
 
         - a bare ``python`` has no pytest, so the child produced empty output and an
           exit code that read as "the guard fired" — a false positive in the control;
         - ``sys.executable`` fixed that ONLY because the parent happened to be pytest.
-          Under ``uv run python`` (a different parent) it resolves to
-          ``.venv/bin/python3``, which does NOT have pytest — verified. So the fix
-          worked by coincidence of how the suite is usually launched.
-        - ``uv run pytest`` asks the tool that owns the environment to resolve it, which
-          is correct regardless of the parent process.
+          Under ``uv run python`` it resolves to ``.venv/bin/python3``, which does NOT
+          have pytest — verified;
+        - ``uv run pytest`` fixed THAT, and then failed on CI, which has no ``uv``:
+          ``FileNotFoundError`` on all four Python versions.
 
-        `_probe_run_is_sane` below asserts the child can run at all, so a future
-        environment change surfaces as "the control is broken" rather than as a silent
-        pass.
+        The cause underneath all three is not the choice of launcher. It is that **a
+        child which cannot start exits non-zero, and a non-zero exit is exactly what
+        "the guard fired" looks like.** So the launcher now lives in
+        ``tests/child_pytest.py``, which resolves one that works in the current
+        environment and RAISES when the child never ran, rather than handing back an
+        exit code that cannot be interpreted.
         """
-        import subprocess
-        result = subprocess.run(
-            ["uv", "run", "pytest", f"tests/{THIS_FILE}", "-q", "--no-header",
-             "-p", "no:randomly", "-p", "no:cacheprovider",
-             # Skip THIS class, or the child recurses into another child.
-             "--deselect",
-             f"tests/{THIS_FILE}::TestTheAssembledSuiteFiresEndToEnd"],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=600,
+        return child_pytest.run_child_suite(
+            THIS_FILE,
+            # Skip THIS class, or the child recurses into another child.
+            deselect=(f"tests/{THIS_FILE}::TestTheAssembledSuiteFiresEndToEnd",),
         )
-        return result.returncode, result.stdout + result.stderr
 
     def test_the_child_pytest_can_actually_run(self):
-        """Assert the child produces real pytest output, not an interpreter error.
+        """The clean tree must pass in the child, or nothing below is interpretable.
 
-        Without this, ANY child-launch failure reads as "the guard fired" in the tests
-        below — which is precisely what a bare `python` did, and what `sys.executable`
-        would do again under a different parent process. An exit code alone is not
-        evidence; the output has to look like a test run.
+        The "did the child even start" half now lives in `run_child_suite`, which raises
+        `ChildNeverRan` instead of returning an exit code — so that failure mode can no
+        longer be mistaken for a verdict, in this control or in any future one.
         """
-        code, output = self._run_suite()
-        assert "No module named pytest" not in output, (
-            f"the child interpreter has no pytest, so every failure below is a false "
-            f"positive:\n{output[-300:]}"
-        )
-        assert re.search(r"\d+ (?:passed|failed|error)", output), (
-            f"the child produced no pytest summary — it did not run:\n{output[-300:]}"
-        )
-        assert code == 0, (
+        result = self._run_suite()
+        assert result.returncode == 0, (
             f"the child suite fails on the CLEAN tree, so nothing below is "
-            f"interpretable:\n{output[-400:]}"
+            f"interpretable:\n{result.output[-400:]}"
         )
 
     def test_a_clean_probe_does_not_trip_anything(self):
@@ -693,10 +684,10 @@ class TestTheAssembledSuiteFiresEndToEnd:
             encoding="utf-8",
         )
         try:
-            code, output = self._run_suite()
-            assert code == 0, (
+            result = self._run_suite()
+            assert result.returncode == 0, (
                 "a COMPLIANT probe made the suite fail, so the failures below prove "
-                f"nothing about detection:\n{output[-600:]}"
+                f"nothing about detection:\n{result.output[-600:]}"
             )
         finally:
             path.unlink(missing_ok=True)
@@ -706,14 +697,14 @@ class TestTheAssembledSuiteFiresEndToEnd:
         path = TESTS_DIR / name
         path.write_text(self._PROBES[name], encoding="utf-8")
         try:
-            code, output = self._run_suite()
-            assert code != 0, (
+            result = self._run_suite()
+            assert result.suite_failed, (
                 f"the assembled suite passed with {name} present — the predicate is "
                 "not wired to an assertion that runs"
             )
-            assert name in output, (
+            assert name in result.output, (
                 f"the suite failed but never named {name}, so the failure may be "
-                f"unrelated:\n{output[-600:]}"
+                f"unrelated:\n{result.output[-600:]}"
             )
         finally:
             path.unlink(missing_ok=True)

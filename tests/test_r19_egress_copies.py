@@ -56,6 +56,7 @@ import pathlib
 
 import pytest
 
+import child_pytest
 from sentinel_harness import egress, gateway
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -390,14 +391,12 @@ def _assert_safe_url(url):
         from one wrong mental model. Only an end-to-end path found it.
 
         Writes a genuine local copy into `sentinel_harness/`, runs this file as a child,
-        and asserts the failure NAMES it. Uses ``uv run pytest``: under ``uv run python``
-        as the parent, ``sys.executable`` is ``.venv/bin/python3``, which may have no
-        pytest — a child that cannot start exits non-zero, which reads as "the guard
-        fired".
+        and asserts the failure NAMES it. The child launch goes through
+        `child_pytest.run_child_suite`, which resolves a launcher that works in THIS
+        environment and raises `ChildNeverRan` rather than returning a non-zero exit that
+        would read as "the guard fired" — the launcher has been wrong three times, each
+        time for a different environment, and each time it faked a pass.
         """
-        import re
-        import subprocess
-
         probe = REPO_ROOT / "sentinel_harness" / "zz_r19_egress_probe.py"
         this_file = pathlib.Path(__file__).name
         try:
@@ -406,28 +405,18 @@ def _assert_safe_url(url):
                 + self._COPY,
                 encoding="utf-8",
             )
-            result = subprocess.run(
-                ["uv", "run", "pytest", f"tests/{this_file}", "-q", "--no-header",
-                 "-p", "no:randomly", "-p", "no:cacheprovider",
-                 "--deselect",
-                 f"tests/{this_file}::TestTheSweepCanDetectACopy"
-                 "::test_a_real_copy_in_the_tree_fails_the_build"],
-                cwd=REPO_ROOT, capture_output=True, text=True, timeout=600,
+            result = child_pytest.run_child_suite(
+                this_file,
+                deselect=(f"tests/{this_file}::TestTheSweepCanDetectACopy"
+                          "::test_a_real_copy_in_the_tree_fails_the_build",),
             )
-            output = result.stdout + result.stderr
-            assert "No module named pytest" not in output, (
-                f"the child has no pytest, so this proves nothing:\n{output[-300:]}"
-            )
-            assert re.search(r"\d+ (?:passed|failed|error)", output), (
-                f"the child produced no pytest summary:\n{output[-300:]}"
-            )
-            assert result.returncode != 0, (
+            assert result.suite_failed, (
                 "a fresh local host range-check in sentinel_harness/ did NOT fail the "
                 "suite — the sweep is not wired to an assertion that runs"
             )
-            assert probe.name in output, (
+            assert probe.name in result.output, (
                 f"the suite failed but never named the offending module, so the "
-                f"failure may be unrelated:\n{output[-600:]}"
+                f"failure may be unrelated:\n{result.output[-600:]}"
             )
         finally:
             probe.unlink(missing_ok=True)

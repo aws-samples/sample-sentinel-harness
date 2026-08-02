@@ -35,6 +35,8 @@ import re
 
 import pytest
 
+import child_pytest
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DOC_PATH = REPO_ROOT / "docs" / "INVARIANTS.md"
 
@@ -356,13 +358,12 @@ class TestTheAssembledMapFiresEndToEnd:
     to an assertion that runs — the distinction that mattered in round 18, where a unit
     control shared its blind spot with the code and only an end-to-end path found it.
 
-    A round-19 finding lives in the child-launch detail: this must use ``uv run pytest``,
-    not ``sys.executable``. Under ``uv run python`` as the parent, ``sys.executable``
-    resolves to ``.venv/bin/python3``, which has NO pytest — so the child fails to start
-    and its non-zero exit reads as "the guard fired". Round 18 hit that with a bare
-    ``python`` and fixed it with ``sys.executable``, which worked only because the parent
-    happened to be pytest. Asking ``uv`` to resolve the environment is correct regardless
-    of the parent.
+    The child launch goes through ``child_pytest.run_child_suite``, which resolves a
+    launcher that works in THIS environment and raises rather than returning a non-zero
+    exit when the child never ran. That indirection exists because this launcher has been
+    wrong three times — bare ``python`` (no pytest), ``sys.executable`` (right only when
+    the parent is pytest), ``uv run pytest`` (right only where uv is installed; CI has no
+    uv) — and every one of those failures LOOKED like the guard firing.
     """
 
     _PROBE = REPO_ROOT / "sentinel_harness" / "zz_r19_coverage_probe.py"
@@ -370,30 +371,20 @@ class TestTheAssembledMapFiresEndToEnd:
              + "\n".join(f"CONST_{i} = {i}" for i in range(30)) + "\n")
 
     @staticmethod
-    def _run_suite() -> tuple[int, str]:
-        import subprocess
+    def _run_suite():
         this_file = pathlib.Path(__file__).name
-        result = subprocess.run(
-            ["uv", "run", "pytest", f"tests/{this_file}", "-q", "--no-header",
-             "-p", "no:randomly", "-p", "no:cacheprovider",
-             "--deselect",
-             f"tests/{this_file}::TestTheAssembledMapFiresEndToEnd"],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=600,
+        return child_pytest.run_child_suite(
+            this_file,
+            deselect=(f"tests/{this_file}::TestTheAssembledMapFiresEndToEnd",),
         )
-        return result.returncode, result.stdout + result.stderr
 
     def test_the_child_pytest_can_actually_run(self):
-        """Without this, any child-launch failure reads as "the map fired"."""
-        code, output = self._run_suite()
-        assert "No module named pytest" not in output, (
-            f"the child has no pytest, so the probe below proves nothing:\n"
-            f"{output[-300:]}"
-        )
-        assert re.search(r"\d+ (?:passed|failed|error)", output), (
-            f"the child produced no pytest summary:\n{output[-300:]}"
-        )
-        assert code == 0, (
-            f"the child fails on the CLEAN tree:\n{output[-400:]}"
+        """Without this, any child-launch failure reads as "the map fired". A launcher
+        that cannot start raises `ChildNeverRan` from inside `run_child_suite`, so this
+        only has to check that the CLEAN tree passes."""
+        result = self._run_suite()
+        assert result.returncode == 0, (
+            f"the child fails on the CLEAN tree:\n{result.output[-400:]}"
         )
 
     def test_a_new_uncovered_module_fails_the_build(self):
@@ -401,14 +392,14 @@ class TestTheAssembledMapFiresEndToEnd:
         naming the file, so the next round's target picks itself."""
         try:
             self._PROBE.write_text(self._BODY, encoding="utf-8")
-            code, output = self._run_suite()
-            assert code != 0, (
+            result = self._run_suite()
+            assert result.suite_failed, (
                 "a module with no invariant did NOT fail the suite — the map is not "
                 "wired to an assertion that runs"
             )
-            assert self._PROBE.name in output, (
+            assert self._PROBE.name in result.output, (
                 f"the suite failed but never named the module, so the failure may be "
-                f"unrelated:\n{output[-500:]}"
+                f"unrelated:\n{result.output[-500:]}"
             )
         finally:
             self._PROBE.unlink(missing_ok=True)
