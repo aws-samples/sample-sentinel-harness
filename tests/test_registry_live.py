@@ -27,7 +27,9 @@ without AWS.
 """
 from __future__ import annotations
 
+import contextlib
 import importlib
+import logging
 
 import pytest
 
@@ -326,11 +328,131 @@ def test_create_custom_record_wraps_client_error(boom):
         registry_live.create_custom_record("reg-1", "web-search", "{}")
 
 
-def test_create_record_returns_empty_strings_when_absent(monkeypatch):
+def test_create_record_refuses_a_reply_with_no_status(monkeypatch):
+    """CONTRACT CHANGE (round 19, INV-REGISTRY-1).
+
+    This used to assert that a reply carrying no `status` yielded
+    `{"recordArn": "", "status": ""}` and counted as success — tolerance for a missing
+    field. For a GOVERNANCE status that tolerance is the defect: "the record is in
+    DRAFT" and "I could not tell what state the record is in" are different security
+    states, and this module's headline guarantee is the former.
+
+    `approvalConfiguration` is set on the REGISTRY and is invisible to
+    `create_registry_record`, so a registry_id naming an auto-approving registry, an API
+    version that ignores the field, or a partition with different behaviour all produce a
+    LIVE record while the caller is told it is governed. A Registry record is what makes
+    a tool or agent discoverable and callable, so that is an ungoverned capability
+    reported as a governed one.
+
+    INV-BOUNDARY-5's rule applies: "we could not tell" must never render as the safe
+    answer.
+    """
     ctl = FakeControl(responses={"create_registry_record": {"ResponseMetadata": {}}})
     monkeypatch.setattr(registry_live, "_control", ctl)
+    with pytest.raises(RegistryLiveError, match="returned status None"):
+        registry_live.create_skill_record("reg-1", "soc-triage", "# SKILL")
+
+
+def test_create_record_accepts_the_transient_creating_status(monkeypatch):
+    """CONTROL: `CREATING` is the legitimate pre-DRAFT state, and refusing it would
+    break every real call that catches the record mid-settle."""
+    ctl = FakeControl(responses={
+        "create_registry_record": {"recordArn": "arn:rec-1", "status": "CREATING"}})
+    monkeypatch.setattr(registry_live, "_control", ctl)
     out = registry_live.create_skill_record("reg-1", "soc-triage", "# SKILL")
-    assert out == {"recordArn": "", "status": ""}
+    assert out == {"recordArn": "arn:rec-1", "status": "CREATING"}
+
+
+@pytest.mark.parametrize("live_status", ["ACTIVE", "APPROVED", "LIVE", "ENABLED"])
+def test_create_record_refuses_an_already_live_status(monkeypatch, live_status):
+    """The defect proper: a record that is already live has skipped the human step."""
+    ctl = FakeControl(responses={
+        "create_registry_record": {"recordArn": "arn:rec-1", "status": live_status}})
+    monkeypatch.setattr(registry_live, "_control", ctl)
+    with pytest.raises(RegistryLiveError, match="may be LIVE"):
+        registry_live.create_skill_record("reg-1", "soc-triage", "# SKILL")
+
+
+@contextlib.contextmanager
+def _capture_warnings():
+    """Capture this library's WARNING records WITHOUT relying on propagation.
+
+    Deliberately not pytest's `caplog`. `logutil.configure_logging()` sets
+    `propagate = False` on the `sentinel_harness` logger — correct in production, since a
+    host application's root handler would otherwise print every record twice — and
+    `caplog` collects through a root handler. So a `caplog` assertion here PASSES alone
+    and FAILS in the full suite, depending on whether some earlier test happened to call
+    `configure_logging()` first. Found exactly that way in round 19.
+
+    Attaching a handler to the logger under test is the assertion that matches the claim:
+    "this warning was emitted", not "this warning reached the root logger".
+    """
+    records: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    logger = logging.getLogger("sentinel_harness")
+    handler = _Collect(level=logging.WARNING)
+    previous_level = logger.level
+    logger.addHandler(handler)
+    if not logger.isEnabledFor(logging.WARNING):
+        logger.setLevel(logging.WARNING)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+
+
+def test_auto_approval_registry_warns(monkeypatch):
+    """INV-REGISTRY-2: waiving the gate is allowed, but never silent."""
+    ctl = FakeControl(responses={
+        "create_registry": {"registryArn": "arn:reg-1", "registryId": "reg-1"}})
+    monkeypatch.setattr(registry_live, "_control", ctl)
+    with _capture_warnings() as records:
+        registry_live.create_registry("dev-throwaway", auto_approval=True)
+    assert any("NO human approval" in r.getMessage() for r in records), (
+        f"creating an ungoverned registry produced no warning: "
+        f"{[r.getMessage() for r in records]}"
+    )
+
+
+def test_default_registry_creation_does_not_warn(monkeypatch):
+    """CONTROL: the governance-safe default must not emit noise, or operators learn to
+    ignore the warning that matters."""
+    ctl = FakeControl(responses={
+        "create_registry": {"registryArn": "arn:reg-1", "registryId": "reg-1"}})
+    monkeypatch.setattr(registry_live, "_control", ctl)
+    with _capture_warnings() as records:
+        registry_live.create_registry("governed")
+    assert not [r for r in records if "NO human approval" in r.getMessage()]
+
+
+def test_the_warning_capture_is_not_vacuous():
+    """CONTROL for the capture helper: an empty collector passes both assertions above
+    for the wrong reason, which is how the caplog version looked healthy."""
+    with _capture_warnings() as records:
+        logging.getLogger("sentinel_harness.probe").warning("NO human approval probe")
+    assert [r for r in records if "NO human approval" in r.getMessage()], (
+        "the capture helper collects nothing, so the two tests above prove nothing"
+    )
+
+
+def test_the_capture_survives_configure_logging(monkeypatch):
+    """The regression proper: this is the condition under which `caplog` broke."""
+    from sentinel_harness import logutil
+    logutil.configure_logging()
+    ctl = FakeControl(responses={
+        "create_registry": {"registryArn": "arn:reg-1", "registryId": "reg-1"}})
+    monkeypatch.setattr(registry_live, "_control", ctl)
+    with _capture_warnings() as records:
+        registry_live.create_registry("dev-throwaway", auto_approval=True)
+    assert any("NO human approval" in r.getMessage() for r in records), (
+        "the warning is invisible once configure_logging() has set propagate=False — "
+        "the capture must not depend on propagation"
+    )
 
 
 # --------------------------------------------------------------------------- #

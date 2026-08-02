@@ -240,9 +240,30 @@ def _validate_discovery_url(url) -> None:
     class of problem from inside the VPC.
 
     Only the local, statically-checkable properties are enforced here (scheme +
-    host shape); the runtime egress policy still owns where DNS resolves."""
-    import ipaddress
+    host shape); the runtime egress policy still owns where DNS resolves.
+
+    INV-EGRESS-3 (round 19): the host parse delegates to
+    ``egress.parse_ip_literal``. It used to call ``ipaddress.ip_address()``, which
+    parses only dotted-quad / standard IPv6, so SIX hosts walked past the range check
+    below as if they were DNS names — the metadata service as
+    ``2852039166`` / ``0xA9FEA9FE`` / ``0251.0376.0251.0376`` and loopback as
+    ``2130706433`` / ``0x7f000001`` / ``0177.0.0.01``. All reproduced.
+
+    This copy was the worst of the four found in round 19 because it has NO downstream
+    recheck: the three tool-side copies sat in front of ``egress.open_checked``, which
+    re-vets with the strong predicate, while this function is the only gate between a
+    config value and ``customJWTAuthorizer.discoveryUrl``. A reviewer reading the
+    resulting config sees a plausible number, and this docstring's promise — "a real,
+    externally-verifiable endpoint" — did not hold for it.
+
+    The POLICY stays local and deliberately stricter than the egress guard's: https
+    only, and loopback refused (an IdP on the box is not externally verifiable, whereas
+    a self-hosted SIEM at 127.0.0.1 legitimately is a backend). Only the PARSER is
+    shared — which is the right split, since the parser is what was wrong in all four
+    copies and the policy is what differs between them."""
     from urllib.parse import urlsplit
+
+    from . import egress
 
     if not isinstance(url, str):
         raise ValueError(f"discovery_url must be a string, got {type(url).__name__}")
@@ -257,14 +278,14 @@ def _validate_discovery_url(url) -> None:
     host = parts.hostname
     if not host:
         raise ValueError(f"discovery_url has no host component: {url!r}")
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
+    ip = egress.parse_ip_literal(host)
+    if ip is None:
         return  # a DNS name — resolution is the egress policy's concern
     if ip.is_link_local or ip.is_loopback or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
         raise ValueError(
-            f"discovery_url targets the non-routable/metadata address {host!r}; an "
-            "identity provider must be a real, externally-verifiable endpoint"
+            f"discovery_url targets the non-routable/metadata address {host!r} "
+            f"(resolves to {ip}); an identity provider must be a real, "
+            "externally-verifiable endpoint"
         )
 
 

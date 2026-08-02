@@ -176,6 +176,51 @@ def test_quoted_test_counts_do_not_contradict_each_other():
     )
 
 
+def test_per_round_acceptance_records_are_not_all_the_same_number():
+    """INV-DOC-4 (round 19): a historical record must record HISTORY.
+
+    `docs/ROADMAP.md` carries a per-round acceptance line for each audit round, of the
+    form "suite 2493 -> **3522** offline passing". The left number is that round's
+    starting size and differs per round, correctly. The right number is what the suite
+    was WHEN THAT ROUND CLOSED — so five consecutive rounds cannot all end at the same
+    size, because each of them added tests.
+
+    They did. All five read the same value, because every count update was applied with
+    an undiscriminating find-and-replace over the file, which rewrote eight rounds of
+    acceptance records to today's number each time. Nothing caught it: the present-tense
+    checks above deliberately ignore these lines, and a wrong-but-consistent number reads
+    as fine.
+
+    This does not try to reconstruct the true historical values — they are not recoverable
+    from the doc. It fails when a NEW blanket rewrite flattens them further, and it is
+    satisfied by any record where the closing sizes actually differ.
+    """
+    text = _read("docs/ROADMAP.md")
+    # "suite 2493 -> **3522**" / "Suite 2590 -> **3522**" / "2730 -> **3522** collected"
+    rx = re.compile(r"[Ss]uite (\d{3,5}) → \*\*(\d{3,5})\*\*")
+    records = [(int(m.group(1)), int(m.group(2))) for m in rx.finditer(text)]
+    assert len(records) >= 4, (
+        f"only found {len(records)} per-round acceptance records in ROADMAP.md; the "
+        "phrasing changed and this check is now blind"
+    )
+    starts = [s for s, _ in records]
+    ends = [e for _, e in records]
+    assert len(set(starts)) == len(starts), (
+        f"two rounds claim the same STARTING suite size: {starts}. A round starts where "
+        "the previous one ended, so these must all differ."
+    )
+    # The real assertion: a monotonically growing suite cannot close at one size for
+    # every round. One repeat is a plausible no-net-change round; all of them is a
+    # blanket rewrite.
+    most_common = max(set(ends), key=ends.count)
+    assert ends.count(most_common) < len(ends), (
+        f"every per-round acceptance record closes at {most_common}: {ends}. Each round "
+        "added tests, so these cannot all be equal — a blanket find-and-replace over "
+        "the file has overwritten the history with the current number. Update only the "
+        "lines that assert the CURRENT suite size; the per-round records are history."
+    )
+
+
 def test_quoted_tool_count_matches_reality():
     """The tool count is quoted a lot ("20 tools") and is trivially checkable."""
     actual = len([d for d in os.listdir(os.path.join(REPO_ROOT, "tools"))

@@ -57,6 +57,28 @@ than merely intended.
 | **INV-PROMOTE-8** | A missing approval callback means REFUSED, never "skip the gate". | `autonomy.run_improvement_loop`, `agent_loop.run_agent_loop` | `test_prop_promotion_policy.py::test_no_approve_fn_never_promotes` |
 | **INV-PROMOTE-9** | A human REJECTION is terminal for that consent — it binds no subject and leaves nothing reusable. | `agent_loop.run_agent_loop` | `test_prop_promotion_policy.py::test_a_rejected_approval_never_promotes`, `test_m18_security_gates.py::TestApprovalSubjectBinding::test_rejection_binds_nothing` |
 | **INV-PROMOTE-10** | Every refused promotion is explainable: the audit record carries one reason per refusal. A silent refusal erodes trust as much as a silent approval. | `agent_loop.run_agent_loop` | `test_prop_promotion_policy.py::test_refusals_always_carry_a_reason` |
+| **INV-PROMOTE-11** | The property suite's search budget is part of this contract. `max_examples` has a floor of 2000 and `SENTINEL_PROP_EXAMPLES` can only raise it. At the previous 250, INV-PROMOTE-1, -2 and -5 all PASSED while being falsifiable — 5000 found a counterexample for each within a minute. A property test that passes because it did not look is indistinguishable from one that holds. | `test_prop_promotion_policy._SETTINGS` | `test_prop_promotion_policy.py::test_the_search_budget_is_not_silently_lowered` |
+
+### Snapshot vs final state (three recurrences, recorded because it kept coming back)
+
+INV-PROMOTE-1, -2 and -5 are checked against the evidence **as it stood when the
+promotion executed**, never against `AgentLoopResult`'s end-of-session fields.
+`witnessed_pass`, `approved_subject` and `witnessed_subject` are all mutable driver
+state: a later eval overwrites them (`agent_loop.py:554`, `:566`) and a later rejection
+clears the subject (`:459`). The gate reads them at the moment it decides
+(`:480`, `:504`), which is correct; an assertion that reads them at the end is testing a
+different proposition.
+
+This legal stream falsifies all three if you read the final state:
+
+    eval(A, 0.7)  ->  approve(A) + promote(A)  ->  eval(A, 0.0)
+
+Three rounds each fixed one leg and left the others: the subject first, then the
+consent, then (round 19) the witnessed pass. The fix is in the test harness, which
+snapshots `evals_so_far` and `approvals_so_far` at promotion time and re-derives every
+verdict from them — so the assertions no longer depend on the driver reporting its own
+flags correctly. Both gates were positive-controlled: disabling the subject binding
+falsifies -2 and -5, disabling the eval gate falsifies -1, -2, -3, -5 and -6.
 
 ### Layering note (the M18.1 root cause, recorded so it cannot recur)
 
@@ -115,7 +137,7 @@ escapes.
 | **INV-GOV-3** | The provenance ledger is append-only and hash-chained; any edit to a record, or an insert/delete in the MIDDLE, fails verification. | `provenance.verify_ledger` | `test_provenance.py` |
 | **INV-GOV-4** | A ledger that was TRUNCATED (last N records deleted, or emptied) is detected — a hash chain cannot do this alone, so the record count + tail hash are anchored outside the chain. `require_anchor=True` additionally refuses an unanchored ledger, because "no anchor" is not "verified". | `provenance.write_anchor` + `verify_ledger` | `test_r9_semantic_gates.py::TestLedgerTruncation` |
 | **INV-GOV-5** | A `promoted` provenance record always names an approver. "Promoted by nobody" cannot answer the one question the ledger exists to answer. `rejected`/`held` legitimately have none. | `provenance._entry_to_content` | `test_r9_semantic_gates.py::TestPromotedRequiresApprover` |
-| **INV-GOV-6** | An OIDC `discovery_url` is HTTPS to a routable host. The discovery document determines the token-signing keys, so plaintext HTTP lets an on-path attacker swap the JWKS and mint accepted tokens. | `gateway._validate_discovery_url` | `test_r9_semantic_gates.py::TestDiscoveryUrlScheme` |
+| **INV-GOV-6** | An OIDC `discovery_url` is HTTPS to a routable host — **in every spelling of the host**. The discovery document determines the token-signing keys, so plaintext HTTP lets an on-path attacker swap the JWKS and mint accepted tokens, and a metadata/loopback target is the same class from inside the VPC. Round 19 found the "routable" half did not hold: the check parsed with `ipaddress.ip_address()`, so six hosts passed — `2852039166` / `0xA9FEA9FE` / `0251.0376.0251.0376` (169.254.169.254) and `2130706433` / `0x7f000001` / `0177.0.0.01` (127.0.0.1). It now parses with `egress.parse_ip_literal` and keeps its own stricter policy (see INV-EGRESS-3). | `gateway._validate_discovery_url` | `test_r9_semantic_gates.py::TestDiscoveryUrlScheme`, `test_r19_egress_copies.py::TestTheReproducedAttacks` |
 | **INV-GOV-7** | `allowedAudience`/`allowedClients` contain only concrete, non-blank values — never a wildcard or empty string. These lists ARE the auth boundary (same rule as `allowedTools`, never `['*']`). | `gateway._validate_claim_values` | `test_r9_semantic_gates.py::TestClaimValueHygiene` |
 | **INV-GOV-8** | An `allowedTools` entry that is a NEAR MISS for a built-in HITL gate (stray whitespace / wrong case) fails loudly. Silently not injecting it produced a config that read as "has a human-approval gate" while having none. | `loader._inject_inline_gates` | `test_r9_semantic_gates.py::TestHitlGateNearMiss` |
 | **INV-GOV-9** | A `whitelist_optimization` task is only emitted when something can SAFELY be suppressed. When every FP indicator is also a TP indicator, the task is withheld (with a recorded reason) and a `rule_regeneration` task is emitted instead — a noisy-but-unsuppressable rule must not produce silence. | `feedback.detect_triggers` | `test_r9_semantic_gates.py::TestUnsuppressableNoise` |
@@ -221,6 +243,7 @@ most dangerous outcome in the suite.
 | **INV-DOC-1** | Every public export carries a docstring, and the public surface never silently regresses. | `sentinel_harness/__init__.py` | `test_docs_drift.py` |
 | **INV-DOC-2** | Counts quoted in the docs (tests, tools, evidence, scenarios) match reality, and never contradict each other between files. | docs + `tests/` | `test_docs_drift.py::test_quoted_counts_match_reality` |
 | **INV-DOC-3** | Every test named in this file exists. | this file | `test_invariants_doc.py` |
+| **INV-DOC-4** | A historical record records HISTORY. `ROADMAP.md`'s per-round acceptance lines ("suite 2493 → **2590** offline passing") close at that round's real size, and five consecutive rounds cannot all close at the same number — each added tests. All five DID read the same value: every count update had been applied as an undiscriminating find-and-replace over the file, overwriting eight rounds of records with the current number each time. Nothing caught it, because INV-DOC-2 deliberately ignores past-tense lines and a wrong-but-consistent number reads as fine. The true values were recovered from `git log --reverse` and are self-consistent (2493→2590→2649→2671→2730→2775: each round's close is the next round's start). | `docs/ROADMAP.md` | `test_docs_drift.py::test_per_round_acceptance_records_are_not_all_the_same_number` |
 
 ---
 
@@ -413,6 +436,15 @@ a mechanism. The guard now lives in `sentinel_harness/egress.py`, once.
 |---|---|---|---|
 | **INV-EGRESS-1** | Every live path opens through `egress.open_checked`, which vets the URL and refuses redirects in ONE call. No tool calls `urllib.request.urlopen` directly (it follows 3xx, which walks past any pre-flight check and re-sends `Authorization` to the target the *backend* chose), and no tool reimplements the IP parser. Enforced by an AST sweep over all eight tools plus an inventory check that a NEW live path cannot silently escape. | `sentinel_harness/egress.py` | `test_r17_egress_mechanized.py::TestEveryLivePathUsesTheSharedGuard` |
 | **INV-EGRESS-2** | The guard refuses every spelling of a forbidden target — `169.254.169.254`, `2852039166` (decimal), `0xA9FEA9FE` (hex), `0251.0376.0251.0376` (octal), IPv4-mapped IPv6, a userinfo prefix, and non-HTTP schemes — while ALLOWING a legitimate backend, loopback (a self-hosted SIEM, and what the live tests bind), and a DNS name that merely starts with a digit. `EgressError` subclasses `RuntimeError` so a refusal surfaces as `upstream_error`, never a silent empty result. | `egress.assert_safe_url` / `parse_ip_literal` / `_NoRedirect` | `test_r17_egress_mechanized.py::TestTheSharedGuardBehaviour` |
+
+| **INV-EGRESS-3** | Every host range-check in the repo parses with `egress.parse_ip_literal` — including the ones whose POLICY differs. Round 19 found **four** surviving local copies: `asset_lookup`, `enrich_ioc` and `web_search` each kept an `_assert_safe_url` that accepted `2852039166` / `0xA9FEA9FE` / `0251.0376.0251.0376`, and `gateway._validate_discovery_url` did too. The three tool copies were shadowed by `open_checked` downstream; the gateway one was **not** — it is the only gate between a config value and `customJWTAuthorizer.discoveryUrl`, which decides which keys sign a valid token, and it also let loopback through as `2130706433` / `0x7f000001` / `0177.0.0.01`. The split is parser-shared, policy-local: the parser was wrong in all four, the policy is what legitimately differs. | `egress.parse_ip_literal`, delegated to by all four | `test_r19_egress_copies.py` |
+
+INV-EGRESS-1 existed to prevent exactly this and did not, because its
+`test_no_tool_reimplements_the_ip_parser` was parameterized over `("siem_query",
+"ops_query")` — the two tools that had already been found. A guard against
+"fixed at one call site" that itself covers only the known call sites is the fifth
+recurrence of that pattern in this codebase, this time inside the mechanism built to
+stop it. It now sweeps every module in `tools/`, `sentinel_harness/` and `intake/`.
 
 **Not** defended, stated so nobody infers it: a hostname that RESOLVES to a link-local
 address (DNS rebinding). That needs resolution-time hooks — the runtime network policy's
@@ -733,3 +765,67 @@ Each of the four is paired with a **guard-the-guard** test, because every one of
 is a scan whose assertion goes vacuously true if the file-collection step breaks. The
 collection helper raises rather than returning an empty list for the same reason (see
 the fail-closed rule in the layering note above).
+
+---
+
+## INV-AUDITMAP — this document is an executable coverage report
+
+Eighteen rounds produced the invariants above. Nothing answered the question that has
+consistently paid off: **which shipped module has NO invariant naming it?**
+
+Round 16 asked it by hand, found four modules with tests but zero invariants, and the
+worst finding of that round was in them — Play Mode's central safety claim turned out to
+be falsifiable by editing a JSON file. Nine defects came out of those four modules. Round
+19 made the question mechanical, and the module it selected first (`registry_live`) had a
+real defect within an hour.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-AUDITMAP-0** | The map is not vacuous: the doc parses into ≥100 invariant rows, the Owner/Enforced-by columns yield ≥60 code tokens, the tree walk finds ≥40 modules, and ≥60% of shipped modules are named by an invariant. Every assertion below is negative ("no module is unaccounted for"), so a broken parse would pass them all silently. | `test_r19_invariant_coverage.py` | `test_r19_invariant_coverage.py::TestTheMapIsNotVacuous` |
+| **INV-AUDITMAP-1** | Every shipped module with no invariant appears in `_UNCOVERED` with a ≥30-character reason, and no entry is stale (naming a module that IS now covered) or dangling (naming a deleted one). A module without an invariant is allowed; a module without an invariant *and* without an argument is not. | `test_r19_invariant_coverage._UNCOVERED` | `test_r19_invariant_coverage.py::TestEveryUncoveredModuleIsAccountedFor` |
+| **INV-AUDITMAP-2** | Eight security-critical modules — `agent_loop`, `autonomy`, `loop_safety`, `sandbox_hooks`, `provenance`, `simulation`, `egress`, `connectors/siem` — must ALWAYS be named by an invariant. Losing their coverage cannot be silent. | `test_r19_invariant_coverage._MUST_BE_COVERED` | `test_r19_invariant_coverage.py::TestTheSecurityCriticalModulesAreCovered` |
+
+It deliberately does **not** demand blanket coverage. Plenty of modules legitimately need
+no invariant — a pretty-printer, a metadata table, a re-export shim — and forcing one
+produces ceremonial invariants, which are worse than none because they make the map lie.
+
+`_UNCOVERED` entries are labelled `QUEUED` (not yet examined) or argued as holding no
+security-relevant decision. "Under audit" is never written of a module nobody has looked
+at: that is the same lie the map exists to catch. Both a unit control and an end-to-end
+control ship with it — the latter writes a probe module into the tree and asserts the
+suite names it, because a coverage map reporting "all accounted for" is indistinguishable
+from a broken one.
+
+---
+
+## INV-REGISTRY — the live control plane VERIFIES the DRAFT claim
+
+`registry_live.py` is this codebase's **third** human-approval gate, and its headline
+promise is a lifecycle one: `autoApproval=false` ⇒ a new record lands in `DRAFT` and is
+not callable until a human approves it. A Registry record is what makes a tool or agent
+discoverable, so an unapproved-but-live record is an ungoverned capability.
+
+The first two approval gates both had defects. INV-PROMOTE-2: consent for harness A
+promoted harness B. INV-PLAY-6: the human saw one technique while the gate requested
+another. This one had the third shape — it **asserted** its guarantee instead of
+checking it.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-REGISTRY-1** | `create_*_record` REFUSES any status that is not `DRAFT` or `CREATING`. It used to send `approvalConfiguration` and then return whatever status came back, so `ACTIVE` / `APPROVED` / `LIVE` / `""` / a missing field were all reported as a governed record. Reproduced across all five. The gap is structural: `approvalConfiguration` is set on the REGISTRY and `CreateRegistryRecord` cannot see it, so a `registry_id` naming an auto-approving registry, an API version that ignores the field, or a partition with different behaviour each produce a live record while the caller is told it is DRAFT. INV-BOUNDARY-5's rule applies — "we could not tell" must never render as the safe answer. | `registry_live._create_record` | `test_registry_live.py::test_create_record_refuses_an_already_live_status`, `::test_create_record_refuses_a_reply_with_no_status` |
+| **INV-REGISTRY-2** | `create_registry(auto_approval=True)` WARNS. Creating an ungoverned registry stays possible — an adopter may genuinely want it for a throwaway dev registry — but never silently, because every record in it goes live with no human step. The governance-safe default emits nothing, so the warning that matters is not buried in noise. | `registry_live.create_registry` | `test_registry_live.py::test_auto_approval_registry_warns`, `::test_default_registry_creation_does_not_warn` |
+
+`CREATING` is accepted deliberately: it is the transient state before the service settles
+a record into `DRAFT`, and refusing it would break every real call that catches the
+record mid-settle. Both meanings are "exists, not callable".
+
+### Why these assertions do not use `caplog`
+
+`logutil.configure_logging()` sets `propagate = False` on the `sentinel_harness` logger —
+correct in production, since a host application's root handler would otherwise print
+every record twice — and pytest's `caplog` collects through a root handler. So a `caplog`
+assertion here PASSES in isolation and FAILS in the full suite, depending on whether some
+earlier test happened to call `configure_logging()` first. Found exactly that way. The
+tests attach a handler to the logger under test, which is the assertion that matches the
+claim: *this warning was emitted*, not *this warning reached the root logger*. A control
+proves the collector is not simply empty.

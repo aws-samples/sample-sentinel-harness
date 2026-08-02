@@ -53,6 +53,8 @@ import re
 
 import pytest
 
+import child_pytest
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 TESTS_DIR = REPO_ROOT / "tests"
 THIS_FILE = pathlib.Path(__file__).name
@@ -625,26 +627,45 @@ class TestTheAssembledSuiteFiresEndToEnd:
     }
 
     @staticmethod
-    def _run_suite() -> tuple[int, str]:
-        """Run the rest of THIS module in a child pytest.
+    def _run_suite():
+        """Run the rest of THIS module in a child pytest, via the ONE shared launcher.
 
-        `sys.executable` rather than a bare `python`: the suite runs under `uv`, whose
-        interpreter is the only one with pytest importable. A bare `python` produced an
-        empty output and an exit code that read as "the guard fired" — a false positive
-        in the control itself, which is the third such miscue in this round and the
-        reason `test_a_clean_probe_does_not_trip_anything` exists.
+        Interpreter selection took FOUR attempts, and the shape of the mistake never
+        changed — only the environment it was wrong for:
+
+        - a bare ``python`` has no pytest, so the child produced empty output and an
+          exit code that read as "the guard fired" — a false positive in the control;
+        - ``sys.executable`` fixed that ONLY because the parent happened to be pytest.
+          Under ``uv run python`` it resolves to ``.venv/bin/python3``, which does NOT
+          have pytest — verified;
+        - ``uv run pytest`` fixed THAT, and then failed on CI, which has no ``uv``:
+          ``FileNotFoundError`` on all four Python versions.
+
+        The cause underneath all three is not the choice of launcher. It is that **a
+        child which cannot start exits non-zero, and a non-zero exit is exactly what
+        "the guard fired" looks like.** So the launcher now lives in
+        ``tests/child_pytest.py``, which resolves one that works in the current
+        environment and RAISES when the child never ran, rather than handing back an
+        exit code that cannot be interpreted.
         """
-        import subprocess
-        import sys
-        result = subprocess.run(
-            [sys.executable, "-m", "pytest", f"tests/{THIS_FILE}", "-q", "--no-header",
-             "-p", "no:randomly", "-p", "no:cacheprovider",
-             # Skip THIS class, or the child recurses into another child.
-             "--deselect",
-             f"tests/{THIS_FILE}::TestTheAssembledSuiteFiresEndToEnd"],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=600,
+        return child_pytest.run_child_suite(
+            THIS_FILE,
+            # Skip THIS class, or the child recurses into another child.
+            deselect=(f"tests/{THIS_FILE}::TestTheAssembledSuiteFiresEndToEnd",),
         )
-        return result.returncode, result.stdout + result.stderr
+
+    def test_the_child_pytest_can_actually_run(self):
+        """The clean tree must pass in the child, or nothing below is interpretable.
+
+        The "did the child even start" half now lives in `run_child_suite`, which raises
+        `ChildNeverRan` instead of returning an exit code — so that failure mode can no
+        longer be mistaken for a verdict, in this control or in any future one.
+        """
+        result = self._run_suite()
+        assert result.returncode == 0, (
+            f"the child suite fails on the CLEAN tree, so nothing below is "
+            f"interpretable:\n{result.output[-400:]}"
+        )
 
     def test_a_clean_probe_does_not_trip_anything(self):
         """Sanity-check the CONTROL: a compliant module must leave the suite green.
@@ -663,10 +684,10 @@ class TestTheAssembledSuiteFiresEndToEnd:
             encoding="utf-8",
         )
         try:
-            code, output = self._run_suite()
-            assert code == 0, (
+            result = self._run_suite()
+            assert result.returncode == 0, (
                 "a COMPLIANT probe made the suite fail, so the failures below prove "
-                f"nothing about detection:\n{output[-600:]}"
+                f"nothing about detection:\n{result.output[-600:]}"
             )
         finally:
             path.unlink(missing_ok=True)
@@ -676,14 +697,14 @@ class TestTheAssembledSuiteFiresEndToEnd:
         path = TESTS_DIR / name
         path.write_text(self._PROBES[name], encoding="utf-8")
         try:
-            code, output = self._run_suite()
-            assert code != 0, (
+            result = self._run_suite()
+            assert result.suite_failed, (
                 f"the assembled suite passed with {name} present — the predicate is "
                 "not wired to an assertion that runs"
             )
-            assert name in output, (
+            assert name in result.output, (
                 f"the suite failed but never named {name}, so the failure may be "
-                f"unrelated:\n{output[-600:]}"
+                f"unrelated:\n{result.output[-600:]}"
             )
         finally:
             path.unlink(missing_ok=True)
