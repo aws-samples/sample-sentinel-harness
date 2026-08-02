@@ -130,6 +130,18 @@ _REFUSAL_MARKERS = ("cannot evaluate", "can't evaluate", "cannot assess",
 # conservative reading of a contradiction is "did not clear it".
 _CONTRADICTION_FLOOR = 0.5
 
+# Float-noise slack on each end of the [0, 1] score range. A judge computing its own
+# average can emit 1.0000000000000002; that is the bound it means, not a rubric
+# mismatch. Anything further out is treated as a protocol error (see _coerce_score).
+_SCORE_EPSILON = 1e-9
+
+# The score reported when the judge emitted a NUMBER we cannot interpret (outside
+# [0, 1], NaN, infinite). Distinct from the missing-score default, which is derived
+# from the pass flag: a mis-scaled number must not be laundered into agreement with
+# that flag. 0.0 then contradicts any `pass: true`, which INV-GATE-5 resolves to a
+# fail — so a rubric mismatch cannot promote.
+_PROTOCOL_ERROR_SCORE = 0.0
+
 
 def _has_word(text: str, words: tuple) -> bool:
     """True iff any of ``words`` occurs in ``text`` as a WHOLE word.
@@ -231,15 +243,45 @@ def _coerce_score(raw: Any, *, default: float) -> float:
 
     Tolerant of ints / numeric strings; an unparseable value falls back to
     ``default`` rather than raising, because a judge that emits a valid pass/fail
-    but a malformed number should still yield a usable verdict."""
+    but a malformed number should still yield a usable verdict.
+
+    INV-GATE-8: an OUT-OF-RANGE value used to clamp UP to 1.0, which turned a
+    judge grading on the wrong rubric into a perfect score — a judge marking 3/10
+    (clearly failing) came back as 1.0, as did 12/100. Clamping down to 0.0 is no
+    better: 9/10 would become the worst possible score.
+
+    A value outside [0, 1] is not a score at all — it means the judge did not use
+    the scale we asked for, so we cannot know what it meant. That is a protocol
+    error, and the honest answer is the fail-closed default rather than a guessed
+    number. Same principle as INV-BOUNDARY-5: "I could not read it" must not be
+    rendered as good news.
+
+    Slack of ``_SCORE_EPSILON`` is allowed on each end so ordinary float noise
+    (1.0000000000000002 from a judge's own arithmetic) is treated as the bound it
+    is obviously trying to express, then snapped to it.
+    """
     try:
         val = float(raw)
     except (TypeError, ValueError):
+        # Not a number at all ("N/A", None, a list). The judge gave no usable score,
+        # so derive it from the pass flag it DID give — `default` carries that.
         return default
-    if val < 0.0:
+    # NaN fails every comparison, so it slipped through the old range checks and was
+    # emitted as a `score` — producing a verdict that is not JSON-serializable and a
+    # number that compares False against any bar (silently un-promotable, or worse,
+    # inverted by a `not score < bar` reading).
+    if val != val or val in (float("inf"), float("-inf")):
+        return _PROTOCOL_ERROR_SCORE
+    if -_SCORE_EPSILON <= val < 0.0:
         return 0.0
-    if val > 1.0:
+    if 1.0 < val <= 1.0 + _SCORE_EPSILON:
         return 1.0
+    if val < 0.0 or val > 1.0:
+        # A NUMBER outside the range is different in kind from a missing one: the
+        # judge scored on a scale we did not ask for, so `default` (derived from the
+        # pass flag) would launder a mis-scale into agreement with it. 3/10 must not
+        # become "pass at 1.0" just because the judge also said pass=true.
+        return _PROTOCOL_ERROR_SCORE
     return val
 
 

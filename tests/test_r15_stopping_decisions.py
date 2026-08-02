@@ -11,55 +11,49 @@ A false "stop" is unrecoverable in a way a false "keep going" is not: deleting a
 non-redundant rule removes real detection coverage, promoting a below-bar agent
 ships it, and a missed finding is never revisited.
 
-Two of the three survived. That is a finding too, and this module records it as
-executable evidence rather than prose:
-
-- ``detection_dedup`` makes a claim that is a MATHEMATICAL PROPOSITION ("never
-  claims a rule is redundant unless the subset relation is provable"). It is
-  differentially tested here against the repo's own Sigma matcher: if dedup
-  reports A ⊆ B, then no event may match A without matching B. ~200 subset/
-  duplicate claims across every modifier combination, wildcard, field-name
-  casing and logsource granularity produced ZERO counterexamples. The reason is
-  design, not luck: ``_analyzable_predicates`` is an ALLOW-list (only
-  contains/startswith/endswith/bare-equality over string scalars pass; everything
-  else returns None → ``not_analyzed``). Allow-listing is the only way a
-  provability claim survives contact with an adversary.
-- ``ops_query`` refuses an unknown ``finding_type`` with a ``validation_error``
-  instead of returning an empty result set — the correct handling of exactly the
-  silent-zero class round 14 found elsewhere.
-
-``run_evaluation`` did not survive. Five fail-open defects in the gate the
+``run_evaluation`` did not survive: EIGHT fail-open defects in the gate the
 self-improvement loop promotes on, every one of which resolved a missing or
-ambiguous judgement into a PASS:
+ambiguous judgement into a PASS (INV-GATE-1..8). ``ops_query`` survived the
+offline path but not the live seam — FIVE more, all variations on "this is the
+whole estate" (INV-OPS-2..5). ``detection_dedup`` survived outright, and the
+survival is recorded here as executable evidence rather than prose (INV-DEDUP).
 
-  1. The prose fallback was a SUBSTRING scan (``"pass" in text``), so "passable at
-     best", "shows compassion" and "expectations were surpassed" each approved at
-     score 1.0.
-  2. A judge REFUSAL approved when its wording contained the letters p-a-s-s:
-     "I cannot evaluate this; please pass it to a human" → score 1.0.
-  3. ``bool(obj.get("pass"))`` made the JSON strings ``"false"``/``"no"``/``"0"``
-     read as a pass — the very defect INV-BOUNDARY-1 pinned in asset_lookup one
-     round earlier, recurring because that invariant was a convention and not a
-     mechanism.
-  4. First-JSON-wins let the EVALUATED AGENT score itself: a judge reply quoting
-     the answer under review (which real judges do) put the agent's embedded
-     ``{"pass": true, "score": 1.0}`` ahead of the judge's real verdict. This
-     directly broke ``agent_loop``'s own stated invariant, "the agent cannot claim
-     a score".
-  5. A self-contradicting verdict (``pass: true`` with score 0.05) passed on the
-     flag alone.
+Three method notes worth more than any individual defect
+--------------------------------------------------------
+**1. A negative result needs a positive control.** ``detection_dedup``'s docstring
+makes a MATHEMATICAL claim ("never claims a rule is redundant unless the subset
+relation is provable"), so it is differentially testable against the repo's own
+Sigma matcher: if dedup reports A ⊆ B, no event may match A without matching B.
+~200 claims across every modifier combination, wildcard form, field-name casing and
+logsource granularity produced ZERO counterexamples — but that number is worthless
+on its own. ``test_the_differential_oracle_can_detect_unsoundness`` injects a
+deliberately unsound ``_predicate_implies`` and asserts the harness catches it (52
+violations). Without it, "0 violations" is indistinguishable from a broken harness,
+the vacuous-pass failure mode this repo has now hit four times.
 
-Method note — why the two negative results are trustworthy
-----------------------------------------------------------
-A differential test that finds nothing is worthless unless you show it CAN find
-something. ``test_the_differential_oracle_can_detect_unsoundness`` injects a
-deliberately unsound ``_predicate_implies`` and asserts the harness catches it
-(it finds 52 violations). Without that positive control, "0 violations" is
-indistinguishable from a broken harness — the vacuous-pass failure mode this
-repo has now hit three separate times.
+**2. A tool "survives" only the dimensions actually exercised.** I recorded
+``ops_query`` as surviving after testing the offline path and the selector
+semantics. A parallel probe then found five defects in the live seam I had skipped
+— including an SSRF guard that a 302 walks straight around, forwarding the bearer
+credential to whatever host the backend names.
 
-Every assertion about run_evaluation FAILS on pre-R15 source. Zero network, zero
-AWS, zero LLM.
+**3. A fix can create the next defect.** INV-GATE-6 exists *because* of the fix for
+INV-GATE-1: word-boundary matching then matched the JSON key ``"pass"`` left behind
+by a truncated reply. The root cause was a layer confusion, not a vocabulary gap —
+so no amount of denylisting would have caught it.
+
+Why allow-listing is the through-line
+-------------------------------------
+``detection_dedup`` survived because ``_analyzable_predicates`` is an ALLOW-list:
+only contains/startswith/endswith/bare-equality over string scalars pass, and
+everything else returns None → ``not_analyzed``. Every defect in INV-GATE and
+INV-OPS is the opposite shape — a tolerant parser deciding what an unrecognized
+input probably meant. Tolerance is where fail-open grows.
+
+Every assertion about run_evaluation and ops_query FAILS on pre-R15 source. The
+detection_dedup assertions pass either way BY DESIGN — they pin that a refactor
+cannot silently regress a tool that was already correct. Zero network (the SSRF and
+live-reply tests drive the guards and normalizers directly), zero AWS, zero LLM.
 """
 from __future__ import annotations
 
@@ -693,3 +687,213 @@ class TestOpsQueryRefusesUnknownFilters:
         assert res["ok"] is True
         seen = sum(len(a.get("findings") or []) for a in res["accounts"])
         assert seen == estate_total
+
+
+# --------------------------------------------------------------------------- #
+# INV-GATE-8 — an out-of-range score is a protocol error, not a ceiling       #
+# --------------------------------------------------------------------------- #
+class TestOutOfRangeScoreFailsClosed:
+    """PRE-R15: `_coerce_score` clamped UP to 1.0, so a judge grading on the wrong
+    rubric produced a PERFECT score. A judge marking 3/10 — clearly failing — came
+    back as 1.0, as did 12/100.
+
+    Clamping down would be no better (9/10 becomes the worst possible score). A
+    value outside [0, 1] is not a score: it means the judge did not use the scale we
+    asked for, so what it meant is unknowable. That is a protocol error, and the
+    honest answer is fail-closed rather than a guessed number — the same principle
+    as INV-BOUNDARY-5.
+
+    Note the distinction the fix had to draw: a MISSING score is legitimately
+    derived from the pass flag (the judge answered, just not numerically), while an
+    out-of-range NUMBER must not be laundered into agreement with that flag.
+    """
+
+    @pytest.mark.parametrize("score,rubric", [
+        (3, "0-10 rubric, a clear FAIL"),
+        (8, "0-10 rubric, a pass on that scale"),
+        (12, "0-100 rubric, a clear FAIL"),
+        (85, "0-100 rubric"),
+        (1.7, "slight mis-scale"),
+        (5, "unknown rubric"),
+    ])
+    def test_an_out_of_range_score_does_not_promote(self, score, rubric):
+        v = ev.parse_verdict('{"pass": true, "score": %s}' % score)
+        assert v["passed"] is False, f"score {score} ({rubric}) promoted"
+        assert v["score"] == 0.0
+
+    @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+    def test_nan_and_infinity_fail_closed(self, literal):
+        """NaN fails EVERY comparison, so it slipped past the old range checks and
+        was emitted as the score — a value that is not JSON-serializable and that
+        compares False against any bar."""
+        v = ev.parse_verdict('{"pass": true, "score": %s}' % literal)
+        assert v["score"] == 0.0, literal
+        assert v["passed"] is False, literal
+
+    @pytest.mark.parametrize("score", [0.0, 0.01, 0.5, 0.85, 1.0])
+    def test_an_in_range_score_is_untouched(self, score):
+        """CONTROL: the legitimate range must pass through exactly."""
+        v = ev.parse_verdict('{"pass": true, "score": %s}' % score)
+        assert v["score"] == score
+
+    def test_float_noise_at_the_boundary_is_snapped_not_rejected(self):
+        """CONTROL: a judge computing its own average emits 1.0000000000000002.
+        That is the bound it means, so an epsilon snaps it rather than failing the
+        verdict closed — otherwise the fix would deny legitimate perfect scores."""
+        v = ev.parse_verdict('{"pass": true, "score": 1.0000000000000002}')
+        assert v["score"] == 1.0
+        assert v["passed"] is True
+
+    def test_a_missing_score_is_still_derived_from_the_pass_flag(self):
+        """CONTROL, and the distinction the fix rests on: NO score is not the same
+        as a BAD score. A judge that answered pass/fail without a number still
+        yields a usable verdict."""
+        assert ev.parse_verdict('{"pass": true}')["score"] == 1.0
+        assert ev.parse_verdict('{"pass": false}')["score"] == 0.0
+        # An unparseable non-number is also "no score given", not a mis-scale.
+        assert ev.parse_verdict('{"pass": true, "score": "N/A"}')["score"] == 1.0
+
+
+# --------------------------------------------------------------------------- #
+# INV-OPS-2..5 — the live estate view is complete, and about what was asked   #
+# --------------------------------------------------------------------------- #
+class TestOpsQueryLiveReplyFidelity:
+    """These were found by a parallel probe AFTER I had recorded ops_query as
+    surviving round 15 — because I had tested the offline path and the selector
+    semantics and skipped the live seam entirely. Recorded as a method note: a tool
+    "survives" only the dimensions actually exercised.
+
+    All four are the same stopping decision seen from different sides: "this is the
+    whole estate" must be true, and about the estate that was asked for.
+    """
+
+    def test_a_partial_backend_result_is_refused(self):
+        """INV-OPS-2: the backend saying "I could not read 3 of 12 accounts" was
+        dropped, so the readable part was reported as the whole answer."""
+        for key in ("errors", "failures", "partial_failures"):
+            with pytest.raises(ValueError, match="PARTIAL"):
+                oq._normalize_live_reply(
+                    {"query": "*"},
+                    {"accounts": [{"account_id": "1"}],
+                     key: [{"account": "2", "error": "AccessDenied"}]})
+
+    @pytest.mark.parametrize("cursor_key", [
+        "next_token", "nextToken", "next_page", "marker", "continuation"])
+    def test_an_unfollowed_pagination_cursor_is_refused(self, cursor_key):
+        """INV-OPS-2: this client issues ONE request, so a cursor means the view is
+        truncated — and a truncated "all open findings" reads as fewer problems."""
+        with pytest.raises(ValueError, match="pagination cursor"):
+            oq._normalize_live_reply(
+                {"query": "*"},
+                {"accounts": [{"account_id": "1"}], cursor_key: "PAGE2"})
+
+    def test_findings_of_another_type_are_not_relabelled(self):
+        """INV-OPS-3: the requested type was STAMPED onto whatever came back. An
+        operator triaging "all public_s3 findings" would act on mfa_disabled records
+        under the wrong heading."""
+        with pytest.raises(ValueError, match="refusing to relabel"):
+            oq._normalize_live_reply(
+                {"finding_type": "public_s3"},
+                {"findings": [{"finding_type": "mfa_disabled", "id": "f1"},
+                              {"finding_type": "public_s3", "id": "f2"}]})
+
+    def test_another_accounts_footprint_is_not_reported_under_the_requested_id(self):
+        """INV-OPS-4: the same relabelling defect INV-BOUNDARY-4 found in
+        nvd_lookup, one selector over — nothing checked the reply was about the
+        account asked for."""
+        with pytest.raises(ValueError, match="another account"):
+            oq._normalize_live_reply(
+                {"account": "111111111111"},
+                {"accounts": [{"account_id": "999999999999", "name": "theirs"}]})
+
+    @pytest.mark.parametrize("selector,reply", [
+        ({"account": "111111111111"},
+         {"accounts": [{"account_id": "111111111111", "name": "ok"}]}),
+        ({"finding_type": "public_s3"},
+         {"findings": [{"finding_type": "public_s3", "id": "f2"}]}),
+        # Tolerant where tolerance is safe: a finding that omits the type field is
+        # not evidence of a WRONG type, so it is not refused.
+        ({"finding_type": "public_s3"}, {"findings": [{"id": "f9"}]}),
+        ({"query": "*"}, {"accounts": [{"account_id": "1"}], "errors": []}),
+        ({"query": "*"}, {"accounts": [{"account_id": "1"}], "next_token": None}),
+        ({"query": "*"}, {"accounts": [{"account_id": "1", "name": "a"}]}),
+    ])
+    def test_a_well_formed_reply_still_normalizes(self, selector, reply):
+        """CONTROL: six shapes that must keep working, including the two where an
+        EMPTY errors list / null cursor means "complete" rather than "partial"."""
+        out = oq._normalize_live_reply(selector, reply)
+        assert isinstance(out, dict) and out
+
+
+# --------------------------------------------------------------------------- #
+# INV-OPS-5 — the SSRF guard cannot be walked around                          #
+# --------------------------------------------------------------------------- #
+class TestOpsQuerySsrfGuard:
+    """Two bypasses, both reproduced. The second also leaked a credential.
+
+    `_assert_safe_url` vets the URL it is HANDED, which is necessary but not
+    sufficient: it has to be true of the URL actually connected to, and it has to
+    recognize every spelling of a forbidden address.
+    """
+
+    @pytest.mark.parametrize("url,why", [
+        ("http://2852039166/", "decimal 169.254.169.254"),
+        ("http://0xA9FEA9FE/", "hex 169.254.169.254"),
+        ("http://0251.0376.0251.0376/", "octal-dotted 169.254.169.254"),
+        ("http://169.254.169.254/latest/meta-data/", "plain metadata IP"),
+        ("https://169.254.169.254/", "metadata IP over https"),
+        ("http://[::ffff:169.254.169.254]/", "IPv4-mapped IPv6"),
+        ("https://evil@169.254.169.254/", "userinfo prefix"),
+        ("file:///etc/passwd", "non-HTTP scheme"),
+    ])
+    def test_every_spelling_of_a_forbidden_target_is_refused(self, url, why):
+        """`ipaddress.ip_address()` only parses dotted-quad/standard IPv6, so a bare
+        integer or hex host fell through the guard as if it were a DNS name. Every
+        URL here resolves to the cloud metadata service or a local file."""
+        with pytest.raises(RuntimeError):
+            oq._assert_safe_url(url)
+
+    @pytest.mark.parametrize("url", [
+        "https://ops.example.com/query",
+        "http://ops.internal:8443/q",
+        "http://127.0.0.1:8080/q",          # the live-test mock binds here
+    ])
+    def test_a_legitimate_backend_url_is_allowed(self, url):
+        """CONTROL: the guard must not deny the configured backend."""
+        oq._assert_safe_url(url)
+
+    def test_the_numeric_host_parser_is_not_over_eager(self):
+        """CONTROL for the alternate-spelling parser: an ordinary DNS name, and a
+        hostname that merely STARTS with digits, must not be misread as an IP."""
+        for host in ("ops.example.com", "1backend.example.com", "8080.example.net",
+                     "localhost"):
+            assert oq._parse_ip_literal(host) is None, host
+        # ...while every numeric spelling IS recognized.
+        import ipaddress
+        meta = ipaddress.ip_address("169.254.169.254")
+        for host in ("2852039166", "0xA9FEA9FE", "0251.0376.0251.0376",
+                     "169.254.169.254"):
+            assert oq._parse_ip_literal(host) == meta, host
+
+    def test_redirects_are_refused_by_the_opener(self):
+        """A 302 walked the request straight past the guard — and urllib re-sends
+        request headers to the redirect target, so the `Authorization: Bearer`
+        credential leaked to whatever host the backend named. Refusing outright is
+        right here: this client POSTs to ONE configured endpoint, so a redirect is
+        never part of that contract, and re-validating would still leave a TOCTOU
+        window between the check and the connect."""
+        handler = oq._NoRedirect()
+        with pytest.raises(RuntimeError, match="refusing to follow"):
+            handler.redirect_request(
+                None, None, 302, "Found", {},
+                "http://169.254.169.254/latest/meta-data/")
+
+    def test_the_live_fetch_installs_the_no_redirect_opener(self):
+        """Pin the WIRING, not just the class: `_NoRedirect` existing but not being
+        installed would leave the bypass open while looking fixed."""
+        import inspect
+        src = inspect.getsource(oq._fetch_live)
+        assert "_NoRedirect" in src, "_fetch_live no longer refuses redirects"
+        assert "urlopen" not in src or "opener.open" in src, (
+            "_fetch_live still uses the default opener, which follows redirects"
+        )

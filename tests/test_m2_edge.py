@@ -187,18 +187,50 @@ def test_parse_verdict_fenced_block_wins_over_surrounding_prose_braces():
 # --------------------------------------------------------------------------- #
 # score coercion — fractional out-of-range, string number                     #
 # --------------------------------------------------------------------------- #
-def test_parse_verdict_fractional_score_above_one_clamps():
-    # 1.7 (a plausible mis-scale, not an integer) clamps to the [0, 1] ceiling.
+def test_parse_verdict_score_above_one_is_a_protocol_error_not_a_ceiling():
+    # CONTRACT CHANGE (round 15, INV-GATE-8). This used to assert 1.7 clamps UP to
+    # 1.0 — and its own comment already named the cause, "a plausible mis-scale".
+    # Clamping a mis-scale up is the most dangerous available reading: a judge
+    # grading 3/10 (clearly failing) came back as a PERFECT score, as did 12/100.
+    # Clamping down is no better (9/10 would become the worst possible score).
+    #
+    # A value outside [0, 1] is not a score — it means the judge did not use the
+    # scale we asked for, so what it meant is unknowable. That is a protocol error,
+    # and the honest answer is the fail-closed default, not a guessed number.
     r = _pv('{"score": 1.7, "pass": true}')
+    assert r["score"] == 0.0
+    # The pass flag is still the judge's, but a 0.0 score now contradicts it, so
+    # INV-GATE-5 resolves the contradiction to a fail.
+    assert r["passed"] is False
+
+
+def test_parse_verdict_float_noise_at_the_ceiling_is_snapped_not_rejected():
+    # CONTROL for the change above: a judge computing its own average can emit
+    # 1.0000000000000002. That is the bound it means, not a rubric mismatch, so a
+    # 1e-9 epsilon snaps it rather than failing the verdict closed.
+    r = _pv('{"score": 1.0000000000000002, "pass": true}')
     assert r["score"] == 1.0
     assert r["passed"] is True
 
 
 def test_parse_verdict_fractional_negative_score_clamps_to_zero():
-    # -0.3 clamps to the floor; pass flag is independent of the clamp.
+    # UNCHANGED. The negative direction needs no protocol-error treatment: clamping
+    # a small negative to the floor is already the conservative answer, and 0.0 is
+    # what any plausible mis-scale would have meant anyway.
     r = _pv('{"score": -0.3, "pass": false}')
     assert r["score"] == 0.0
     assert r["passed"] is False
+
+
+def test_parse_verdict_nan_and_inf_scores_fail_closed():
+    # NaN fails every comparison, so it slipped through the old range checks and was
+    # emitted as the `score` — a verdict that is not JSON-serializable and a number
+    # that compares False against any bar (silently un-promotable, or inverted by a
+    # `not score < bar` reading). Infinity clamped to a perfect 1.0.
+    for literal in ("NaN", "Infinity", "-Infinity"):
+        r = _pv('{"score": %s, "pass": true}' % literal)
+        assert r["score"] == 0.0, literal
+        assert r["passed"] is False, literal
 
 
 def test_parse_verdict_string_number_score_is_parsed():

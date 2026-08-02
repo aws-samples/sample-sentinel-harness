@@ -244,6 +244,7 @@ clearly say fail" is not the same as "the judge said pass".
 | **INV-GATE-5** | A self-contradicting verdict is not a pass. `pass: true` with score 0.05 promoted on the flag alone; the judge's two output channels disagreeing is not a decision. The score is still reported faithfully so an operator can see the contradiction. | `run_evaluation.parse_verdict` | `test_r15_stopping_decisions.py::TestContradictoryVerdictFailsClosed` |
 | **INV-GATE-6** | A malformed/truncated JSON reply is not word-scanned. **This defect was created by the fix for INV-GATE-1**: word-boundary matching then matched the JSON *key* `"pass"` left by a reply cut off mid-object, so a truncated failing verdict scored 1.0. A parallel probe quantified it — 73 of the 93 possible cut points in one failing verdict flipped it to a maximum-confidence approval. The root cause was a LAYER confusion, not a vocabulary gap: the prose path is for a judge that answered in sentences, and applying it to broken JSON reads "malformed" as "approved". | `run_evaluation._looks_like_attempted_json` | `test_r15_stopping_decisions.py::TestTruncatedJsonIsNotAPass` |
 | **INV-GATE-7** | `parse_verdict` is pure, as its docstring claims, and never raises on hostile input — but its decision on garbage is FAIL, never pass. | `run_evaluation.parse_verdict` | `test_r15_stopping_decisions.py::TestParseVerdictIsPure` |
+| **INV-GATE-8** | A score outside [0, 1] is a PROTOCOL error, not a value to clamp. Clamping up turned a judge grading 3/10 — a clear fail — into a perfect 1.0, as did 12/100; clamping down would make 9/10 the worst possible score. Out of range means the judge did not use our scale, so what it meant is unknowable. NaN also slipped past the old range checks (it fails every comparison) and was emitted as the score. A MISSING score is still derived from the pass flag — absent is not the same as mis-scaled. | `run_evaluation._coerce_score` | `test_r15_stopping_decisions.py::TestOutOfRangeScoreFailsClosed` |
 
 Two contracts in `tests/test_m2_edge.py` were deliberately **overturned** here, with
 the reasoning recorded at each site: `pass: "false" → True` (whose own comment
@@ -281,12 +282,21 @@ denylist-shaped defects INV-FP and INV-GATE record.
 | ID | Invariant | Owner | Enforced by |
 |---|---|---|---|
 | **INV-OPS-1** | An unknown or mis-cased `finding_type` is a `validation_error`, not an empty result set. "These are all the open findings in the estate" is a stopping decision: a finding that does not appear is never triaged, ticketed or fixed, so a mistyped filter must not read as "all clear". Per-type counts reconcile with the estate total, and the wildcard view carries every finding. | `ops_query._validate` | `test_r15_stopping_decisions.py::TestOpsQueryRefusesUnknownFilters` |
+| **INV-OPS-2** | A reply the backend itself flagged as PARTIAL is refused, never presented as complete. `errors[]` ("3 of 12 accounts denied") and an un-followed pagination cursor were both dropped on the floor, so the readable page-one subset was reported as the whole estate — a truncated "all open findings" reads as fewer problems. | `ops_query._assert_complete` | `test_r15_stopping_decisions.py::TestOpsQueryLiveReplyFidelity` |
+| **INV-OPS-3** | The requested `finding_type` is verified against the returned findings, not stamped onto them. A backend that ignores the filter had unrelated findings relabelled, so an operator triaging "all public_s3 findings" would act on `mfa_disabled` records under the wrong heading. | `ops_query._normalize_live_reply` | `test_r15_stopping_decisions.py::TestOpsQueryLiveReplyFidelity::test_findings_of_another_type_are_not_relabelled` |
+| **INV-OPS-4** | A single-account query verifies the reply is about that account. The same relabelling defect INV-BOUNDARY-4 found in `nvd_lookup`, one selector over: another account's footprint was reported under the requested id. | `ops_query._normalize_live_reply` | `test_r15_stopping_decisions.py::TestOpsQueryLiveReplyFidelity::test_another_accounts_footprint_is_not_reported_under_the_requested_id` |
+| **INV-OPS-5** | The SSRF guard holds for the URL actually connected to, and recognizes every spelling of a forbidden address. Two reproduced bypasses: (a) `ipaddress.ip_address()` only parses dotted-quad/standard IPv6, so `http://2852039166/` and `http://0xA9FEA9FE/` — both 169.254.169.254 — fell through as if they were DNS names; (b) a `302` walked the request past the guard entirely, and urllib re-sends request headers to the redirect target, so the `Authorization: Bearer` credential leaked to whatever host the backend named. | `ops_query._parse_ip_literal` / `_NoRedirect` | `test_r15_stopping_decisions.py::TestOpsQuerySsrfGuard` |
 
-`ops_query` also **survived** round 15. The contrast with INV-GATE is the useful
-part: `ops_query` validates *caller input* and can legitimately refuse it, whereas
-`run_evaluation` parses an *upstream response* and must tolerate it. Tolerance is
-where fail-open grows — which is why rounds 14 and 15 found every defect on a
-response-parsing path.
+`ops_query` survived the OFFLINE path and the selector semantics; it did not survive
+the live seam. That gap is a method note, not a footnote: I recorded the tool as
+surviving after exercising two dimensions, and a parallel probe then found five
+defects in the third. **A tool "survives" only the dimensions actually exercised.**
+
+The contrast with INV-GATE remains the useful structural point: `ops_query._validate`
+guards *caller input* and may legitimately refuse it, whereas `_normalize_live_reply`
+parses an *upstream response* and must tolerate it. Every defect in both families sat
+on the tolerant side. Tolerance is where fail-open grows — which is why rounds 14 and
+15 found every defect on a response-parsing path.
 
 ---
 
