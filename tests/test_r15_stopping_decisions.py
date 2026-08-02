@@ -897,3 +897,91 @@ class TestOpsQuerySsrfGuard:
         assert "urlopen" not in src or "opener.open" in src, (
             "_fetch_live still uses the default opener, which follows redirects"
         )
+
+
+# --------------------------------------------------------------------------- #
+# INV-DEDUP-4 — a chained value modifier is refused, not read as its last link #
+# --------------------------------------------------------------------------- #
+class TestChainedModifiersAreNotAnalyzed:
+    """Found by the differential fan-out probe, in the one place my own hand-run
+    differential test did not reach: I varied wildcards, casing, logsource and
+    predicate count, but every predicate had at most ONE modifier.
+
+    PRE-FIX, the modifier loop ASSIGNED `value_modifier` on each pass, so
+    `Image|contains|startswith` kept only `startswith` and silently discarded the
+    rest. That is not a parse of the chain — it is a DIFFERENT predicate. And
+    `sigma_match` reads the same chain as `contains` (verified below: `xcmdy`
+    matches, which `startswith: cmd` would not), so the two engines disagreed about
+    what the rule matches while dedup went on to reason about subset relations on
+    top of that. A provability claim cannot rest on a misread predicate.
+
+    The fix refuses rather than picks: a chain of value transforms has no single
+    set-containment model (is `|contains|startswith` "starts with, then contains",
+    or the reverse?), and guessing is what the allow-list posture exists to avoid.
+    """
+
+    @pytest.mark.parametrize("field_key", [
+        "Image|contains|startswith",
+        "Image|startswith|contains",
+        "Image|contains|endswith",
+        "Image|endswith|startswith",
+        "Image|contains|contains",
+    ])
+    def test_a_chain_of_value_transforms_is_not_analyzable(self, field_key):
+        preds = dd._analyzable_predicates(
+            {"detection": {"selection": {field_key: "cmd"},
+                           "condition": "selection"}})
+        assert preds is None, (
+            f"{field_key} was reduced to a single modifier {preds} — a different "
+            "predicate than the rule states"
+        )
+
+    def test_a_chained_rule_makes_no_subset_claim(self):
+        """End to end: the chain lands in not_analyzed and no verdict is issued."""
+        rules = {_A: _rule(_A, "Image|contains|startswith", "cmd"),
+                 _B: _rule(_B, "Image|contains", "cmd")}
+        res = dd.handler({"rules": [rules[_A], rules[_B]]}, None)
+        assert res["ok"] is True
+        assert res["subsumptions"] == [] and res["duplicates"] == []
+        assert any(x["rule"] == _A for x in res["not_analyzed"])
+
+    def test_the_two_engines_disagreed_about_the_chain(self):
+        """Records WHY this is a defect rather than a style nit: the matcher's
+        reading of the chain is not the reading dedup used to take."""
+        chained = _rule(_A, "Image|contains|startswith", "cmd")
+        # sigma_match treats it as `contains`, so a mid-string hit matches.
+        matched, ok = _matches(chained, {"Image": "xcmdy"})
+        assert ok is True
+        assert matched is True, (
+            "the matcher no longer reads a chain as contains; re-derive this "
+            "invariant before trusting it"
+        )
+        # `startswith: cmd` — the reading dedup used to take — would NOT match that.
+        as_startswith = _rule(_B, "Image|startswith", "cmd")
+        assert _matches(as_startswith, {"Image": "xcmdy"})[0] is False
+
+    @pytest.mark.parametrize("field_key", [
+        "Image|contains", "Image|startswith", "Image|endswith", "Image",
+    ])
+    def test_a_single_modifier_is_still_analyzable(self, field_key):
+        """CONTROL: refusing chains must not refuse the ordinary single-modifier
+        predicates that are the whole point of the tool."""
+        preds = dd._analyzable_predicates(
+            {"detection": {"selection": {field_key: "cmd"},
+                           "condition": "selection"}})
+        assert preds is not None, f"{field_key} is no longer analyzable"
+
+    def test_soundness_still_holds_with_chains_in_the_corpus(self):
+        """The differential obligation, re-run over a predicate space that now
+        INCLUDES chains — the gap that let this defect through in the first place."""
+        preds = [
+            ("Image|contains", "cmd"),
+            ("Image|startswith", "C:"),
+            ("Image|endswith", "cmd.exe"),
+            ("Image|contains|startswith", "cmd"),
+            ("Image|startswith|contains", "C:"),
+            ("Image|endswith|contains", "cmd.exe"),
+            ("Image", r"C:\Windows\cmd.exe"),
+        ]
+        claims, violations = _soundness_violations(preds=preds)
+        assert not violations, violations

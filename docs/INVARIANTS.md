@@ -274,6 +274,13 @@ denylist-shaped defects INV-FP and INV-GATE record.
 | **INV-DEDUP-1** | If the tool reports A ⊆ B, then no event matches A without matching B — verified differentially against `tools/sigma_match`, **with a positive control** that injects an unsound `_predicate_implies` and asserts the harness catches it (it finds 52 violations). Without that control, "0 violations" is indistinguishable from a broken harness — the vacuous-pass failure mode this repo has hit three times. | `detection_dedup._predicate_implies` / `_subset_of` | `test_r15_stopping_decisions.py::TestSubsumptionIsSound` |
 | **INV-DEDUP-2** | Every input rule is accounted for exactly once: analyzed, or *declared* in `not_analyzed`. A silently dropped rule lets a reviewer believe the corpus was fully covered. Declining to analyze is the tool being honest; a confident verdict on an unmodelled shape is the defect. | `detection_dedup._analyze` | `test_r15_stopping_decisions.py::TestSubsumptionIsSound::test_every_rule_is_accounted_for_exactly_once` |
 | **INV-DEDUP-3** | Rules over different logsources are never compared — they never see the same events, so no relation between them is assertable. And the tool stays USEFUL: a narrow rule strictly inside a broad one is still reported, in the correct direction. | `detection_dedup._analyze` | `test_r15_stopping_decisions.py::TestSubsumptionIsSound::test_an_actually_redundant_rule_is_still_found` |
+| **INV-DEDUP-4** | A CHAIN of value modifiers is refused, never read as its last link. The modifier loop assigned on each pass, so `Image\|contains\|startswith` kept only `startswith` — not a parse of the chain but a *different predicate*. `sigma_match` reads the same chain as `contains` (`xcmdy` matches), so the two engines disagreed about what the rule matches while dedup reasoned about subsets on top of that. A chain has no single set-containment model, so it is refused rather than guessed. | `detection_dedup._analyzable_predicates` | `test_r15_stopping_decisions.py::TestChainedModifiersAreNotAnalyzed` |
+
+INV-DEDUP-4 is the one defect the hand-run differential test missed, and the reason
+is instructive: I varied wildcards, casing, logsource granularity and predicate
+count, but **every predicate in my space had at most one modifier**. The fan-out
+probe varied that dimension and found it immediately. The differential space now
+includes chains.
 
 ---
 
