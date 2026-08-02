@@ -116,48 +116,36 @@ _LIVE_MAX_BYTES = 8 * 1024 * 1024
 _MAX_QUERY_LEN = 128
 
 # SSRF guard: only plain HTTP(S) egress to a routable host is permitted for the
-# operator-configured ASSET_LOOKUP_URL. file://, gopher://, ftp:// etc. and
-# non-routable/metadata IP literals (notably 169.254.169.254) are refused.
-_ALLOWED_URL_SCHEMES = frozenset({"https", "http"})
+# operator-configured ASSET_LOOKUP_URL. The scheme allowlist lives in
+# `sentinel_harness.egress.ALLOWED_URL_SCHEMES` — re-exported here (not redefined) so
+# the two cannot drift.
+_ALLOWED_URL_SCHEMES = egress.ALLOWED_URL_SCHEMES
 
 
 def _assert_safe_url(url: str) -> None:
     """Refuse an outbound URL that is not plain HTTP(S) to a routable host.
 
-    Applied before ANY live request opens: enforce a scheme allowlist (https/http
-    only) and refuse link-local/metadata targets (the cloud metadata IP
-    ``169.254.169.254`` and ``file://``). Raises ``RuntimeError`` on a rejected URL
-    so the handler maps it to ``upstream_error`` (never a silent fallback).
-    Hostnames that are not IP literals pass through (DNS resolution is the runtime
-    egress policy's job); only IP-literal hosts are range-checked.
-    Loopback (127.0.0.1) is deliberately allowed — the live-test mock server binds
-    there.
-    """
-    from urllib.parse import urlsplit
+    INV-EGRESS-1: delegates to ``sentinel_harness.egress.assert_safe_url``.
 
-    parts = urlsplit(url)
-    scheme = parts.scheme.lower()
-    if scheme not in _ALLOWED_URL_SCHEMES:
-        raise RuntimeError(
-            f"refusing to open non-HTTP(S) URL scheme {scheme!r}; "
-            "only https/http egress is permitted"
-        )
-    host = parts.hostname
-    if not host:
-        raise RuntimeError("backend URL has no host component")
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return  # not an IP literal — leave DNS-name egress to the network policy
-    if (
-        ip.is_link_local          # 169.254.0.0/16 (incl. 169.254.169.254) & fe80::/10
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified      # 0.0.0.0, ::
-    ):
-        raise RuntimeError(
-            f"refusing to open URL targeting non-routable/metadata address {host!r}"
-        )
+    This WAS a local copy whose range check called ``ipaddress.ip_address()`` directly,
+    so it accepted only dotted-quad / standard IPv6 and let the alternate spellings of
+    the cloud metadata address through as if they were DNS names — ``http://2852039166/``
+    (decimal), ``http://0xA9FEA9FE/`` (hex), ``http://0251.0376.0251.0376/``
+    (octal-dotted), all three 169.254.169.254. Reproduced against this copy in round 19.
+
+    It was not exploitable while it stood, because ``egress.open_checked`` re-checks with
+    the strong predicate downstream. It was a staged regression: the next refactor that
+    reasoned "the URL is already vetted here, so a plain ``urlopen`` is fine" would have
+    handed SSRF back to a check that does not recognise the attack. Round 17 mechanized
+    this exact class after finding it in ``siem_query`` one round after fixing it in
+    ``ops_query`` — but parameterized the guard over those two tools only, so the three
+    remaining copies were never looked at. Fifth recurrence by the one-call-site route,
+    this time inside the mechanism built to stop it.
+
+    ``EgressError`` subclasses ``RuntimeError``, so the handler's ``upstream_error``
+    mapping is unchanged.
+    """
+    egress.assert_safe_url(url)
 
 
 # --------------------------------------------------------------------------

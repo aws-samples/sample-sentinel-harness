@@ -89,7 +89,6 @@ Output contract (on validation failure)
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
 import re
@@ -102,8 +101,6 @@ from typing import Any, Dict, List
 # of this check is how the same SSRF pair reached two tools before it was
 # mechanized — see sentinel_harness/egress.py.
 from sentinel_harness import egress
-
-from urllib.parse import urlsplit
 
 # This tool reads the shared single-source-of-truth world in ``mockdata.world``.
 # When imported normally (via the harness / pytest, which put the repo root on
@@ -388,55 +385,33 @@ def _normalize_live_record(indicator: str, raw: Any) -> Dict[str, Any]:
     }
 
 
-# SSRF guard: schemes an operator-configured backend URL may use. Only plain
-# HTTP(S) egress is permitted; ``file://``, ``gopher://``, ``ftp://`` etc. are
-# refused so a misconfigured/hostile URL cannot read local files or reach
-# non-HTTP services.
-_ALLOWED_URL_SCHEMES = frozenset({"https", "http"})
+# SSRF guard: schemes an operator-configured backend URL may use. Re-exported from
+# `sentinel_harness.egress` rather than redefined, so the allowlist has one definition.
+_ALLOWED_URL_SCHEMES = egress.ALLOWED_URL_SCHEMES
 
 
 def _assert_safe_url(url: str) -> None:
     """Refuse an outbound URL that is not plain HTTP(S) to a routable host.
 
-    SSRF/exfiltration hardening applied before ANY live request opens: enforce a
-    scheme allowlist (https/http only) and REFUSE link-local (incl. the cloud
-    metadata endpoint ``169.254.169.254``), multicast, reserved and unspecified
-    targets, plus non-HTTP schemes like ``file://``. Raises ``RuntimeError`` on a
-    rejected URL so the handler maps it to ``upstream_error`` (never a silent
-    fallback). Hostnames that are not IP literals are allowed through (DNS is not
-    resolved here — that is the runtime egress policy's job); only IP-literal
-    hosts are range-checked, which deterministically blocks the metadata IP.
-    Loopback (127.0.0.0/8, ::1) is DELIBERATELY allowed: an on-box / self-hosted
-    threat-intel backend is a legitimate operator choice (and is what the live-test
-    mock server binds to). This matches siem_query's guard exactly.
+    INV-EGRESS-1: delegates to ``sentinel_harness.egress.assert_safe_url``.
+
+    This WAS a local copy, and its own docstring said it "matches siem_query's guard
+    exactly" — which stopped being true the moment ``siem_query`` was fixed in round 17
+    and nobody updated the copy. That sentence is the cost of duplication stated in
+    advance: a claim of parity that no test checked.
+
+    The copy's range check called ``ipaddress.ip_address()`` directly, so the alternate
+    spellings of the cloud metadata address passed as DNS names — ``http://2852039166/``,
+    ``http://0xA9FEA9FE/``, ``http://0251.0376.0251.0376/``, all 169.254.169.254.
+    Reproduced against this copy in round 19.
+
+    Not exploitable while it stood (``egress.open_checked`` re-checks downstream with the
+    strong predicate), but a staged regression: any refactor reasoning "already vetted
+    here" would restore the SSRF with a check that cannot see it.
+
+    ``EgressError`` subclasses ``RuntimeError``, so the ``upstream_error`` mapping holds.
     """
-    parts = urlsplit(url)
-    scheme = parts.scheme.lower()
-    if scheme not in _ALLOWED_URL_SCHEMES:
-        raise RuntimeError(
-            f"refusing to open non-HTTP(S) URL scheme {scheme!r}; "
-            "only https/http egress is permitted"
-        )
-    host = parts.hostname
-    if not host:
-        raise RuntimeError("backend URL has no host component")
-    # Range-check IP-literal hosts. A bracketed IPv6 or dotted IPv4 literal is
-    # checked against the block ranges below; the metadata IP is caught here.
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return  # not an IP literal — leave DNS-name egress to the network policy
-    # Loopback is deliberately NOT blocked (on-box backend + the live-test mock
-    # server bind there); the SSRF threat we care about is metadata/link-local.
-    if (
-        ip.is_link_local          # 169.254.0.0/16 (incl. 169.254.169.254) & fe80::/10
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified      # 0.0.0.0, ::
-    ):
-        raise RuntimeError(
-            f"refusing to open URL targeting non-routable/metadata address {host!r}"
-        )
+    egress.assert_safe_url(url)
 
 
 def _fetch_live(indicators: List[str]) -> Dict[str, Dict[str, Any]]:
