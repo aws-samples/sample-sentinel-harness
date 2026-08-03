@@ -32,12 +32,39 @@ import os
 import sys
 from typing import Any, Optional, TextIO
 
-__all__ = ["get_logger", "configure_logging", "ROOT_LOGGER_NAME"]
+__all__ = ["get_logger", "configure_logging", "ROOT_LOGGER_NAME", "coerce_bool"]
 
 ROOT_LOGGER_NAME = "sentinel_harness"
 
 # Reuse the same truthy set the token-metric flag uses so env parsing is consistent.
 _TRUTHY = {"1", "true", "yes", "on"}
+
+# The audited token set for coercing an EXTERNAL boolean (a judge's pass flag, a
+# backend's `false_positive`, a config's `passRequestHeaders`). Distinct from `_TRUTHY`
+# above, which parses this library's OWN env vars — an external source may spell a
+# boolean `t`/`y`, an operator's env var does not.
+_TRUE_TOKENS = frozenset({"true", "1", "yes", "y", "t"})
+
+
+def coerce_bool(value: Any) -> bool:
+    """Interpret an external value as a boolean WITHOUT Python's string truthiness.
+
+    The one rule this exists to enforce: ``bool("false") is True`` in Python, so a
+    judge that reports ``passed="false"``, a backend that sends ``false_positive:
+    "false"``, or an operator who writes ``pass_request_headers: "no"`` would all be read
+    as TRUE by a bare ``bool()``. A non-empty string is parsed against the audited
+    :data:`_TRUE_TOKENS`; everything non-string falls back to Python truthiness (so a
+    real ``bool``/``int``/``None`` behaves as expected).
+
+    This is the single canonical coercer. It lives in ``logutil`` — the lowest-level,
+    zero-dependency module — precisely so ``observability``, ``gateway`` and
+    ``connectors.base`` can all delegate to it WITHOUT the import cycle that made
+    ``connectors.base`` (which pulls in every backend + core + gateway) the wrong home
+    for it. INV-COERCE stood on that module for want of a neutral one.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUE_TOKENS
+    return bool(value)
 
 
 def get_logger(name: str = ROOT_LOGGER_NAME) -> logging.Logger:
@@ -138,3 +165,51 @@ def configure_logging(
 def _text_formatter() -> logging.Formatter:
     """Compact human text: ``LEVEL sentinel_harness.mod: message``."""
     return logging.Formatter("%(levelname)s %(name)s: %(message)s")
+
+
+# The metric sink is separate from the human/JSON application loggers ON PURPOSE
+# (INV-METRIC-1). CloudWatch's JSON metric filter (`FilterPattern.exists("$.tokens")`,
+# in iac-cdk/lib/observability-stack.ts) matches only when the log EVENT MESSAGE IS a
+# top-level JSON object — the very first character must be `{`.
+#
+# `core.metered_invoke` defaulted its sink to
+# `get_logger("sentinel_harness.telemetry").info`, whose text formatter prepends
+# `INFO sentinel_harness.telemetry: ` and whose JSON formatter buries the metric under a
+# `msg` string. Either way the line does not start with `{`, so `$.tokens` never matched
+# and NO metric or alarm ever fired from a metered invoke. Reproduced. This sink writes
+# the bare JSON the filter needs, with no level/logger envelope.
+_METRIC_LOGGER_NAME = "sentinel_harness.metric"
+
+
+def get_metric_sink(stream: Optional[TextIO] = None):
+    """Return a ``log(str)`` callable that writes a metric line VERBATIM.
+
+    The string handed to it (already ``json.dumps``'d by ``observability.emit_*``) is
+    emitted as-is — no ``LEVEL logger:`` prefix, no JSON envelope — so a CloudWatch JSON
+    metric filter on ``$.tokens`` / ``$.latency_ms`` / ``$.errors`` matches it. Defaults
+    to stderr (metrics must never contaminate a scenario's stdout).
+
+    Idempotent per stream target, like :func:`configure_logging`: repeated calls reuse
+    the one tagged handler instead of stacking duplicates.
+    """
+    logger = logging.getLogger(_METRIC_LOGGER_NAME)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False  # never also hit the app root's formatted handlers
+    target = stream if stream is not None else sys.stderr
+    existing = next(
+        (h for h in logger.handlers if getattr(h, "_sentinel_metric_handler", False)),
+        None,
+    )
+    if existing is not None:
+        # Idempotent: never stack a second handler. But if an EXPLICIT stream was given
+        # and differs, retarget the one handler — otherwise a caller passing a new
+        # stream would silently keep writing to the first one (a real trap, and how the
+        # tests for this caught it). With no explicit stream, leave the target as-is.
+        if stream is not None and getattr(existing, "stream", None) is not stream:
+            existing.setStream(stream)  # type: ignore[attr-defined]
+    else:
+        handler = logging.StreamHandler(target)
+        handler._sentinel_metric_handler = True  # type: ignore[attr-defined]
+        handler.setFormatter(logging.Formatter("%(message)s"))  # bare line, no envelope
+        logger.addHandler(handler)
+    return logger.info

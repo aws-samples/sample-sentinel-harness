@@ -435,9 +435,31 @@ class TestLocalCoercionHelpersAgree:
             "it to _GRAMMAR_SCOPED naming the grammar it parses. An unclassified "
             "helper is how INV-BOUNDARY-1 recurred twice."
         )
-        assert len(found) >= 5, (
+        assert len(found) >= 4, (
             f"only {len(found)} helpers found — the regex has stopped matching"
         )
+
+    def test_the_canonical_coercer_has_one_implementation(self):
+        """INV-COERCE (round 20): the authority is ONE object, not N copies that agree.
+
+        `connectors.base._coerce_bool` used to be its own `def`; round 20 moved the
+        implementation to `logutil.coerce_bool` (a zero-dependency module, so
+        observability/gateway can delegate without the import cycle that made
+        `connectors.base` — which pulls in every backend — the wrong home) and re-exported
+        it. This pins that: the backend coercer, the gateway/observability coercer and the
+        authority must be the SAME function object, so a future edit cannot fork one copy
+        and reintroduce the drift INV-COERCE exists to prevent.
+        """
+        from sentinel_harness.connectors import base as _base
+        from sentinel_harness import logutil as _lu
+        assert _base._coerce_bool is _lu.coerce_bool, (
+            "connectors.base._coerce_bool is no longer the canonical logutil.coerce_bool "
+            "— a second implementation has been introduced and the two can drift"
+        )
+        # and it enforces the one rule that matters: a string is not Python-truthy.
+        assert _lu.coerce_bool("false") is False
+        assert _lu.coerce_bool("no") is False
+        assert _lu.coerce_bool("true") is True
 
 
 # --------------------------------------------------------------------------- #

@@ -45,6 +45,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional
 
+from .logutil import get_logger
+
 # Gate for the opt-in real-OTEL path. Default off => the pure structured-line path.
 LIVE_ENV_FLAG = "SENTINEL_OTEL"
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -203,16 +205,34 @@ class Tracer:
                                   "message": str(exc)[:200]})
             raise
         finally:
-            # ALWAYS: emit the span + pop the stack, even on BaseException (Ctrl-C,
-            # SystemExit, asyncio.CancelledError). This is the fix for the audited
-            # finding: `except Exception` left BaseExceptions unrecorded + the stack
-            # mis-parented subsequent siblings.
+            # ALWAYS: pop the stack and emit the span, even on BaseException (Ctrl-C,
+            # SystemExit, asyncio.CancelledError).
+            #
+            # ORDER MATTERS (INV-TRACE-1). The stack is popped FIRST, and the emit is
+            # isolated so a raising sink cannot corrupt nesting or mask the body's error.
+            # Previously `self._emit(record)` ran before `self._stack.pop()`, so a sink
+            # that raised (a throttled CloudWatch PutLogEvents is enough) skipped the pop:
+            # this span's id stayed on the stack and every LATER sibling was mis-parented
+            # under it, while the sink's exception replaced the exception the span was
+            # tracing. Reproduced. Telemetry must not be able to alter control flow or the
+            # very trace it records.
             if record.status == STATUS_UNSET:
                 record.status = STATUS_OK
-            if live_span is not None:
-                _end_live_span(live_span, record, error=_error)
-            self._emit(record)
             self._stack.pop()
+            try:
+                if live_span is not None:
+                    _end_live_span(live_span, record, error=_error)
+                self._emit(record)
+            except Exception as emit_exc:  # noqa: BLE001
+                # A telemetry sink failure is never allowed to propagate: it would mask
+                # `_error` (the real, traced exception) or turn a clean span into a
+                # spurious raise. Report it out-of-band on the tracer's own logger and
+                # carry on. Deliberately catches Exception, not BaseException — a
+                # KeyboardInterrupt in the sink should still stop the program.
+                get_logger("sentinel_harness.tracing").warning(
+                    "span %r sink failed to emit (%s: %s); span dropped, trace nesting "
+                    "preserved", record.name, type(emit_exc).__name__, emit_exc,
+                )
 
     def _emit(self, record: SpanRecord) -> None:
         """Write the structured span line via the sink. Zero AWS."""

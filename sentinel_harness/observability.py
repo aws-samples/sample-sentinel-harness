@@ -34,6 +34,8 @@ from __future__ import annotations
 import json
 import os
 
+from .logutil import coerce_bool
+
 # --- Kept in lockstep with iac-cdk/lib/observability-stack.ts (METRIC_NAMESPACE /
 #     TOKENS_METRIC_NAME). Change both together or the metric/dashboard drift. ---
 METRIC_NAMESPACE = "SentinelHarness"
@@ -262,7 +264,12 @@ def emit_eval_score(scenario: str, dimension: str, score, passed, /, *, log=prin
 
     ``dimension`` (e.g. safety/groundedness) and ``passed`` ride as dimensions so a
     dashboard can trend per-dimension scores and pass-rate."""
+    # INV-COERCE: `passed` is an EXTERNAL boolean (a judge's verdict), so `bool(passed)`
+    # is wrong — `bool("false") is True`, so a failing judge that reports passed="false"
+    # (or "no", or {"passed": False}) would be published to the EvalScore metric as
+    # passed: true, and a dashboard trending pass-rate would count a failure as a pass.
+    # Delegate to the one canonical coercer.
     return emit_metric(
         "eval_score", score, log=log, scenario=scenario,
-        **{"dimension": dimension, "passed": bool(passed), **dims},
+        **{"dimension": dimension, "passed": coerce_bool(passed), **dims},
     )

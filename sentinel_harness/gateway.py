@@ -44,7 +44,7 @@ import re
 import time
 
 from .core import _control, _role
-from .logutil import get_logger
+from .logutil import coerce_bool, get_logger
 
 _log = get_logger(__name__)
 
@@ -367,7 +367,12 @@ def lambda_interceptor(lambda_arn, *, interception_points=("REQUEST",),
         "interceptionPoints": points,
     }
     if pass_request_headers is not None or payload_exclude is not None:
-        input_cfg: dict = {"passRequestHeaders": bool(pass_request_headers)}
+        # INV-COERCE: `passRequestHeaders` decides whether the gateway forwards the
+        # caller's headers (Authorization, cookies) to the interceptor lambda — a
+        # security decision. `bool("false") is True`, so an operator who wrote
+        # pass_request_headers="false" would get the headers forwarded, the opposite of
+        # what they said. Delegate to the canonical coercer.
+        input_cfg: dict = {"passRequestHeaders": coerce_bool(pass_request_headers)}
         if payload_exclude is not None:
             # The CreateGateway model types payloadFilter.exclude as a list of
             # InterceptorPayloadExclusionSelector STRUCTURES ({"field": <jsonpath>}),
