@@ -92,6 +92,64 @@ def _check_name(name: str) -> str:
     return name
 
 
+# Raw API-level keys a model must never be able to put on the wire (INV-OPS-6).
+#
+# This module's own docstring states the invariant: "create/update/invoke/promote are
+# **deterministic** control-plane actions that must never be model-authored HTTP". The
+# `**params` forwarding below made that false — `core.create_harness` ends with
+# `args.update(kw)` and `core.invoke` with `kw.update(overrides)`, so a passthrough key
+# WINS over everything this handler computed and validated.
+#
+# Reproduced, and the give-away is the pair of names. `_create` validates `name`; the
+# request carries `harnessName`. So:
+#
+#     params = {"name": "soc_triage_reviewed",          <- what the validator checked
+#               "harnessName": "attacker_controlled",   <- what the API received
+#               "allowedTools": ["*"],                  <- iron-rule #1, violated
+#               "executionRoleArn": "...not-the-resolved-one"}
+#
+# went through with every key applied. `_invoke` is worse: `harnessArn` RETARGETS the
+# call to a different harness than the one the caller named in `arn`, while
+# `allowedTools` / `maxIterations` / `systemPrompt` strip that harness's own limits —
+# and the handler returned `ok: True`.
+#
+# This is INV-FACTORY-1 verbatim, one layer over. That guard was applied to
+# `factory.py`'s two paths and this control plane was never covered — the same
+# "a fix applied to one call site is not an invariant" route that produced INV-EGRESS-3
+# (five recurrences) and INV-COERCE (four). Hence a shared frozenset checked by EVERY
+# action that forwards params, not a check bolted onto the two that were found.
+_FORBIDDEN_API_KEYS = frozenset({
+    # identity / targeting — these decide WHICH resource the call acts on
+    "harnessName", "harnessArn", "harnessId", "endpointName", "targetVersion",
+    # the authorization boundary
+    "allowedTools", "executionRoleArn",
+    # the agent's own instructions and limits
+    "systemPrompt", "messages", "maxIterations", "maxTokens", "timeoutSeconds",
+})
+
+
+def _reject_api_level_keys(params: Dict[str, Any], action: str) -> None:
+    """Refuse a request carrying raw API-level keys (INV-OPS-6).
+
+    Deliberately a DENYLIST of security-relevant keys rather than an allowlist of the
+    snake_case params: `core.*` accepts genuine passthrough kwargs that adopters use
+    (pagination, tags, client tokens), and an allowlist would break them and get
+    routed around. Every key here is one that changes WHICH resource is touched or
+    WHAT it is permitted to do — the two questions a model must not answer directly.
+    """
+    offenders = sorted(_FORBIDDEN_API_KEYS & set(params))
+    if offenders:
+        raise _ValidationError(
+            f"action {action!r} carries raw API-level key(s) {offenders}, which would "
+            f"override what this handler validated and computed. `core` applies "
+            f"passthrough kwargs LAST (args.update(kw)), so e.g. 'harnessName' beats "
+            f"the validated 'name' and 'harnessArn' retargets the call away from 'arn'. "
+            f"Use the documented snake_case params (name, system_prompt, harness_id, "
+            f"arn, text, ...); the control plane is deterministic by contract and is "
+            f"not a place for model-authored request fields."
+        )
+
+
 # --------------------------------------------------------------------------- #
 # action implementations — each validates then delegates to core / core._control
 # --------------------------------------------------------------------------- #
@@ -292,6 +350,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
     try:
+        # INV-OPS-6: applied HERE, at the one dispatch point, not inside the individual
+        # actions. Four of the ten actions forward `**params` / `**rest` today
+        # (create, update, invoke, wait_ready) and a fifth added tomorrow would inherit
+        # the hole if this lived in the two that were found — which is precisely how
+        # INV-FACTORY-1 came to cover factory.py and miss this module entirely.
+        _reject_api_level_keys(params, action)
         result = _DISPATCH[action](params)
     except _ValidationError as exc:
         return {
