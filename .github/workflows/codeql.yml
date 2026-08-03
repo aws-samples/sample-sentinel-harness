@@ -46,7 +46,7 @@ jobs:
 
       - name: Initialize CodeQL
         # github/codeql-action/init v3.37.0
-        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81
+        uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38
         with:
           # `languages` (plural) is the real input name. The singular `language` is
           # silently ignored, which makes the action autodetect EVERY language in the
@@ -59,6 +59,6 @@ jobs:
 
       - name: Perform CodeQL Analysis
         # github/codeql-action/analyze v3.37.0
-        uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81
+        uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38
         with:
           category: "/language:${{ matrix.language }}"
