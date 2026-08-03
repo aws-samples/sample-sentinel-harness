@@ -194,6 +194,35 @@ def default_subject_of_approval(tool_input: Dict[str, Any]) -> Optional[str]:
     return default_subject_of_promotion(tool_input)
 
 
+#: The env var by which this driver tells `harness_ops` that it ran the promotion gate
+#: (INV-OPS-7). Must match `tools/harness_ops/handler.py::_GATE_WITNESS_ENV`;
+#: `test_harness_ops.py::TestPromotionGate::test_the_action_list_matches_the_driver`
+#: pins the two layers' action lists, and `test_r21_promotion_gate.py` pins the name.
+_PROMOTION_WITNESS_ENV = "SENTINEL_PROMOTION_GATE_WITNESSED"
+
+
+def _with_promotion_witness(
+    handler: Callable[[Dict[str, Any]], Any], tool_input: Dict[str, Any]
+) -> Any:
+    """Run ``handler`` with the promotion-gate witness set, then restore the environment.
+
+    Narrowly scoped on purpose. The witness says "a driver gated THIS call"; leaving it
+    set would make it say "promotion is ungoverned in this process", which is exactly the
+    hole INV-OPS-7 closes. Restores the prior value (including absence) even if the
+    handler raises, so a handler error cannot leak an open gate.
+    """
+    import os
+    previous = os.environ.get(_PROMOTION_WITNESS_ENV)
+    os.environ[_PROMOTION_WITNESS_ENV] = "1"
+    try:
+        return handler(tool_input)
+    finally:
+        if previous is None:
+            os.environ.pop(_PROMOTION_WITNESS_ENV, None)
+        else:
+            os.environ[_PROMOTION_WITNESS_ENV] = previous
+
+
 def default_is_promotion(tool_name: str, tool_input: Dict[str, Any]) -> bool:
     """The shipped promotion shapes: ``harness_ops`` with any endpoint-creating action.
 
@@ -532,8 +561,20 @@ def run_agent_loop(
                                  "message": f"tool {name!r} is not available"}), "error")
                         else:
                             # 4) Execute the deterministic handler.
+                            #
+                            # INV-OPS-7: for a promotion that passed every check above,
+                            # declare the gate to the TOOL for the duration of this one
+                            # call. `harness_ops` refuses a promotion action with no
+                            # witness, which is what closes the direct-call path that
+                            # bypasses this driver entirely. Scoped to the single call
+                            # and always torn down: a process-global left set would
+                            # disable the tool-side gate for every later caller, which is
+                            # the failure mode the witness exists to prevent.
                             try:
-                                out = handler(tool_input)
+                                if is_promotion(name, tool_input):
+                                    out = _with_promotion_witness(handler, tool_input)
+                                else:
+                                    out = handler(tool_input)
                             except Exception as exc:  # noqa: BLE001 — a handler bug must not kill the session
                                 record = ToolCallRecord(
                                     seq=seq, tool=name, action=action, outcome="handler_error",

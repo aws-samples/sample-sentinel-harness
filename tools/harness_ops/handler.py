@@ -56,6 +56,39 @@ _ACTIONS = frozenset(
      "create_endpoint", "update_endpoint", "promote_endpoint", "list_endpoints"}
 )
 
+# The three actions that put a harness version in front of production traffic
+# (INV-OPS-7). Mirrors `agent_loop.is_promotion` exactly — see the note there; the two
+# lists must agree or one layer gates an action the other does not.
+_PROMOTION_ACTIONS = frozenset({"create_endpoint", "update_endpoint", "promote_endpoint"})
+
+# The env var by which a DRIVER declares it has already run the promotion gate.
+#
+# INV-OPS-7. `docs/THREAT-MODEL.md` §1 claims: "Publish / contain / promote are
+# inline_function HITL gates ...; the agent can only *request* them, never execute them."
+# That was true of the two DRIVER paths and false of a third:
+#
+#   agent_loop.run_agent_loop        gates all 3 promotion actions (agent_loop.py:205)
+#   autonomy.run_improvement_loop    gates via approve_fn, fail-closed when None
+#   harness_ops.handler(...) direct  NO gate  <- reproduced: promoted 'prod', ok:True
+#
+# The third is not hypothetical: `scenarios/scenario_agent_factory_loop.py` says of
+# itself "delegation here is in-process (the scenario calls the harness_ops handler
+# directly) rather than over a Gateway MCP target". That scenario happens to call only
+# create/wait_ready/invoke/delete, so nothing is exploited today — but nothing PREVENTED
+# it from calling promote either, which makes the threat-model claim a convention rather
+# than a mechanism. The same shape as INV-PROMOTE-3, where a docstring delegated a
+# fail-closed posture to "the caller" and no caller implemented it.
+#
+# `sentinel_agent_ops` is the harness this matters for: its allowedTools is exactly
+# `@gateway/harness_ops` with NO gate on the list, while `sentinel_self_improving` holds
+# the same tool WITH `request_promotion_approval`. One tool, two harnesses, one gate.
+#
+# Deliberately an explicit opt-in rather than an inferred one: a driver that has run the
+# gate SAYS so. There is no way for the model to set it (it is process environment, not
+# a tool parameter — and INV-OPS-6 already refuses model-authored request fields), and a
+# missing value means refused, never assumed.
+_GATE_WITNESS_ENV = "SENTINEL_PROMOTION_GATE_WITNESSED"
+
 
 class _ValidationError(ValueError):
     """Raised for a malformed request. Kept distinct from upstream/boto errors so
@@ -147,6 +180,40 @@ def _reject_api_level_keys(params: Dict[str, Any], action: str) -> None:
             f"Use the documented snake_case params (name, system_prompt, harness_id, "
             f"arn, text, ...); the control plane is deterministic by contract and is "
             f"not a place for model-authored request fields."
+        )
+
+
+def _require_promotion_gate(action: str) -> None:
+    """Refuse a promotion action unless a driver declares it ran the HITL gate.
+
+    INV-OPS-7 — the mechanism behind the THREAT-MODEL §1 claim that promotion is
+    human-gated. The two driver paths (`agent_loop.run_agent_loop`,
+    `autonomy.run_improvement_loop`) refuse a promotion BEFORE dispatch, so they never
+    reach this function in the refusing case; they set the witness for the approved case.
+    A direct `handler({"action": "promote_endpoint", ...})` call — which is how the
+    in-process factory scenario reaches this tool — has no driver above it, and used to
+    promote straight through.
+
+    Fail-closed by construction: absence of the witness is refusal, so a new call site
+    that forgets to route through a gate gets a loud error instead of an ungoverned
+    promotion. That is the INV-BOUNDARY-5 rule ("we could not tell" is never the
+    permissive answer) applied to authorization rather than to data.
+
+    The layering note in docs/INVARIANTS.md still holds: the DECISION lives in the gate,
+    not here. This is a check that the decision happened, not a second copy of it.
+    """
+    import os
+    witnessed = os.environ.get(_GATE_WITNESS_ENV, "").strip().lower()
+    if witnessed not in ("1", "true", "yes", "on"):
+        raise _ValidationError(
+            f"action {action!r} puts a harness version in front of production traffic "
+            f"and requires a human-approval gate, but no driver declared one ran. "
+            f"Route the promotion through `agent_loop.run_agent_loop` (which gates all "
+            f"three promotion actions and binds the approval to the harness being "
+            f"promoted) or `autonomy.run_improvement_loop` (approve_fn). A driver that "
+            f"has already obtained approval sets {_GATE_WITNESS_ENV}=1 for the call. "
+            f"Refusing rather than promoting unattended: the agent may REQUEST a "
+            f"promotion, never execute one."
         )
 
 
@@ -356,6 +423,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # the hole if this lived in the two that were found — which is precisely how
         # INV-FACTORY-1 came to cover factory.py and miss this module entirely.
         _reject_api_level_keys(params, action)
+        # INV-OPS-7: also at the ONE dispatch point, for the same reason — a promotion
+        # action added later inherits the gate instead of needing to remember it.
+        if action in _PROMOTION_ACTIONS:
+            _require_promotion_gate(action)
         result = _DISPATCH[action](params)
     except _ValidationError as exc:
         return {
