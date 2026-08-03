@@ -456,6 +456,101 @@ def test_the_capture_survives_configure_logging(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# INV-REGISTRY-3 — the idempotency token, and read-back of the posture        #
+# --------------------------------------------------------------------------- #
+class _ReplayControl:
+    """A control plane with the REAL documented clientToken contract: a repeated token
+    REPLAYS the first registry and does NOT apply the new request body. Reads the
+    posture back through get_registry, as the live service does."""
+
+    class exceptions:
+        class ResourceNotFoundException(Exception):
+            pass
+
+    def __init__(self):
+        self.regs: dict = {}
+        self.tok: dict = {}
+        self.n = 0
+
+    def create_registry(self, **kwargs):
+        token = kwargs["clientToken"]
+        if token in self.tok:  # documented idempotency replay
+            rid = self.tok[token]
+            return {"registryArn": self.regs[rid]["registryArn"]}
+        self.n += 1
+        rid = f"reg-{self.n}"
+        auto = kwargs.get("approvalConfiguration", {}).get("autoApproval", False)
+        arn = f"arn:aws:bedrock-agentcore:us-east-1:000000000000:registry/{rid}"
+        self.regs[rid] = {"registryArn": arn, "autoApproval": auto}
+        self.tok[token] = rid
+        return {"registryArn": arn}
+
+    def get_registry(self, **kwargs):
+        rid = kwargs["registryId"]
+        rec = self.regs.get(rid, {})
+        return {"registryId": rid,
+                "approvalConfiguration": {"autoApproval": rec.get("autoApproval", False)}}
+
+
+def test_client_token_separates_governed_from_ungoverned():
+    """The token must fold in the approval posture, or a governed create can replay an
+    ungoverned one. This is the root cause; the read-back below is the backstop."""
+    gov = registry_live._client_token("registry-governed-gov")
+    auto = registry_live._client_token("registry-autoapprove-gov")
+    assert gov != auto, (
+        "governed and auto-approve creates of the same name derive the same idempotency "
+        "token, so one can replay the other"
+    )
+
+
+def test_governed_create_after_ungoverned_does_not_replay_it(monkeypatch):
+    """The reproduced attack: dev makes an auto-approving registry, then SecOps makes a
+    governed one of the same name. Before the fix these shared a token and the governed
+    call returned the auto-approving ARN with no error."""
+    ctl = _ReplayControl()
+    monkeypatch.setattr(registry_live, "_control", ctl)
+    arn_dev = registry_live.create_registry("gov", auto_approval=True)
+    arn_gov = registry_live.create_registry("gov", auto_approval=False)
+    assert arn_gov != arn_dev, (
+        "the governed create replayed the ungoverned registry — SecOps now holds an "
+        "auto-approving registry it believes is DRAFT-gated"
+    )
+    gov_id = arn_gov.rsplit("/", 1)[-1]
+    assert ctl.regs[gov_id]["autoApproval"] is False
+
+
+def test_read_back_refuses_a_posture_mismatch(monkeypatch):
+    """The backstop, exercised directly: even if a token collision or a name-conflict
+    hands back a registry with the wrong posture, the read-back refuses it. Simulated
+    with a caller-supplied token that forces the collision the seed now prevents."""
+    ctl = _ReplayControl()
+    monkeypatch.setattr(registry_live, "_control", ctl)
+    registry_live.create_registry("gov", auto_approval=True, client_token="x" * 40)
+    with pytest.raises(RegistryLiveError, match="DIFFERENT governance posture"):
+        registry_live.create_registry("gov", auto_approval=False, client_token="x" * 40)
+
+
+def test_read_back_is_silent_when_the_field_is_absent(monkeypatch):
+    """CONTROL: an API version that does not surface approvalConfiguration must not turn
+    every correct create into a false refusal."""
+    ctl = FakeControl(responses={
+        "create_registry": {"registryArn": "arn:aws:...:registry/reg-1"},
+        "get_registry": {"registryId": "reg-1", "status": "ACTIVE"},  # no approvalConfiguration
+    })
+    monkeypatch.setattr(registry_live, "_control", ctl)
+    arn = registry_live.create_registry("gov", auto_approval=False)
+    assert arn == "arn:aws:...:registry/reg-1"
+
+
+def test_correct_governed_create_still_succeeds(monkeypatch):
+    """CONTROL: the read-back must pass a registry whose posture matches the request."""
+    ctl = _ReplayControl()
+    monkeypatch.setattr(registry_live, "_control", ctl)
+    arn = registry_live.create_registry("clean_gov", auto_approval=False)
+    assert arn.endswith("reg-1")
+
+
+# --------------------------------------------------------------------------- #
 # list_records                                                                #
 # --------------------------------------------------------------------------- #
 def test_list_records_returns_registry_records(fake):
@@ -474,6 +569,51 @@ def test_list_records_empty_when_key_absent(monkeypatch):
 
 def test_list_records_wraps_client_error(boom):
     with pytest.raises(RegistryLiveError, match="list_registry_records.*failed"):
+        registry_live.list_records("reg-1")
+
+
+class _PaginatedControl:
+    """A control plane that returns records across THREE pages, threaded by nextToken."""
+
+    def __init__(self):
+        self.pages = [
+            {"registryRecords": [{"name": "a", "status": "APPROVED"}], "nextToken": "p2"},
+            {"registryRecords": [{"name": "b", "status": "DRAFT"}], "nextToken": "p3"},
+            {"registryRecords": [{"name": "c", "status": "APPROVED"}]},  # no nextToken
+        ]
+        self.tokens_seen: list = []
+
+    def list_registry_records(self, **kwargs):
+        token = kwargs.get("nextToken")
+        self.tokens_seen.append(token)
+        if token is None:
+            return self.pages[0]
+        return {"p2": self.pages[1], "p3": self.pages[2]}[token]
+
+
+def test_list_records_paginates(monkeypatch):
+    """INV-REGISTRY-4: EVERY record, across all pages. The old code read page one only,
+    so an approved record on page 3 was absent from the governance listing."""
+    ctl = _PaginatedControl()
+    monkeypatch.setattr(registry_live, "_control", ctl)
+    records = registry_live.list_records("reg-1")
+    assert [r["name"] for r in records] == ["a", "b", "c"], (
+        "list_records did not follow nextToken across all pages"
+    )
+    # the third page's approved record — the one the single-page read would have missed
+    assert {"name": "c", "status": "APPROVED"} in records
+    assert ctl.tokens_seen == [None, "p2", "p3"]
+
+
+def test_list_records_refuses_a_nexttoken_loop(monkeypatch):
+    """A backend echoing the same token must be refused, not looped forever — a
+    governance listing that never returns is its own failure."""
+    class _Looping:
+        def list_registry_records(self, **kwargs):
+            return {"registryRecords": [{"name": "x"}], "nextToken": "SAME"}
+
+    monkeypatch.setattr(registry_live, "_control", _Looping())
+    with pytest.raises(RegistryLiveError, match="repeated nextToken"):
         registry_live.list_records("reg-1")
 
 
