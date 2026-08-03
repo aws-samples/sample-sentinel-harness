@@ -58,23 +58,12 @@ _MIN_GOVERNABLE_LINES = 20
 # (b) it is queued. Both are checkable by a reviewer, which is the point.
 _UNCOVERED: dict[str, str] = {
     # --- QUEUED, NOT YET AUDITED --------------------------------------------------
-    # Round 19 produced this list, then spent itself on `registry_live` (INV-REGISTRY,
-    # a real defect: the DRAFT guarantee was asserted, not verified) and on the four
-    # surviving egress copies it found while there (INV-EGRESS-3). These five were NOT
-    # examined. Saying "under audit" of a module nobody looked at is the same lie this
-    # whole module exists to prevent, so they are labelled as queued and the round that
-    # will take them is left open rather than promised.
-    "tools/harness_ops/handler.py":
-        "QUEUED (round 20 candidate, highest weight at 329 lines): the harness lifecycle "
-        "control plane — claims create/update/invoke/promote are deterministic and never "
-        "model-authored HTTP. Not yet examined.",
-    "sentinel_harness/mcp_server.py":
-        "QUEUED: exposes 20 tools over stdio to any MCP client — the external trust "
-        "boundary, and the only module here reachable by an untrusted peer. Not yet "
-        "examined.",
-    "tools/create_ticket/handler.py":
-        "QUEUED: the SecOps write path, where agent output becomes a durable record. "
-        "Not yet examined.",
+    # Round 19 produced this list; round 20 audited six of its entries and each yielded a
+    # confirmed defect and an invariant — harness_ops (INV-OPS-6), mcp_server (INV-MCP-1),
+    # create_ticket (INV-TICKET-1), observability (INV-METRIC-1 + INV-COERCE), tracing
+    # (INV-TRACE-1) and logutil (now owns INV-METRIC-1's sink and INV-COERCE's coercer).
+    # They are gone from this list because they are now covered — the map tracking
+    # reality, which is the whole point. What remains is genuinely not yet examined.
     "tools/web_search/handler.py":
         "QUEUED for BEHAVIOUR: round 19 fixed its egress copy (INV-EGRESS-3), but that "
         "invariant governs the shared parser, not this handler's own text-only / bounded "
@@ -84,18 +73,8 @@ _UNCOVERED: dict[str, str] = {
         "has not been re-derived with the dimensions round 14 skipped.",
 
     # --- ARGUED: no security-relevant decision ------------------------------------
-    "sentinel_harness/logutil.py":
-        "logger construction only — it makes no decision. Round 19 did find that its "
-        "`propagate = False` breaks any `caplog` assertion elsewhere in the suite "
-        "(see INV-REGISTRY), which is a testing hazard, not a security decision.",
     "sentinel_harness/benchmark_models.py":
         "model metadata tables (ids, context windows, prices) — data, not logic",
-    "sentinel_harness/observability.py":
-        "emits spans and metrics; a defect misreports telemetry rather than changing a "
-        "security decision. NOT checked for leaking secrets into span attributes, which "
-        "would change this classification — queued with the others.",
-    "sentinel_harness/tracing.py":
-        "the OTEL exporter wiring; same reasoning, and the same unchecked leak question",
     "sentinel_harness/benchmark.py":
         "a model-comparison harness whose scores inform a human's model choice; it gates "
         "nothing automatically. That reading is from the code, not from an audit.",
