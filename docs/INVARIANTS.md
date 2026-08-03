@@ -698,6 +698,7 @@ modelled, not when it merely has not been decoded yet.
 | **INV-OPS-3** | The requested `finding_type` is verified against the returned findings, not stamped onto them. A backend that ignores the filter had unrelated findings relabelled, so an operator triaging "all public_s3 findings" would act on `mfa_disabled` records under the wrong heading. | `ops_query._normalize_live_reply` | `test_r15_stopping_decisions.py::TestOpsQueryLiveReplyFidelity::test_findings_of_another_type_are_not_relabelled` |
 | **INV-OPS-4** | A single-account query verifies the reply is about that account. The same relabelling defect INV-BOUNDARY-4 found in `nvd_lookup`, one selector over: another account's footprint was reported under the requested id. | `ops_query._normalize_live_reply` | `test_r15_stopping_decisions.py::TestOpsQueryLiveReplyFidelity::test_another_accounts_footprint_is_not_reported_under_the_requested_id` |
 | **INV-OPS-5** | The SSRF guard holds for the URL actually connected to, and recognizes every spelling of a forbidden address. Two reproduced bypasses: (a) `ipaddress.ip_address()` only parses dotted-quad/standard IPv6, so `http://2852039166/` and `http://0xA9FEA9FE/` — both 169.254.169.254 — fell through as if they were DNS names; (b) a `302` walked the request past the guard entirely, and urllib re-sends request headers to the redirect target, so the `Authorization: Bearer` credential leaked to whatever host the backend named. | `ops_query._parse_ip_literal` / `_NoRedirect` | `test_r15_stopping_decisions.py::TestOpsQuerySsrfGuard` |
+| **INV-OPS-6** | `harness_ops` refuses a request carrying raw API-level keys (`harnessName`, `harnessArn`, `allowedTools`, `executionRoleArn`, `systemPrompt`, `messages`, `maxIterations`, …). This is INV-FACTORY-1 on the control plane. `core.create_harness` ends `args.update(kw)` and `core.invoke` `kw.update(overrides)`, so a passthrough key WON over everything the handler validated: `harnessName` beat the validated `name`, and `harnessArn` retargeted an invoke to a DIFFERENT harness while `allowedTools:['*']`/`maxIterations` stripped that harness's limits — handler returned `ok:True`. The guard is at the ONE dispatch point, not the two actions that were found, because four actions forward params and a fifth would inherit the hole. | `harness_ops._reject_api_level_keys` | `test_harness_ops.py::test_a_raw_api_level_key_is_refused` |
 
 `ops_query` survived the OFFLINE path and the selector semantics; it did not survive
 the live seam. That gap is a method note, not a footnote: I recorded the tool as
@@ -814,6 +815,8 @@ checking it.
 |---|---|---|---|
 | **INV-REGISTRY-1** | `create_*_record` REFUSES any status that is not `DRAFT` or `CREATING`. It used to send `approvalConfiguration` and then return whatever status came back, so `ACTIVE` / `APPROVED` / `LIVE` / `""` / a missing field were all reported as a governed record. Reproduced across all five. The gap is structural: `approvalConfiguration` is set on the REGISTRY and `CreateRegistryRecord` cannot see it, so a `registry_id` naming an auto-approving registry, an API version that ignores the field, or a partition with different behaviour each produce a live record while the caller is told it is DRAFT. INV-BOUNDARY-5's rule applies — "we could not tell" must never render as the safe answer. | `registry_live._create_record` | `test_registry_live.py::test_create_record_refuses_an_already_live_status`, `::test_create_record_refuses_a_reply_with_no_status` |
 | **INV-REGISTRY-2** | `create_registry(auto_approval=True)` WARNS. Creating an ungoverned registry stays possible — an adopter may genuinely want it for a throwaway dev registry — but never silently, because every record in it goes live with no human step. The governance-safe default emits nothing, so the warning that matters is not buried in noise. | `registry_live.create_registry` | `test_registry_live.py::test_auto_approval_registry_warns`, `::test_default_registry_creation_does_not_warn` |
+| **INV-REGISTRY-3** | The idempotency token distinguishes a GOVERNED create from an ungoverned one, AND `create_registry` reads the posture back. `clientToken` is `idempotencyToken:true` ("If this token matches a previous request, the service ignores the request"), and the seed was a pure function of the NAME — it ignored `auto_approval`, and `_client_token` collapses the legal name chars `_./-` all to `-` (8 legal names → 2 tokens). So a governed create issued after an ungoverned one of the same name REPLAYED the auto-approving registry's ARN, no error: SecOps believes it holds a DRAFT-gated registry and holds the ungoverned one. The seed now folds in the posture, and `_assert_approval_posture` reads `GetRegistry.approvalConfiguration` back and refuses a mismatch (covering caller-supplied tokens and name-conflict resolution too). | `registry_live.create_registry` / `_assert_approval_posture` | `test_registry_live.py::test_governed_create_after_ungoverned_does_not_replay_it`, `::test_read_back_refuses_a_posture_mismatch` |
+| **INV-REGISTRY-4** | `list_records` returns EVERY record, across all pages. It read only page one — one `list_registry_records` call, ignoring `nextToken` — while its docstring said "every record" and its caller is a GOVERNANCE listing. An approved (live) record beyond the first page was absent from the audit view, which read as complete: a blind spot in the one direction that matters, a live capability you cannot see. Now paginates on `nextToken`, refusing a repeated token rather than looping. | `registry_live.list_records` | `test_registry_live.py::test_list_records_paginates` |
 
 `CREATING` is accepted deliberately: it is the transient state before the service settles
 a record into `DRAFT`, and refusing it would break every real call that catches the
@@ -829,3 +832,43 @@ earlier test happened to call `configure_logging()` first. Found exactly that wa
 tests attach a handler to the logger under test, which is the assertion that matches the
 claim: *this warning was emitted*, not *this warning reached the root logger*. A control
 proves the collector is not simply empty.
+
+---
+
+## INV-MCP — the stdio trust boundary is governed, or it refuses to serve
+
+`mcp_server.py` exposes tools over stdio to any MCP client — the one module reachable by
+an untrusted peer. Its job is to serve a REGISTRY-GOVERNED subset. Round 20 found it
+served everything when it could not read the registry, and that this was the DEFAULT on
+the packaged install path.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-MCP-1** | An unreadable registry is REFUSED, not treated as "no filtering". `_load_approved_set` swallowed every exception and returned an empty set, and the gate read `if approved and tool not in approved` — so an empty set made the condition falsy and every tool in `tools/` was exposed, pending ones included. Reproduced: the broken path served 18 tools vs 17, the extra being `web_search`, the only non-approved entry and the one tool that fetches attacker-influenceable content. Now raises `GovernanceUnavailable`; only the explicit `SENTINEL_MCP_ALLOW_PENDING=1` escape hatch may proceed ungoverned, and it warns. An empty-but-READ approved set correctly excludes everything. | `mcp_server._load_approved_set` / `_discover_tools` | `test_mcp_server.py::TestGovernanceGate` |
+| **INV-MCP-2** | The registry is found regardless of CWD. `DEFAULT_REGISTRY_PATH` is CWD-relative and the wheel shipped no `registry/` at all (verified by building one), so `pip install && sentinel-mcp` from any non-checkout dir could not read it — and combined with the pre-fix INV-MCP-1, failed open on EVERY packaged install. The registry is now packaged as `sentinel_harness/data/tools.yaml` AND `load_yaml` falls back to that installed copy. Two independent fixes because data-only packaging is easy to drop again (it was dropped once, for `connectors`) and a path fallback with nothing to find is useless. | `registry._resolve_registry_path` + `[tool.setuptools.package-data]` | `test_registry.py::test_packaged_registry_resolves`, `test_packaging.py::test_registry_yaml_is_declared_as_package_data` |
+| **INV-MCP-3** | The PyYAML-fallback parser does not flatten a nested key onto a tool item. `_mini_yaml` wrote `current[key]=value` for every `k:v` line regardless of depth, so a nested `status: approved` (in a documented example, a sub-config) overwrote a top-level `status: pending` — a fail-OPEN promotion, and PyYAML resolves the same file correctly, so the two parsers disagreed on an approval decision in the permissive direction. Now tracks the item's key indent and skips deeper sub-maps. | `registry._mini_yaml` | `test_registry_minyaml.py::test_mini_yaml_does_not_flatten_a_nested_status`, `::test_mini_yaml_agrees_with_pyyaml_on_the_nested_case` |
+
+---
+
+## INV-TICKET / INV-TRACE / INV-METRIC — the write path, the tracer, the meter
+
+Three more zero-invariant modules, one finding each. None gates promotion; each is a way
+the system misreports or leaks.
+
+| ID | Invariant | Owner | Enforced by |
+|---|---|---|---|
+| **INV-TICKET-1** | The tracker URL is never echoed into a response. `handler` maps a backend exception's text straight into the response `message`, and `_create_live` raised `... POST to {url!r} ...`. The module's own docstring promises the API key is "never returned in responses", and a tracker URL routinely carries a token in the query string or userinfo — reproduced, a `token=...` param came back to the caller. Only `scheme://host[:port]`, userinfo stripped, is named. | `create_ticket._safe_endpoint` | `test_create_ticket.py::test_url_credential_is_not_echoed` |
+| **INV-TRACE-1** | A span pops the stack BEFORE emitting, and a raising sink cannot corrupt nesting or mask the traced error. `self._emit(record)` ran before `self._stack.pop()`, so a sink that raised (a throttled `PutLogEvents` suffices) skipped the pop: the span's id stayed on the stack and every later sibling was mis-parented under it, while the sink's exception replaced the exception the span was tracing. Reproduced. Pop is now first, emit is isolated in a try/except that reports out-of-band. Telemetry must not alter control flow or the trace it records. | `tracing.Tracer.span` | `test_tracing.py::test_a_raising_sink_does_not_corrupt_nesting`, `::test_a_raising_sink_does_not_mask_the_body_error` |
+| **INV-METRIC-1** | A metered metric is emitted as a BARE top-level JSON line. CloudWatch's `FilterPattern.exists("$.tokens")` matches only a message that IS a JSON object (first char `{`), but `core.metered_invoke` defaulted its sink to a text logger that prepended `INFO sentinel_harness.telemetry: ` — so no metered metric ever matched the filter and no metric or alarm fired. Reproduced. A dedicated `get_metric_sink` writes the line verbatim, no level/logger envelope. | `logutil.get_metric_sink` / `core.metered_invoke` | `test_observability.py::test_metric_sink_emits_bare_json`, `test_logutil.py::test_metric_sink_has_no_envelope` |
+
+### INV-COERCE has one implementation now (round 20)
+
+Three of the round-20 findings were the string-truthiness trap (`bool("false") is True`)
+on an external boolean: a judge's pass flag (`observability.emit_eval_score`), a gateway
+header-passthrough flag (`gateway.lambda_interceptor`). The canonical coercer moved to
+`logutil.coerce_bool` — the lowest-level, zero-dependency module — so observability,
+gateway and `connectors.base` all delegate to the SAME function object rather than three
+copies that agree until one is edited. It could not live in `connectors.base` (its old
+home) because that module pulls in every backend, so a low-level caller importing it
+created a cycle. `test_r17_coercion_mechanized.py::TestLocalCoercionHelpersAgree::test_the_canonical_coercer_has_one_implementation`
+pins the single-object identity.

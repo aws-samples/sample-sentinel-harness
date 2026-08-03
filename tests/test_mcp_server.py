@@ -14,7 +14,12 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from sentinel_harness.mcp_server import _discover_tools, _invoke_tool, _tool_input_schema
+from sentinel_harness.mcp_server import (
+    GovernanceUnavailable,
+    _discover_tools,
+    _invoke_tool,
+    _tool_input_schema,
+)
 
 
 class TestToolDiscovery:
@@ -70,6 +75,63 @@ class TestToolDiscovery:
         }
         for name in expected_safe:
             assert name in tools, f"Expected approved tool {name} not discovered"
+
+
+class TestGovernanceGate:
+    """INV-MCP-1: an unreadable registry is REFUSED, never treated as 'no filtering'."""
+
+    def test_unreadable_registry_refuses_by_default(self, monkeypatch):
+        """The reproduced fail-open: with the registry unreachable, the gate used to
+        expose every tool. It must now raise rather than serve ungoverned."""
+        def boom(*a, **k):
+            raise FileNotFoundError("tools.yaml gone")
+
+        # _load_approved_set does `from .registry import load_registry` at call time, so
+        # patch the source symbol by string target (keeps one import style; CodeQL flags
+        # mixing `import x` with `from x import`).
+        monkeypatch.setattr("sentinel_harness.registry.load_registry", boom)
+        with pytest.raises(GovernanceUnavailable):
+            _discover_tools()
+
+    def test_unreadable_registry_with_allow_pending_serves_and_warns(self, monkeypatch):
+        import logging
+
+        def boom(*a, **k):
+            raise FileNotFoundError("tools.yaml gone")
+
+        monkeypatch.setattr("sentinel_harness.registry.load_registry", boom)
+        monkeypatch.setenv("SENTINEL_MCP_ALLOW_PENDING", "1")
+        # capture the library warning without relying on propagation
+        records: list = []
+
+        class _C(logging.Handler):
+            def emit(self, r):
+                records.append(r)
+
+        logger = logging.getLogger("sentinel_harness")
+        h = _C(level=logging.WARNING)
+        logger.addHandler(h)
+        try:
+            tools = _discover_tools()  # must NOT raise under the escape hatch
+        finally:
+            logger.removeHandler(h)
+        assert tools, "the escape hatch should still serve tools"
+        assert any("EVERY tool" in r.getMessage() for r in records), (
+            "serving ungoverned under the escape hatch must warn"
+        )
+
+    def test_empty_approved_set_excludes_everything(self, monkeypatch):
+        """A READ but empty approved set is a governance DECISION: exclude all, not
+        expose all. This is the case the old `if approved and ...` truthiness skipped."""
+        class _Empty:
+            _entries: dict = {}
+
+        monkeypatch.setattr(
+            "sentinel_harness.registry.load_registry", lambda *a, **k: _Empty()
+        )
+        # not allow_pending, not expose_control
+        tools = _discover_tools()
+        assert tools == {}, f"an empty approved set exposed tools: {sorted(tools)}"
 
 
 class TestToolInputSchema:

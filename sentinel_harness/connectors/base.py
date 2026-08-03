@@ -48,20 +48,14 @@ NEUTRAL_EVENT_FIELDS = (
 # String tokens a backend uses for a truthy boolean. Real SIEMs commonly
 # JSON-serialize booleans as strings, and `bool("false")` is True (any non-empty
 # string is truthy) — so a naive bool() would flip a genuine alert to a false
-# positive and it might be dropped. Only these tokens (case-insensitive) are True.
-_TRUE_TOKENS = frozenset({"true", "1", "yes", "y", "t"})
-
-
-def _coerce_bool(value: Any) -> bool:
-    """Coerce a backend truthiness value to bool WITHOUT the string-truthiness trap.
-
-    ``True``/``1`` → True; a string is True only if it is a recognized true token
-    ("true"/"1"/"yes"…), so the common string ``"false"``/``"0"`` correctly maps to
-    False (audited: bool("false") is True). Anything else falls back to Python
-    truthiness for non-string values only."""
-    if isinstance(value, str):
-        return value.strip().lower() in _TRUE_TOKENS
-    return bool(value)
+# positive and it might be dropped.
+#
+# The implementation moved to ``logutil.coerce_bool`` (round 20) so observability,
+# gateway and this module share ONE coercer instead of three copies that could drift —
+# the recurrence INV-COERCE keeps guarding against. It could not live HERE because this
+# module pulls in every backend, so a low-level caller importing it created a cycle.
+# Re-exported under the original private name to keep every existing call site working.
+from ..logutil import coerce_bool as _coerce_bool  # noqa: F401  (re-export)
 
 
 def neutral_event(record: Dict[str, Any]) -> Dict[str, Any]:

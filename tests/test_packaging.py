@@ -84,3 +84,41 @@ def test_find_namespaces_enabled(pyproject: dict) -> None:
 @pytest.mark.parametrize("tree", REQUIRED_TREES)
 def test_required_tree_exists(tree: str) -> None:
     assert os.path.isdir(os.path.join(_REPO_ROOT, tree)), f"{tree}/ missing from repo"
+
+
+# --------------------------------------------------------------- INV-MCP-2: data files
+def test_registry_yaml_is_declared_as_package_data(pyproject: dict) -> None:
+    """The governance registry must ship in the wheel as package DATA.
+
+    `packages.find` above ships CODE (`.py`), not a `.yaml`. Round 20: the wheel shipped
+    no `registry/` at all, so a pip-installed `sentinel-mcp` could not read the registry
+    and — combined with the pre-fix fail-open gate — served every tool ungoverned. A
+    dropped data file fails SILENTLY and permissively, unlike the dropped `connectors`
+    subpackage this file already guards, which failed loudly. So it needs its own guard.
+    """
+    pkg_data = pyproject.get("tool", {}).get("setuptools", {}).get("package-data", {})
+    patterns = pkg_data.get("sentinel_harness", [])
+    assert any("yaml" in p for p in patterns), (
+        "pyproject [tool.setuptools.package-data] must ship sentinel_harness/data/*.yaml "
+        f"— the governance registry is not code and packages.find will not carry it. "
+        f"Got package-data.sentinel_harness={patterns!r}"
+    )
+
+
+def test_packaged_registry_copy_exists_and_matches_source() -> None:
+    """The packaged copy must exist AND be identical to the canonical `registry/`.
+
+    Two copies can drift — the INV-EGRESS-3 lesson. This is the tripwire that they have
+    not. When they must differ, this test is where the reason gets recorded.
+    """
+    canonical = os.path.join(_REPO_ROOT, "registry", "tools.yaml")
+    packaged = os.path.join(_REPO_ROOT, "sentinel_harness", "data", "tools.yaml")
+    assert os.path.isfile(packaged), (
+        "sentinel_harness/data/tools.yaml is missing — the wheel will ship no registry"
+    )
+    with open(canonical, encoding="utf-8") as a, open(packaged, encoding="utf-8") as b:
+        assert a.read() == b.read(), (
+            "registry/tools.yaml and the packaged sentinel_harness/data/tools.yaml have "
+            "drifted — regenerate the packaged copy (cp registry/tools.yaml "
+            "sentinel_harness/data/tools.yaml) or record why they must differ"
+        )

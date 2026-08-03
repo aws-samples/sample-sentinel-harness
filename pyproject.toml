@@ -32,6 +32,14 @@ build-backend = "setuptools.build_meta"
 include = ["sentinel_harness*", "intake*", "tools*", "mockdata*"]
 namespaces = true
 
+# Data files, NOT code. Round 20: `registry/tools.yaml` is the governance decision
+# (which tools are approved) and it was not in the wheel at all, so a pip-installed
+# `sentinel-mcp` could not read it — and mcp_server treated the unreadable registry as
+# "no filtering", exposing every pending tool. A dropped data file fails SILENTLY and
+# permissively, unlike the dropped `connectors` subpackage above, which failed loudly.
+[tool.setuptools.package-data]
+sentinel_harness = ["data/*.yaml"]
+
 [tool.ruff]
 target-version = "py310"
 line-length = 120

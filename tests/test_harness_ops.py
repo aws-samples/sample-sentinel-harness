@@ -118,9 +118,20 @@ def test_create_routes_to_create_harness(stub_core):
 
 
 def test_update_pops_harness_id_and_forwards_rest(stub_core):
+    """CONTRACT CHANGE (round 20, INV-OPS-6): the payload, not the intent.
+
+    This used to demonstrate "forwards rest" with `maxIterations: 7` — a raw API-level
+    key, which is now refused. The INTENT (harness_id becomes the positional arg, the
+    remaining params are forwarded verbatim) is unchanged and still asserted; only the
+    example key moved to the documented snake_case form.
+
+    `core.update_harness` takes `max_iterations` as a named parameter, so the camelCase
+    spelling was never the supported way to set it — it was only the way to reach
+    `args.update(kw)` and beat whatever this handler had validated.
+    """
     r = ops.handler(
         {"action": "update",
-         "params": {"harness_id": "h-abc", "system_prompt": "new", "maxIterations": 7}},
+         "params": {"harness_id": "h-abc", "system_prompt": "new", "max_iterations": 7}},
         None)
     assert r["ok"] is True and r["action"] == "update"
     assert r["harnessId"] == "h-abc"
@@ -128,7 +139,55 @@ def test_update_pops_harness_id_and_forwards_rest(stub_core):
     # harness_id is the first positional arg; it is NOT left in kwargs.
     assert call["args"] == ("h-abc",)
     assert "harness_id" not in call["kwargs"]
-    assert call["kwargs"] == {"system_prompt": "new", "maxIterations": 7}
+    assert call["kwargs"] == {"system_prompt": "new", "max_iterations": 7}
+
+
+@pytest.mark.parametrize("action,params", [
+    ("create", {"name": "ok_name", "system_prompt": "p", "harnessName": "other"}),
+    ("create", {"name": "ok_name", "system_prompt": "p", "allowedTools": ["*"]}),
+    ("create", {"name": "ok_name", "system_prompt": "p",
+                "executionRoleArn": "arn:aws:iam::000000000000:role/not_resolved"}),
+    ("create", {"name": "ok_name", "system_prompt": "p", "systemPrompt": "override"}),
+    ("update", {"harness_id": "h-abc", "maxIterations": 9999}),
+    ("update", {"harness_id": "h-abc", "harnessId": "h-DIFFERENT"}),
+    ("invoke", {"arn": "arn:approved", "text": "hi", "harnessArn": "arn:different"}),
+    ("invoke", {"arn": "arn:approved", "text": "hi", "allowedTools": ["*"]}),
+    ("invoke", {"arn": "arn:approved", "text": "hi", "messages": [{"role": "user"}]}),
+    ("wait_ready", {"harness_id": "h-abc", "timeoutSeconds": 1}),
+])
+def test_a_raw_api_level_key_is_refused(stub_core, action, params):
+    """INV-OPS-6: the control plane is deterministic by contract.
+
+    `core.create_harness` ends with `args.update(kw)` and `core.invoke` with
+    `kw.update(overrides)`, so ANY passthrough key wins over what this handler computed.
+    Reproduced end to end before the fix: `harnessName` beat the validated `name`, and
+    `harnessArn` retargeted an invoke to a harness the caller never named — with the
+    handler returning `ok: True`.
+    """
+    r = ops.handler({"action": action, "params": params}, None)
+    assert r["ok"] is False, f"{action} accepted a raw API key: {params}"
+    assert r["error"] == "validation_error"
+    assert "raw API-level key" in r["message"]
+    # And nothing reached the control plane. Only the LIST-valued entries are call
+    # logs — `stub_core["_control"]` is the fake client object itself and is always
+    # truthy, so `any(stub_core.values())` would pass vacuously (it did, first try).
+    calls = {op: log for op, log in stub_core.items()
+             if isinstance(log, list) and log}
+    assert not calls, f"a call was made despite the refusal: {calls}"
+
+
+@pytest.mark.parametrize("action,params", [
+    ("create", {"name": "ok_name", "system_prompt": "p", "max_iterations": 5}),
+    ("create", {"name": "ok_name", "system_prompt": "p", "allowed_tools": ["siem_query"]}),
+    ("update", {"harness_id": "h-abc", "max_iterations": 5}),
+    ("invoke", {"arn": "arn:approved", "text": "hi", "actor_id": "analyst"}),
+    ("wait_ready", {"harness_id": "h-abc"}),
+])
+def test_the_documented_snake_case_params_still_work(stub_core, action, params):
+    """CONTROL. A denylist that also blocks the supported spelling would be routed
+    around, and every legitimate caller is on the snake_case form."""
+    r = ops.handler({"action": action, "params": params}, None)
+    assert r["ok"] is True, f"{action} refused a legitimate param set {params}: {r}"
 
 
 def test_update_does_not_mutate_caller_params(stub_core):

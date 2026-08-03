@@ -114,11 +114,23 @@ def create_registry(
             "will go LIVE with NO human approval step. The DRAFT-until-approved gate "
             "is waived for this registry.", name,
         )
+    # INV-REGISTRY-3: the idempotency token must distinguish a GOVERNED request from an
+    # ungoverned one. `clientToken` is `idempotencyToken: true` in the service model —
+    # "If this token matches a previous request, the service ignores the request, but
+    # doesn't return an error." The old seed was `f"registry-{name}"`, a pure function of
+    # the NAME: it ignored `auto_approval` entirely, and `_client_token` collapses the
+    # legal name characters `_ . / -` all to `-` (8 legal names -> 2 tokens). So a
+    # governed `create_registry(name, auto_approval=False)` issued after an ungoverned
+    # `create_registry(name, auto_approval=True)` sent a byte-identical token and, on
+    # replay, returned the AUTO-APPROVING registry's ARN with no error — SecOps believes
+    # it owns a DRAFT-gated registry and holds the ungoverned one. Folding the approval
+    # posture into the seed means the two can never share a token.
+    posture = "autoapprove" if auto_approval else "governed"
     args: Dict[str, Any] = {
         "name": name,
         "authorizerType": authorizer_type,
         "approvalConfiguration": {"autoApproval": auto_approval},
-        "clientToken": client_token or _client_token(f"registry-{name}"),
+        "clientToken": client_token or _client_token(f"registry-{posture}-{name}"),
     }
     if description:
         args["description"] = description
@@ -129,7 +141,48 @@ def create_registry(
     arn = resp.get("registryArn")
     if not arn:
         raise RegistryLiveError(f"create_registry returned no registryArn: {resp!r}")
+    # INV-REGISTRY-3: VERIFY the posture, do not trust the request. The token guard above
+    # closes the collision this module can cause, but it cannot cover a caller-supplied
+    # `client_token`, a name-conflict resolved by the service BEFORE idempotency, or any
+    # other path by which the ARN we hold names a registry whose approvalConfiguration is
+    # not what we asked for. The only trustworthy check is to read it back — same
+    # "verify, don't assert" shape as the INV-REGISTRY-1 fix one layer down.
+    _assert_approval_posture(arn, auto_approval)
     return arn
+
+
+def _assert_approval_posture(arn: str, expected_auto_approval: bool) -> None:
+    """Read the registry back and refuse if its autoApproval is not what we requested.
+
+    A best-effort guard: if ``GetRegistry`` does not surface ``approvalConfiguration``
+    we do NOT fail (the field is optional in some API versions, and a false refusal of a
+    correctly-created registry would be its own outage). But when the field IS present
+    and disagrees, that is the exact confused-registry this defends against, and it is
+    refused — INV-BOUNDARY-5's rule that "we could not tell" must not silently pass
+    applies only where we genuinely could tell.
+    """
+    registry_id = arn.rsplit("/", 1)[-1] if "/" in arn else arn
+    try:
+        info = get_registry(registry_id)
+    except RegistryLiveError:
+        # get_registry already wraps+surfaces; a read-back failure should not mask the
+        # create, so we let the ARN stand rather than inventing a failure. The token
+        # guard above is still in force for the collision this module can cause.
+        return
+    cfg = info.get("approvalConfiguration")
+    if not isinstance(cfg, dict) or "autoApproval" not in cfg:
+        return  # the field is not being reported; nothing to verify against
+    actual = cfg["autoApproval"]
+    if bool(actual) != bool(expected_auto_approval):
+        raise RegistryLiveError(
+            f"create_registry({registry_id!r}) requested autoApproval="
+            f"{expected_auto_approval!r} but the registry actually has "
+            f"autoApproval={actual!r}. The ARN returned names a registry with a "
+            f"DIFFERENT governance posture than requested — most likely an idempotency "
+            f"replay of an earlier create with the opposite posture, or a name-conflict "
+            f"resolved to an existing registry. Refusing rather than reporting a "
+            f"governed registry that is not one."
+        )
 
 
 def get_registry(registry_id: str) -> Dict[str, Any]:
@@ -251,14 +304,42 @@ def _create_record(
 
 
 def list_records(registry_id: str) -> List[Dict[str, Any]]:
-    """List every record in the Registry (name/type/status/arn)."""
-    try:
-        resp = _control.list_registry_records(registryId=registry_id)
-    except Exception as exc:
-        raise RegistryLiveError(
-            f"list_registry_records({registry_id!r}) failed: {exc}"
-        ) from exc
-    return resp.get("registryRecords", [])
+    """List EVERY record in the Registry (name/type/status/arn), across all pages.
+
+    INV-REGISTRY-4: this used to read only the first page — one
+    ``list_registry_records`` call, returning ``resp.get("registryRecords", [])`` and
+    ignoring ``nextToken``. The docstring said "every record" and the caller is a
+    GOVERNANCE listing, so an approved (live) record beyond the first page was simply
+    absent from the audit view, which read as complete. A truncated governance listing
+    is a silent blind spot in exactly the direction that matters: a live capability you
+    cannot see. The service models both ``nextToken`` and ``maxResults`` on this op, so
+    pagination is the contract, not an optimization.
+    """
+    records: List[Dict[str, Any]] = []
+    next_token: Optional[str] = None
+    seen_tokens: set[str] = set()
+    while True:
+        kwargs: Dict[str, Any] = {"registryId": registry_id}
+        if next_token:
+            kwargs["nextToken"] = next_token
+        try:
+            resp = _control.list_registry_records(**kwargs)
+        except Exception as exc:
+            raise RegistryLiveError(
+                f"list_registry_records({registry_id!r}) failed: {exc}"
+            ) from exc
+        records.extend(resp.get("registryRecords", []))
+        next_token = resp.get("nextToken")
+        if not next_token:
+            return records
+        # A backend that echoes the same token would loop forever; refuse rather than
+        # hang, since a governance listing that never returns is its own failure.
+        if next_token in seen_tokens:
+            raise RegistryLiveError(
+                f"list_registry_records({registry_id!r}) returned a repeated nextToken "
+                f"{next_token!r}; refusing to loop. The listing may be incomplete."
+            )
+        seen_tokens.add(next_token)
 
 
 def submit_for_approval(registry_id: str, record_id: str) -> Dict[str, Any]:

@@ -211,3 +211,50 @@ def test_trace_to_dict_json_able_with_nonprimitive_attr():
     d = tr.trace_to_dict()
     json.dumps(d)  # must NOT raise (non-primitive attrs str-coerced)
     assert isinstance(d["spans"][0]["attributes"]["ts"], str)
+
+
+# --------------------------------------------------------------------------- #
+# INV-TRACE-1: a raising sink cannot corrupt nesting or mask the traced error  #
+# --------------------------------------------------------------------------- #
+def test_a_raising_sink_does_not_corrupt_nesting():
+    """A sink that raises on emit must not skip the stack pop. Before the fix, the
+    span's id stayed on the stack and every later sibling was mis-parented under it."""
+    calls = {"n": 0}
+
+    def flaky(_line):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("sink down (e.g. throttled PutLogEvents)")
+
+    tr = T.Tracer("run", log=flaky)
+    with tr.span("first"):
+        pass
+    assert tr._stack == [], "the stack was not popped after a raising sink"
+
+    with tr.span("second"):
+        pass
+    second = [s for s in tr.spans if s.name == "second"][0]
+    assert second.parent_span_id is None, (
+        "second span was mis-parented under first — the raising sink corrupted the stack"
+    )
+
+
+def test_a_raising_sink_does_not_mask_the_body_error():
+    """The body's own exception must propagate, not the sink's."""
+    def flaky(_line):
+        raise RuntimeError("sink down")
+
+    tr = T.Tracer("run", log=flaky)
+    with pytest.raises(ValueError, match="the real error"):
+        with tr.span("boom"):
+            raise ValueError("the real error the span traced")
+
+
+def test_a_healthy_sink_still_emits_every_span():
+    """CONTROL: the isolation must not swallow emits when the sink is fine."""
+    emitted = []
+    tr = T.Tracer("run", log=emitted.append)
+    with tr.span("a"):
+        with tr.span("b"):
+            pass
+    assert len(emitted) == 2, "a healthy sink should emit both spans"

@@ -341,3 +341,41 @@ def test_source_has_no_hardcoded_secrets_or_account_ids():
     for m in re.findall(r"\b\d{12}\b", src):
         assert m == "000000000000", f"hardcoded account id: {m}"
     assert "sk-" not in src and "ghp_" not in src
+
+
+# --------------------------------------------------------------------------- #
+# INV-TICKET-1: the tracker URL (which may carry a token) is never echoed      #
+# --------------------------------------------------------------------------- #
+def test_url_credential_is_not_echoed(monkeypatch):
+    """A token in CREATE_TICKET_URL must not reach the caller via the error message.
+
+    The handler maps a backend exception's text into the response `message`, and the
+    live path raised with the URL interpolated. A tracker URL routinely carries a token
+    in the query string or userinfo — echoing it verbatim leaks a credential to any MCP
+    client, contradicting the module's own "never returned in responses" promise.
+    """
+    monkeypatch.setenv("CREATE_TICKET_LIVE", "1")
+    monkeypatch.setenv(
+        "CREATE_TICKET_URL",
+        "https://user:pw@jira.example.com/rest/api?os_authType=basic&token=SUPERSECRET123",
+    )
+    url = "https://user:pw@jira.example.com/rest/api?os_authType=basic&token=SUPERSECRET123"
+    out = create_ticket.handler(_valid_event(), None)
+    msg = str(out.get("message", ""))
+    assert "SUPERSECRET123" not in msg, f"token leaked into response: {msg}"
+    assert "user:pw" not in msg, f"userinfo leaked into response: {msg}"
+    # The redaction itself is asserted structurally, against the computed safe endpoint —
+    # NOT with `"jira.example.com" in msg`, which is the incomplete-url-substring pattern
+    # CodeQL (rightly) flags, and "substring standing in for structure" is a recurring
+    # defect class here. `_safe_endpoint` is scheme+host only; that exact string is what
+    # names the backend, and it must appear while the secret parts do not.
+    safe = create_ticket._safe_endpoint(url)
+    assert safe == "https://jira.example.com"
+    assert safe in msg, f"the safe endpoint was not named: {msg}"
+
+
+def test_safe_endpoint_strips_path_query_and_userinfo():
+    f = create_ticket._safe_endpoint
+    assert f("https://user:pw@host.example.com:8443/x?token=t") == "https://host.example.com:8443"
+    assert f("https://host.example.com/rest?token=t") == "https://host.example.com"
+    assert f("not a url") == "<non-http endpoint>"

@@ -401,10 +401,15 @@ def invoke_and_meter(harness_arn: str, session_id: str, text: str, *,
     lines wherever the MetricFilter reads. Returns the same dict as :func:`invoke`;
     on an invoke exception it emits an error metric and re-raises (never swallows)."""
     from . import observability as _obs
-    from .logutil import get_logger
+    from .logutil import get_metric_sink
 
     if log is None:
-        log = get_logger("sentinel_harness.telemetry").info
+        # INV-METRIC-1: the metric sink writes BARE JSON lines, not
+        # `INFO sentinel_harness.telemetry: {...}`. The CloudWatch JSON metric filter
+        # (`$.tokens`) matches only a message that IS a top-level JSON object, so the old
+        # text-logger default made every metered metric invisible to the filter — no
+        # metric, no alarm. `get_metric_sink()` emits the line verbatim on stderr.
+        log = get_metric_sink()
 
     t0 = time.perf_counter()
     try:

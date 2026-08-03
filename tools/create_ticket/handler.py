@@ -237,10 +237,39 @@ def _create_live(fields: Dict[str, Any]) -> Dict[str, Any]:
     # The live client is intentionally not implemented here: writing to a real
     # tracker is a HITL-gated, later-milestone action. Raising keeps the contract
     # honest — we never fabricate a "created" real ticket.
+    #
+    # INV-TICKET-1: the URL is NOT echoed. `handler` maps this exception's text straight
+    # into the response `message` returned to the MCP client, and this module's own
+    # docstring promises the API key is "never hardcoded, logged, or returned in
+    # responses". A tracker URL routinely carries a token — in the query string
+    # (`?os_authType=basic&token=...`) or in userinfo (`https://user:pass@host`) — so
+    # emitting it verbatim leaks a credential to any caller. Reproduced: a `token=...`
+    # query param came back in the response. Only the scheme+host, with userinfo
+    # stripped, is safe to name.
     raise NotImplementedError(
         "live ticketing backend not wired yet; a human-in-the-loop approval must "
-        f"gate the real POST to {url!r} before setting CREATE_TICKET_LIVE=1"
+        f"gate the real POST to the configured tracker at {_safe_endpoint(url)} "
+        "before setting CREATE_TICKET_LIVE=1"
     )
+
+
+def _safe_endpoint(url: str) -> str:
+    """scheme://host[:port] only — never the path, query or userinfo.
+
+    Enough to tell an operator WHICH backend is configured, without carrying a token
+    that may live in the query string or the userinfo of the URL.
+    """
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<unparseable url>"
+    if not parts.scheme or not parts.hostname:
+        return "<non-http endpoint>"
+    host = parts.hostname
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return f"{parts.scheme}://{host}"
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:

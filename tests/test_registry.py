@@ -14,10 +14,13 @@ import os
 import pytest
 
 from sentinel_harness.registry import (  # noqa: E402
+    DEFAULT_REGISTRY_PATH,  # noqa: F401  (imported for symmetry / discoverability)
     GovernanceReport,
     RegistryError,
     ToolEntry,
     ToolRegistry,
+    _PACKAGED_REGISTRY_PATH,
+    _resolve_registry_path,
     load_registry,
 )
 
@@ -234,3 +237,37 @@ def test_load_yaml_missing_file_raises():
 
 def test_governance_report_type():
     assert isinstance(ToolRegistry().governance_check(), GovernanceReport)
+
+
+# ------------------------------------------------- INV-MCP-2: CWD-independent resolution
+def test_packaged_registry_resolves(monkeypatch, tmp_path):
+    """When the CWD-relative default is absent, the loader falls back to the copy shipped
+    inside the installed package — the pip-install path, where CWD is not a checkout.
+
+    Reproduces the packaged environment by pointing the CWD-relative default at a path
+    that does not exist and confirming the load still succeeds from the packaged copy.
+    """
+    # Simulate "not in a checkout": the CWD-relative default does not exist here. Patch
+    # by string target so this module keeps a single import style (CodeQL flags mixing
+    # `import x` with `from x import ...`).
+    monkeypatch.setattr(
+        "sentinel_harness.registry.DEFAULT_REGISTRY_PATH",
+        str(tmp_path / "nope" / "tools.yaml"),
+    )
+    # The packaged copy must exist and be what resolution falls back to.
+    assert os.path.isfile(_PACKAGED_REGISTRY_PATH), (
+        "sentinel_harness/data/tools.yaml is missing — INV-MCP-2 fallback has nothing "
+        "to resolve to"
+    )
+    resolved = _resolve_registry_path(None)
+    assert resolved == _PACKAGED_REGISTRY_PATH
+    # and a real load through it yields a non-empty, governed registry
+    registry = load_registry()
+    assert registry.entries(), "the packaged registry loaded empty"
+
+
+def test_explicit_path_wins_over_packaged(tmp_path):
+    """An explicit path always takes precedence — the fallback is last resort only."""
+    p = tmp_path / "custom.yaml"
+    p.write_text("tools:\n  - name: x\n    owner: me\n    status: approved\n", encoding="utf-8")
+    assert _resolve_registry_path(str(p)) == str(p)

@@ -52,6 +52,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .logutil import get_logger
+
 # Discover the tools directory relative to this file or the repo root.
 _THIS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parent
@@ -71,19 +73,57 @@ _ALLOW_PENDING_ENV = "SENTINEL_MCP_ALLOW_PENDING"
 _TRUTHY_VALUES = {"1", "true", "yes", "on"}
 
 
+class GovernanceUnavailable(RuntimeError):
+    """The registry could not be read, so the approved set is UNKNOWN.
+
+    Distinct from "the approved set is empty" — that is a governance decision, this is
+    the absence of one. Conflating them is INV-MCP-1's whole subject.
+    """
+
+
 def _load_approved_set() -> frozenset:
     """Load the set of registry-approved tool names (status=approved).
 
-    Falls back to empty (= no filtering) if the registry YAML is unreachable
-    (the MCP server should still start, not crash on a missing file)."""
+    Raises :class:`GovernanceUnavailable` when the registry cannot be read.
+
+    INV-MCP-1. This used to swallow every exception and return an empty frozenset, and
+    the caller's gate read ``if approved and tool not in approved`` — so an empty set
+    made the whole condition falsy and EVERY tool in ``tools/`` was exposed, including
+    the ones the registry marks pending. Reproduced: with the registry unreachable the
+    server exposed 18 tools instead of 17, the extra one being ``web_search`` — the only
+    non-approved entry, and the single tool whose job is to fetch attacker-influenceable
+    content.
+
+    That was not an edge case but the DEFAULT on the packaged install path.
+    ``DEFAULT_REGISTRY_PATH`` is ``"registry/tools.yaml"``, relative to the CWD, and the
+    wheel did not ship ``registry/`` at all — verified by building one. So
+    ``pip install sentinel-harness && sentinel-mcp`` from any directory other than a repo
+    checkout failed open every time. Both halves are fixed: the packaging (``registry``
+    is now included and the path resolves against the installed package as a fallback)
+    and this function, which no longer reports a governance decision it did not obtain.
+
+    The docstring's original justification — "the MCP server should still start, not
+    crash on a missing file" — had the trade-off backwards. This server's job is to
+    expose a governed subset of tools over stdio to an arbitrary MCP client; a server
+    that starts while ungoverned is worse than one that refuses to start, because the
+    operator has no way to tell the two apart. INV-BOUNDARY-5's rule: "we could not tell"
+    must never render as the permissive answer.
+    """
     try:
         from .registry import load_registry
         reg = load_registry()
-        return frozenset(
-            entry.name for entry in reg._entries.values() if entry.status == "approved"
-        )
-    except Exception:
-        return frozenset()
+    except Exception as exc:
+        raise GovernanceUnavailable(
+            f"cannot read the tool registry, so which tools are approved is UNKNOWN "
+            f"({type(exc).__name__}: {exc}). Refusing to serve rather than exposing "
+            f"every tool in tools/ — including the ones the registry marks pending. "
+            f"Set SENTINEL_REGISTRY_PATH to the registry YAML, or run from a checkout. "
+            f"To serve an ungoverned tool set deliberately, set "
+            f"{_ALLOW_PENDING_ENV}=1, which says so explicitly."
+        ) from exc
+    return frozenset(
+        entry.name for entry in reg._entries.values() if entry.status == "approved"
+    )
 
 
 def _discover_tools() -> Dict[str, Dict[str, Any]]:
@@ -100,9 +140,23 @@ def _discover_tools() -> Dict[str, Dict[str, Any]]:
     if not _TOOLS_DIR.is_dir():
         return tools
 
-    approved = _load_approved_set()
     allow_pending = os.environ.get(_ALLOW_PENDING_ENV, "").lower() in _TRUTHY_VALUES
     expose_control = os.environ.get(_EXPOSE_CONTROL_ENV, "").lower() in _TRUTHY_VALUES
+
+    # INV-MCP-1: an unreadable registry is refused, not treated as "no filtering".
+    # The dev escape hatch already exists and is explicit, so it — and only it — may
+    # proceed without a governance decision.
+    if allow_pending:
+        try:
+            approved = _load_approved_set()
+        except GovernanceUnavailable as exc:
+            get_logger(__name__).warning(
+                "%s=1 and the registry is unreadable (%s): serving EVERY tool in "
+                "tools/, governed or not.", _ALLOW_PENDING_ENV, exc,
+            )
+            approved = frozenset()
+    else:
+        approved = _load_approved_set()  # raises GovernanceUnavailable, by design
 
     for entry in sorted(_TOOLS_DIR.iterdir()):
         handler_path = entry / "handler.py"
@@ -111,8 +165,15 @@ def _discover_tools() -> Dict[str, Dict[str, Any]]:
 
         tool_name = entry.name
 
-        # Registry governance gate
-        if approved and tool_name not in approved and not allow_pending:
+        # Registry governance gate.
+        #
+        # INV-MCP-1: NO leading `if approved and ...`. That truthiness test made an
+        # empty approved set skip the whole gate, so "the registry says nothing is
+        # approved" and "we could not read the registry" both meant "expose
+        # everything". The unreadable case now raises above; a genuinely empty approved
+        # set is a governance decision and must exclude every tool, which is what this
+        # unconditional membership test does.
+        if tool_name not in approved and not allow_pending:
             continue
 
         # Control-plane tools require explicit opt-in

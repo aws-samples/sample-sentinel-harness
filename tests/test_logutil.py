@@ -101,3 +101,43 @@ def test_json_env_flag_truthy(monkeypatch):
     logutil.configure_logging(stream=buf)
     logutil.get_logger("sentinel_harness.t").info("x")
     json.loads(buf.getvalue().strip())  # must parse as JSON (flag honored)
+
+
+# --------------------------------------------------------------------------- #
+# INV-METRIC-1: the metric sink has no level/logger envelope                   #
+# --------------------------------------------------------------------------- #
+def test_metric_sink_has_no_envelope():
+    """get_metric_sink writes the line VERBATIM — no 'INFO logger:' prefix, no JSON
+    wrapper — so a CloudWatch JSON metric filter matches it. This is the fix for a
+    metered metric being invisible to the filter."""
+    buf = io.StringIO()
+    sink = logutil.get_metric_sink(stream=buf)
+    sink('{"tokens": 5, "scenario": "x"}')
+    out = buf.getvalue().strip()
+    assert out == '{"tokens": 5, "scenario": "x"}', (
+        f"the metric sink added an envelope: {out!r}"
+    )
+    assert out.startswith("{")
+
+
+def test_metric_sink_is_idempotent():
+    """Repeated calls reuse the one tagged handler instead of stacking duplicates."""
+    buf = io.StringIO()
+    logutil.get_metric_sink(stream=buf)
+    logutil.get_metric_sink(stream=buf)
+    sink = logutil.get_metric_sink(stream=buf)
+    sink('{"tokens": 1}')
+    # exactly one line, not three copies
+    assert buf.getvalue().count("tokens") == 1
+
+
+def test_coerce_bool_does_not_string_truthy():
+    """The canonical external-boolean coercer: a non-empty string is not automatically
+    True (bool('false') is True in Python)."""
+    for f in ("false", "False", "no", "0", "", "  false  "):
+        assert logutil.coerce_bool(f) is False, f
+    for t in ("true", "True", "yes", "1", "t", "y", True, 1):
+        assert logutil.coerce_bool(t) is True, t
+    # non-string falls back to Python truthiness
+    assert logutil.coerce_bool(None) is False
+    assert logutil.coerce_bool(0) is False
