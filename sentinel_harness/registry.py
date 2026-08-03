@@ -36,6 +36,38 @@ except Exception:  # pragma: no cover
 
 DEFAULT_REGISTRY_PATH = os.environ.get("SENTINEL_REGISTRY_PATH", "registry/tools.yaml")
 
+# Where to look when the CWD-relative default is not there (INV-MCP-2).
+#
+# `DEFAULT_REGISTRY_PATH` is relative to the CURRENT WORKING DIRECTORY, which is right
+# for a repo checkout and wrong for every installed copy. Round 20 found the
+# consequence: the wheel shipped no `registry/` at all, so
+# `pip install sentinel-harness && sentinel-mcp` — run from anywhere but a checkout —
+# could not read the registry, and `mcp_server._load_approved_set` swallowed the error
+# and returned an empty set, which its caller read as "no filtering". Every pending tool
+# was exposed to any MCP client, by default, on the packaged install path.
+#
+# The packaging is fixed (see pyproject `[tool.setuptools.package-data]`) and this
+# fallback resolves against the INSTALLED package, so the shipped copy is found
+# regardless of CWD. Two independent fixes for one failure because either alone leaves
+# a hole: data-only packaging is easy to drop again (it was dropped once already, for
+# `sentinel_harness.connectors`), and a path fallback with nothing to find is useless.
+_PACKAGED_REGISTRY_PATH = os.path.join(os.path.dirname(__file__), "data", "tools.yaml")
+
+
+def _resolve_registry_path(path: str | None) -> str:
+    """Return the registry file to read: explicit > CWD-relative default > packaged.
+
+    Never silently returns a path that does not exist — `load_yaml` raises on a miss, so
+    a wrong resolution surfaces as a refusal rather than as an empty registry.
+    """
+    if path:
+        return path
+    if os.path.exists(DEFAULT_REGISTRY_PATH):
+        return DEFAULT_REGISTRY_PATH
+    if os.path.exists(_PACKAGED_REGISTRY_PATH):
+        return _PACKAGED_REGISTRY_PATH
+    return DEFAULT_REGISTRY_PATH  # let load_yaml raise, naming the path it wanted
+
 # Valid declarative lifecycle states a SecOps owner may set on an entry.
 STATUSES = ("approved", "pending", "deprecated")
 
@@ -149,7 +181,7 @@ class ToolRegistry:
         """Load declarative entries from a YAML file. Uses PyYAML when available,
         else a minimal flat parser sufficient for the shipped ``tools.yaml`` shape.
         """
-        path = path or DEFAULT_REGISTRY_PATH
+        path = _resolve_registry_path(path)
         if not os.path.exists(path):
             raise RegistryError(f"registry file not found: {path}")
         with open(path, "r", encoding="utf-8") as fh:
@@ -242,6 +274,16 @@ def _mini_yaml(text: str) -> dict:
     """
     tools: list[dict] = []
     current: dict | None = None
+    # The indent at which the CURRENT item's direct keys live. A key deeper than this is
+    # part of a nested sub-map and must NOT be written onto the item (INV-MCP-3).
+    #
+    # Without this, the parser did `current[key] = value` for every `k: v` line inside a
+    # tool item regardless of depth, so a nested `status: approved` (in a documented
+    # example, a sub-config, anything) overwrote the top-level `status: pending` the
+    # SecOps owner set — a fail-OPEN promotion of an unreviewed tool. PyYAML resolves the
+    # same file correctly, so the two "equivalent" parsers disagreed on the approval
+    # state, in the permissive direction. Reproduced.
+    key_indent: int | None = None
     in_tools = False
     lines = text.splitlines()
     i = 0
@@ -263,10 +305,18 @@ def _mini_yaml(text: str) -> dict:
         if stripped.startswith("- "):
             current = {}
             tools.append(current)
+            # This item's direct keys sit two columns right of the dash.
+            key_indent = indent + 2
             stripped = stripped[2:].strip()
             if not stripped:
                 i += 1
                 continue
+        elif key_indent is not None and indent > key_indent:
+            # Deeper than this item's key column => a nested sub-map. Skip it entirely
+            # rather than flattening its keys onto the item, which is how a nested
+            # `status:` promoted a pending tool.
+            i += 1
+            continue
         if current is None or ":" not in stripped:
             i += 1
             continue

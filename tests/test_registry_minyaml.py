@@ -122,6 +122,66 @@ def test_load_yaml_fallback_equivalent_to_pyyaml(tmp_path, monkeypatch):
         )
 
 
+# ------------------------------------------------ INV-MCP-3: nested keys do not promote
+_NESTED_STATUS = """tools:
+  - name: risky_tool
+    owner: secops
+    status: pending
+    factory: tools.risky.build
+    notes:
+      example_response:
+        status: approved
+  - name: good_tool
+    owner: secops
+    status: approved
+    factory: tools.good.build
+"""
+
+
+def test_mini_yaml_does_not_flatten_a_nested_status():
+    """A nested `status: approved` must NOT overwrite a tool's top-level
+    `status: pending`.
+
+    The parser used to write `current[key] = value` for every `k: v` line inside an
+    item regardless of depth, so a nested `status:` anywhere in a tool entry (a
+    documented example, a sub-config) silently PROMOTED a pending tool to approved —
+    fail-open. Reproduced.
+    """
+    parsed = reg._mini_yaml(_NESTED_STATUS)
+    by_name = {t["name"]: t for t in parsed["tools"]}
+    assert by_name["risky_tool"]["status"] == "pending", (
+        "a nested status: approved promoted a pending tool"
+    )
+    assert by_name["good_tool"]["status"] == "approved"
+
+
+def test_mini_yaml_agrees_with_pyyaml_on_the_nested_case():
+    """The differential that caught it: PyYAML resolves the nested case correctly, so
+    the fallback must too, or the two parsers disagree on an approval decision in the
+    permissive direction (the INV-COVERAGE / connector-equivalence class of bug)."""
+    fallback = reg._mini_yaml(_NESTED_STATUS)
+    reference = yaml.safe_load(_NESTED_STATUS)
+    fb = {t["name"]: t.get("status") for t in fallback["tools"]}
+    rf = {t["name"]: t.get("status") for t in reference["tools"]}
+    assert fb == rf == {"risky_tool": "pending", "good_tool": "approved"}
+
+
+def test_load_yaml_does_not_resolve_a_nested_promoted_tool(tmp_path, monkeypatch):
+    """End to end through the real loader with PyYAML OFF: risky_tool must not be
+    resolvable, because a pending tool is not live."""
+    path = tmp_path / "reg.yaml"
+    path.write_text(_NESTED_STATUS, encoding="utf-8")
+    monkeypatch.setattr(reg, "_yaml", None)
+    # The factory map is keyed by TOOL NAME, not by the `factory:` path string.
+    registry = reg.ToolRegistry({
+        "risky_tool": lambda **k: {"ok": True},
+        "good_tool": lambda **k: {"ok": True},
+    }).load_yaml(str(path))
+    with pytest.raises(reg.RegistryError):
+        registry.resolve("risky_tool")  # pending => not resolvable
+    assert registry.resolve("good_tool")  # approved => resolvable
+
+
 # --------------------------------------------------------------- _scalar edge cases
 def test_scalar_empty_is_empty_string():
     assert reg._scalar("") == ""
