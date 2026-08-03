@@ -57,6 +57,33 @@ class _FakeControl:
             "targetVersion": kw.get("targetVersion"),
         }
 
+    # Added for INV-OPS-7: the gate covers all THREE promotion actions, so the fake has
+    # to be able to serve them. Their absence made two of the new tests fail with
+    # `upstream_error` — a missing fake method, not a gate defect. Recorded because a
+    # fake that cannot serve the path under test produces a failure that LOOKS like a
+    # finding.
+    def update_harness_endpoint(self, **kw):
+        self.calls.append(kw)
+        return {
+            "endpointName": kw.get("endpointName"),
+            "status": "UPDATING",
+            "targetVersion": kw.get("targetVersion"),
+        }
+
+    def list_harness_endpoints(self, **kw):
+        self.calls.append(kw)
+        return {"harnessEndpoints": []}
+
+
+@pytest.fixture
+def gate_witnessed(monkeypatch):
+    """Declare that a driver ran the promotion HITL gate (INV-OPS-7).
+
+    The three promotion actions refuse unless a driver says it gated them. Tests that
+    pin the REQUEST SHAPE of a promotion need the witness; the gate itself is asserted
+    separately in TestPromotionGate, so setting it here does not weaken anything."""
+    monkeypatch.setenv("SENTINEL_PROMOTION_GATE_WITNESSED", "1")
+
 
 @pytest.fixture
 def stub_core(monkeypatch):
@@ -244,7 +271,7 @@ def test_delete_routes(stub_core):
     assert stub_core["delete_harness"][0]["args"] == ("h-xyz",)
 
 
-def test_create_endpoint_calls_control_directly(stub_core):
+def test_create_endpoint_calls_control_directly(stub_core, gate_witnessed):
     r = ops.handler(
         {"action": "create_endpoint",
          "params": {"harness_id": "h-abc", "endpoint_name": "prod",
@@ -260,7 +287,7 @@ def test_create_endpoint_calls_control_directly(stub_core):
     assert kw["description"] == "promote"
 
 
-def test_create_endpoint_omits_unset_optionals(stub_core):
+def test_create_endpoint_omits_unset_optionals(stub_core, gate_witnessed):
     ops.handler(
         {"action": "create_endpoint",
          "params": {"harness_id": "h-abc", "endpoint_name": "prod"}},
@@ -341,3 +368,101 @@ def test_update_missing_wrapper_surfaces_as_error(stub_core, monkeypatch):
         {"action": "update", "params": {"harness_id": "h-abc"}}, None)
     assert r["ok"] is False
     assert r["error"] in ("upstream_error", "validation_error")
+
+
+# --------------------------------------------------------------------------- #
+# INV-OPS-7 — a promotion action requires a witnessed HITL gate                #
+# --------------------------------------------------------------------------- #
+class TestPromotionGate:
+    """`docs/THREAT-MODEL.md` §1 claims: "Publish / contain / promote are
+    inline_function HITL gates ...; the agent can only *request* them, never execute
+    them."
+
+    That held for the two DRIVER paths and not for a direct handler call:
+
+      agent_loop.run_agent_loop        gates all 3 promotion actions
+      autonomy.run_improvement_loop    gates via approve_fn, fail-closed when None
+      harness_ops.handler(...) direct  NO gate  <- reproduced: promoted 'prod', ok:True
+
+    The direct path is real: scenario_agent_factory_loop.py describes itself as calling
+    "the harness_ops handler directly rather than over a Gateway MCP target". It happens
+    to use only create/wait_ready/invoke/delete, so nothing was exploited — but nothing
+    prevented promote either, which made the claim a convention, not a mechanism. The
+    same shape as INV-PROMOTE-3, where a docstring delegated a fail-closed posture to
+    "the caller" and no caller implemented it.
+
+    `sentinel_agent_ops` is why it matters: allowedTools is exactly
+    `@gateway/harness_ops` with NO gate, while `sentinel_self_improving` holds the same
+    tool WITH `request_promotion_approval`.
+    """
+
+    _PROMOTION_ACTIONS = ("create_endpoint", "update_endpoint", "promote_endpoint")
+
+    @pytest.mark.parametrize("action", _PROMOTION_ACTIONS)
+    def test_promotion_is_refused_without_a_witnessed_gate(self, stub_core, action, monkeypatch):
+        monkeypatch.delenv("SENTINEL_PROMOTION_GATE_WITNESSED", raising=False)
+        r = ops.handler(
+            {"action": action,
+             "params": {"harness_id": "h-abc", "endpoint_name": "prod"}},
+            None)
+        assert r["ok"] is False, f"{action} promoted with no gate: {r}"
+        assert r["error"] == "validation_error"
+        assert "human-approval gate" in r["message"]
+        # and NOTHING reached the control plane
+        calls = {op: log for op, log in stub_core.items()
+                 if isinstance(log, list) and log}
+        assert not calls, f"a promotion call was made despite the refusal: {calls}"
+
+    @pytest.mark.parametrize("action", _PROMOTION_ACTIONS)
+    def test_promotion_proceeds_when_a_driver_witnessed_the_gate(
+            self, stub_core, action, gate_witnessed):
+        """CONTROL: the gate must not break the legitimate driver path, or drivers get
+        patched around it."""
+        r = ops.handler(
+            {"action": action,
+             "params": {"harness_id": "h-abc", "endpoint_name": "prod"}},
+            None)
+        assert r["ok"] is True, f"{action} refused a witnessed promotion: {r}"
+
+    @pytest.mark.parametrize("falsey", ["", "0", "false", "no", "off", "maybe"])
+    def test_a_non_affirmative_witness_is_refusal(self, stub_core, falsey, monkeypatch):
+        """Fail-closed on the VALUE too: only an affirmative token counts. `bool("false")`
+        is True in Python, and this repo has four recorded recurrences of that trap
+        (INV-COERCE), so the check is token-based, not truthiness-based."""
+        monkeypatch.setenv("SENTINEL_PROMOTION_GATE_WITNESSED", falsey)
+        r = ops.handler(
+            {"action": "promote_endpoint",
+             "params": {"harness_id": "h-abc", "endpoint_name": "prod"}},
+            None)
+        assert r["ok"] is False, f"witness={falsey!r} was accepted as approval: {r}"
+
+    @pytest.mark.parametrize("action", ["create", "update", "invoke", "wait_ready",
+                                        "list", "delete", "list_endpoints"])
+    def test_non_promotion_actions_are_unaffected(self, stub_core, action, monkeypatch):
+        """CONTROL: the gate covers promotion ONLY. A guard that also blocked
+        create/invoke would make the tool unusable and get removed."""
+        monkeypatch.delenv("SENTINEL_PROMOTION_GATE_WITNESSED", raising=False)
+        params = {
+            "create": {"name": "ok_name", "system_prompt": "p"},
+            "update": {"harness_id": "h-abc", "system_prompt": "p"},
+            "invoke": {"arn": "arn:h", "text": "hi"},
+            "wait_ready": {"harness_id": "h-abc"},
+            "list": {},
+            "delete": {"harness_id": "h-abc"},
+            "list_endpoints": {"harness_id": "h-abc"},
+        }[action]
+        r = ops.handler({"action": action, "params": params}, None)
+        assert r["ok"] is True, f"the promotion gate blocked {action}: {r}"
+
+    def test_the_action_list_matches_the_driver(self):
+        """The two layers must agree on WHICH actions are promotions. If the driver
+        gates an action this tool does not (or vice versa), one layer has a hole — the
+        exact drift that produced this finding."""
+        from sentinel_harness.agent_loop import default_is_promotion
+        for action in self._PROMOTION_ACTIONS:
+            assert default_is_promotion(
+                "harness_ops", {"action": action, "params": {"harness_id": "h"}}
+            ), f"the driver does not classify {action!r} as a promotion"
+        assert set(self._PROMOTION_ACTIONS) == set(ops._PROMOTION_ACTIONS), (
+            "the tool's _PROMOTION_ACTIONS drifted from the list asserted here"
+        )

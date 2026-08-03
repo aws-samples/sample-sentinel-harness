@@ -221,7 +221,18 @@ def fake_control(monkeypatch):
     return ctrl
 
 
-def test_create_endpoint_promote_path_forwards_envelope_and_returns_result(fake_control):
+@pytest.fixture
+def gate_witnessed(monkeypatch):
+    """Declare that a driver ran the promotion HITL gate (INV-OPS-7).
+
+    `create_endpoint` is a promotion action and is refused without this. These two tests
+    pin the REQUEST ENVELOPE, not the gate — the gate has its own tests in
+    test_harness_ops.py::TestPromotionGate and test_r21_promotion_gate.py, so supplying
+    the witness here does not weaken anything."""
+    monkeypatch.setenv("SENTINEL_PROMOTION_GATE_WITNESSED", "1")
+
+
+def test_create_endpoint_promote_path_forwards_envelope_and_returns_result(fake_control, gate_witnessed):
     """The harness_ops create_endpoint action (the promote path M2 exposes) wired
     to the control-plane boundary: the {harnessId, endpointName, targetVersion,
     description} envelope must be forwarded verbatim to create_harness_endpoint and
@@ -248,7 +259,7 @@ def test_create_endpoint_promote_path_forwards_envelope_and_returns_result(fake_
     assert kw["description"] == "promoted after passing eval"
 
 
-def test_create_endpoint_promote_path_omits_unset_optionals(fake_control):
+def test_create_endpoint_promote_path_omits_unset_optionals(fake_control, gate_witnessed):
     """A bare promote (no version pin / description) must send ONLY the two required
     fields — no None optionals leak into the boto call (would be a ParamValidationError
     against the real control plane)."""

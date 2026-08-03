@@ -63,6 +63,16 @@ instructions.
   `request_promotion_approval`, `request_human_review` in
   [`sentinel_harness/loader.py`](../sentinel_harness/loader.py)); the agent can only
   *request* them, never execute them. See §3.
+
+  Enforced in **two layers**, because for promotion the manifest gate alone was not
+  enough. The driver (`agent_loop.run_agent_loop`) refuses an unapproved promotion before
+  dispatch, and `harness_ops` independently refuses one whose driver did not declare a
+  gate (INV-OPS-7). Round 21 found the second layer missing: a direct
+  `harness_ops.handler({"action": "promote_endpoint", ...})` call — the shape
+  `scenario_agent_factory_loop.py` uses in-process — promoted a production endpoint with
+  no approval anywhere in the path. `sentinel_agent_ops` holds that tool with no gate in
+  its `allowedTools`, so the claim above rested on the tool never being called that way
+  rather than on it being unable to. It is now a mechanism.
 - **Output screen.** The Bedrock Guardrail masks/blocks secrets and PII in both
   directions ([`iac-cdk/lib/guardrail-stack.ts`](../iac-cdk/lib/guardrail-stack.ts)), so
   an injected "print the AWS key" is blunted.
