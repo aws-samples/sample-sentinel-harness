@@ -359,12 +359,19 @@ def test_url_credential_is_not_echoed(monkeypatch):
         "CREATE_TICKET_URL",
         "https://user:pw@jira.example.com/rest/api?os_authType=basic&token=SUPERSECRET123",
     )
+    url = "https://user:pw@jira.example.com/rest/api?os_authType=basic&token=SUPERSECRET123"
     out = create_ticket.handler(_valid_event(), None)
     msg = str(out.get("message", ""))
     assert "SUPERSECRET123" not in msg, f"token leaked into response: {msg}"
     assert "user:pw" not in msg, f"userinfo leaked into response: {msg}"
-    # but the operator can still tell WHICH backend is configured
-    assert "jira.example.com" in msg
+    # The redaction itself is asserted structurally, against the computed safe endpoint —
+    # NOT with `"jira.example.com" in msg`, which is the incomplete-url-substring pattern
+    # CodeQL (rightly) flags, and "substring standing in for structure" is a recurring
+    # defect class here. `_safe_endpoint` is scheme+host only; that exact string is what
+    # names the backend, and it must appear while the secret parts do not.
+    safe = create_ticket._safe_endpoint(url)
+    assert safe == "https://jira.example.com"
+    assert safe in msg, f"the safe endpoint was not named: {msg}"
 
 
 def test_safe_endpoint_strips_path_query_and_userinfo():
