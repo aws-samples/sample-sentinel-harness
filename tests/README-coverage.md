@@ -76,7 +76,7 @@ entire suite stays green (all tests pass under the `--include` run).
 ## Current M3 numbers
 
 Ground truth from the `--include` run above over the full `tests/` suite
-(3725 passed, 6 skipped; branch coverage on).
+(3755 passed, 9 skipped; branch coverage on).
 
 > These numbers are **checked, not asserted**.
 > `tests/test_coverage_doc.py` re-measures every row against a fresh coverage run and
@@ -92,14 +92,14 @@ Ground truth from the `--include` run above over the full `tests/` suite
 | `tools/sigma_match/handler.py` | 98% | 140, 143, 890-910 (fallback-parser tails; the minimal-YAML path is now covered) |
 | `tools/asset_lookup/handler.py` | 90% | 350, 386, 389, 407, 438, 450-452, 506, 516-520 (live-path error branches) |
 | `longrunning/bas-runner/bas_cases.py` | 100% | — |
-| `longrunning/bas-runner/bedrock_entrypoint.py` | 19% | 68-236 — the `@app.entrypoint` async generator. **The lowest file in the repo**, and the honest reason is that it is an AgentCore Runtime entrypoint: it needs the `bedrock_agentcore` app harness plus a live session to drive its event yields. Its sibling `longrunning/detonation/bedrock_entrypoint.py` reaches 96% because that one factors its orchestration into callable helpers; doing the same here is the concrete way to close this gap. |
+| `longrunning/bas-runner/bedrock_entrypoint.py` | 100% | — (was **19%**, the lowest file in the repo) |
 | `longrunning/detonation/bedrock_entrypoint.py` | 96% | 61 |
 | `longrunning/detonation/src/vm.py` | 93% | 281, 327, 340, 348 |
 | `specialists/attack-mapper/agent_a2a.py` | 100% | — |
 | `specialists/threat-hunt/agent_a2a.py` | 100% | — |
 | `specialists/cve-intel/agent_a2a.py` | 60% | 166-171, 216-237 (`build_app` / `serve` wrappers behind guarded optional deps) |
 
-Whole-repo `TOTAL` under these include globs: **91%**.
+Whole-repo `TOTAL` under these include globs: **92%**.
 
 That total is measured with `site-packages` **omitted**. Until a sweep caught it, the
 `*/tools/*` include glob also matched `site-packages/mcp/server/fastmcp/tools/` — 96
@@ -107,9 +107,14 @@ statements of a third-party library, 46 uncovered — which dragged the reported
 91.19% down to 90.75% and made the 88 floor looser than it looked, because the denominator
 carried code this repo neither owns nor should test.
 
-The remaining real gap is `bas-runner/bedrock_entrypoint.py`; the `build_app`/`serve`
-wrapper gaps sit behind optional heavy deps (`strands` / `bedrock_agentcore` /
-`a2a`) that CI guards with `importorskip`.
+The `bas-runner/bedrock_entrypoint.py` gap is closed — round 7 of the sweeps found it was
+never hard to test, only untested: `tests/test_bas_runner.py` imported the module and
+asserted `callable(build_loop)` without ever calling it. 27 tests later it is at 100%,
+and 5/5 mutations of its security logic are caught (INV-PLAY-3 checkpoint substitution,
+the session-cap restart path, and the two deliberately-swallowed exceptions).
+
+The remaining `build_app` / `serve` wrapper gaps sit behind optional heavy deps
+(`strands` / `bedrock_agentcore` / `a2a`) that CI guards with `importorskip`.
 
 ## Guard: the coverage smoke test
 
