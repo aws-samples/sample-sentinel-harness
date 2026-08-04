@@ -13,7 +13,11 @@ dependencies = ["boto3>=1.40.0", "botocore>=1.43.0", "pyyaml>=6.0"]
 # and coverage; pytest-randomly surfaces cross-file import-order coupling. Install
 # with `pip install -e '.[test]'` (mirrors the Makefile/CI invocation).
 [project.optional-dependencies]
-test = ["pytest>=8.0", "hypothesis>=6.0", "pytest-randomly>=3.15", "coverage>=7.0", "mcp>=1.0", "anyio[trio]>=4.0", "pytest-anyio>=0.0.0"]
+# `tomli` is the 3.10-only TOML reader (stdlib `tomllib` arrives in 3.11). Without it the
+# packaging tripwire — which reads pyproject.toml as data — silently SKIPPED its whole
+# file on 3.10, the project's own declared minimum, taking the INV-MCP-2 wheel guard with
+# it. Marker-gated so 3.11+ does not install a redundant dependency.
+test = ["pytest>=8.0", "hypothesis>=6.0", "pytest-randomly>=3.15", "coverage>=7.0", "mcp>=1.0", "anyio[trio]>=4.0", "pytest-anyio>=0.0.0", "tomli>=2.0; python_version<'3.11'"]
 mcp = ["mcp>=1.0"]
 
 [project.scripts]
