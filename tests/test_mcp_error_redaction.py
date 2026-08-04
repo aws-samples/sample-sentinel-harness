@@ -37,10 +37,25 @@ ZERO network, ZERO AWS.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 
 import pytest
+
+# The protocol round-trips at the bottom need BOTH the MCP SDK (for the in-memory
+# transport) and anyio (for its pytest plugin). Both are in the `test` extra, so in CI they
+# are present and these tests RUN — `tests/test_ci_installs_the_test_extra.py` asserts the
+# workflow installs them. The skipif exists only so a bare `pip install -e . && pytest`
+# degrades to a visible skip instead of a confusing failure; it is NOT a licence for CI to
+# skip them, which is precisely the hole this file's sibling fell into.
+_PROTOCOL_DEPS_PRESENT = all(
+    importlib.util.find_spec(m) is not None for m in ("mcp", "anyio")
+)
+_needs_protocol_deps = pytest.mark.skipif(
+    not _PROTOCOL_DEPS_PRESENT,
+    reason="needs the `test` extra (mcp + anyio): pip install -e '.[test]'",
+)
 
 os.environ.setdefault("SENTINEL_REGION", "us-east-1")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
@@ -48,6 +63,30 @@ os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 
 from sentinel_harness import mcp_server as ms  # noqa: E402
+
+
+@pytest.fixture
+def anyio_backend():
+    """The async backend for the protocol round-trip tests at the bottom of this file.
+
+    `pytest.mark.anyio` is useless without it. anyio's own plugin ships an `anyio_backend`
+    fixture that is PARAMETRISED over every installed backend, so relying on it would run
+    each async test twice (asyncio + trio) — `tests/test_mcp_protocol.py` pins asyncio for
+    exactly that reason, and this file follows it.
+
+    Its absence is why CI failed while local passed. Omitting it does NOT produce a clear
+    "missing fixture" error; pytest reports `async def functions are not natively
+    supported` and FAILS the test, and `pytest.importorskip("mcp")` inside the test body
+    never gets the chance to run. So the sibling convention here is two things, not one —
+    a module-level importorskip AND this fixture — and I carried neither when I wrote a new
+    async test file next to one that had both.
+
+    Which makes this PR's own subject a third time: "a fix applied to one call site is not
+    an invariant", now landing on an async-test CONVENTION rather than on production code.
+    `tests/test_ci_installs_the_test_extra.py::test_every_async_test_file_pins_a_backend`
+    turns the convention into a check.
+    """
+    return "asyncio"
 
 
 class _Raising:
@@ -294,6 +333,7 @@ class TestLoadErrorDescription:
 # --------------------------------------------------------------------------- #
 # The boundary, end to end over the real protocol                             #
 # --------------------------------------------------------------------------- #
+@_needs_protocol_deps
 @pytest.mark.anyio
 async def test_a_raising_tool_returns_redacted_text_over_the_protocol(monkeypatch):
     """Not the unit path — the actual MCP round trip, so this proves the redaction is wired
@@ -327,6 +367,7 @@ async def test_a_raising_tool_returns_redacted_text_over_the_protocol(monkeypatc
         assert "RuntimeError" in text, f"the error type was lost: {text}"
 
 
+@_needs_protocol_deps
 @pytest.mark.anyio
 async def test_an_unknown_tool_name_does_not_echo_the_registry(monkeypatch):
     """`call_tool` returns the available tool names on an unknown call. That is a useful
