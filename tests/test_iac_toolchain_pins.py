@@ -5,20 +5,25 @@ The IaC toolchain pins must stay consistent with the runner CI actually uses.
 `npx ts-node test/<name>.test.ts` — there is no jest. That makes `ts-node` load-bearing
 CI infrastructure, and it constrains which TypeScript major this project can adopt.
 
-Round 23 tested the Dependabot TypeScript 7.0 proposal empirically rather than declining
-it on caution:
+Round 23 tested both Dependabot TypeScript proposals empirically rather than declining them
+on caution, and they came out differently:
 
-    tsc --noEmit under 7.0.2   CLEAN, once `types: ["node"]` is declared. The 7 x
-                               TS2591 "Cannot find name 'process'" errors were an
-                               implicit-@types regression, not incompatible code.
-    npx ts-node test/*.test.ts ALL 8 die at startup:
-                               TypeError: Cannot read properties of undefined
-                                          (reading 'fileExists')
+    TS 6.0.3   tsc --noEmit exit 0 · 8/8 stack tests · cdk synth 9 stacks  -> ADOPTED
+    TS 7.0.2   tsc --noEmit exit 0, but ALL 8 stack tests die at startup:
+                   TypeError: Cannot read properties of undefined (reading 'fileExists')
+                       at readConfig (node_modules/ts-node/dist/configuration.js:91:33)
 
 TS 7 is the native rewrite and no longer exposes the `ts.sys` JS surface `ts-node` reads
 its tsconfig through. So the blocker is the RUNNER, not the code — and adopting TS 7 needs
-a runner migration (tsx, `node --experimental-strip-types`, or jest+swc) as its own
-change.
+a runner migration (tsx, `node --experimental-strip-types`, or jest+swc) as its own change.
+
+That difference is why the pin is `>= 7`, drawn at the measured break point rather than
+"no major upgrades". TS 6 was a real upgrade that shipped.
+
+The implicit-`@types` removal — the cause of the 7 x TS2591 "Cannot find name 'process'"
+errors — landed in **6.0**, not 7. Verified by removing `types: ["node"]` under 6.0.3 and
+watching them return. So that one-line tsconfig fix is what unblocked the 6.0 upgrade, and
+it was correct on its own terms before either upgrade was attempted.
 
 This file keeps that decision from rotting in either direction:
 

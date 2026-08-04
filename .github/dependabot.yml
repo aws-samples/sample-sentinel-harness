@@ -53,12 +53,16 @@ updates:
           - "typescript"
           - "ts-node"
           - "@types/*"
-    # TypeScript is held at 5.x, with evidence rather than caution. Tested empirically:
-    # under 7.0.2 `tsc --noEmit` is CLEAN (the 7 x TS2591 "Cannot find name 'process'"
-    # errors were only a missing `types: ["node"]`, now declared in tsconfig.json), but
-    # ALL 8 stack tests die at startup with `TypeError: Cannot read properties of
-    # undefined (reading 'fileExists')` — TS 7 is the native rewrite and no longer
-    # exposes the `ts.sys` JS surface that `ts-node` reads its tsconfig through.
+    # TypeScript is held below 7, with evidence rather than caution. Both majors were
+    # tested and they came out differently:
+    #
+    #   6.0.3  tsc exit 0 · 8/8 stack tests · cdk synth 9 stacks  -> ADOPTED
+    #   7.0.2  tsc exit 0, but ALL 8 stack tests die at startup with
+    #          `TypeError: Cannot read properties of undefined (reading 'fileExists')`
+    #
+    # TS 7 is the native rewrite and no longer exposes the `ts.sys` JS surface that
+    # `ts-node` reads its tsconfig through. The bound is at the measured break point, not
+    # at "no major upgrades" — 6 was a real upgrade that shipped.
     #
     # `.github/workflows/ci.yml` runs those tests via `npx ts-node` per file (no jest),
     # so adopting TS 7 means the IaC test layer cannot start at all. Lifting this needs a
