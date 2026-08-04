@@ -48,6 +48,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -71,6 +72,91 @@ _EXPOSE_CONTROL_ENV = "SENTINEL_MCP_EXPOSE_CONTROL_PLANE"
 _ALLOW_PENDING_ENV = "SENTINEL_MCP_ALLOW_PENDING"
 
 _TRUTHY_VALUES = {"1", "true", "yes", "on"}
+
+# --------------------------------------------------------------------------- #
+# Error text that crosses the trust boundary (INV-MCP-4)                      #
+# --------------------------------------------------------------------------- #
+# This module is the ONE surface an untrusted MCP peer reaches. Two paths used to hand it
+# an exception's text verbatim:
+#
+#   _invoke_tool        json.dumps({"error": ..., "message": str(exc)})
+#   _discover_tools     description = f"[LOAD ERROR: {exc}]"   <- served by list_tools
+#
+# Reproduced: a handler raising
+#     RuntimeError("connect failed: postgresql://svc:SUPERSECRET_PW@db.internal:5432/soc
+#                   (token=ABSK_LIVE_deadbeef)")
+# delivered the password, the token AND the internal hostname straight to the peer. The
+# second path is worse for being quieter — an import-time failure becomes a tool
+# DESCRIPTION broadcast over the protocol, where nobody is looking for secrets.
+#
+# This is INV-TICKET-1's shape a second time. Round 20 fixed it in `create_ticket` (a
+# tracker URL with a token echoed into a response `message`) at that ONE call site, and
+# recorded "a fix applied to one call site is not an invariant" in the same commit. So the
+# redaction lives here once, and both boundary paths use it.
+#
+# Deliberately a DENYLIST of secret-shaped patterns rather than an allowlist of safe text:
+# an allowlist would strip the diagnostic value that makes these messages worth returning
+# at all, and a peer that gets "an error occurred" cannot tell a bad argument from an
+# outage. The exception TYPE is always preserved — it is the part a caller can act on.
+#
+# WHAT IS DELIBERATELY *NOT* REDACTED, so the next reader does not mistake it for a gap:
+# internal hostnames and ports survive. "timeout after 15s connecting to
+# siem.example.internal:9200" is useless without the host, and this server speaks stdio to
+# an agent the operator configured themselves (Claude Code, Cursor, ...) — the threat model
+# is "tool output is untrusted INPUT to the model", not "the peer is a remote attacker".
+# A leaked credential is irreversible because it can be replayed; a leaked hostname grants
+# no new capability over a local stdio channel. So the line is drawn at credentials, not at
+# topology. If this server ever gains a network transport, that trade-off must be revisited
+# — which is why it is written down rather than left implicit.
+_REDACTED = "[redacted]"
+
+_SECRET_PATTERNS: tuple = (
+    # userinfo in a URL: scheme://user:secret@host  -> keep scheme and host
+    (re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@"),
+     lambda m: f"{m.group('scheme')}{_REDACTED}@"),
+    # `Authorization: Bearer <token>` / `Authorization=Basic <blob>`. Must come BEFORE the
+    # generic key=value rule: that one consumes a single value token, so it redacted the
+    # word "Bearer" and left the JWT sitting in the clear. Caught by this file's own
+    # parametrised case — a redactor that removes the scheme name and keeps the credential
+    # is worse than none, because the output LOOKS sanitised.
+    # The scheme is matched GENERICALLY (`\w+` followed by the credential) rather than from
+    # an allowlist of known scheme names. An earlier version listed
+    # bearer|basic|digest|token, and `Authorization: SharedKey acct:c2lnbmF0dXJl` slipped
+    # through: an unlisted scheme was read as the value, so the real signature after it
+    # survived. A credential-redactor must not depend on having enumerated every auth
+    # scheme in advance — the ones it has not heard of are exactly the risky ones.
+    (re.compile(r"(?i)\b(?P<key>proxy-authorization|authorization)\b"
+                r"(?P<sep>\s*[:=]\s*|\s+)"
+                r"(?:(?P<scheme>[A-Za-z][A-Za-z0-9-]*)\s+)?"
+                r"[^\s,;)\"']+"),
+     lambda m: (f"{m.group('key')}{m.group('sep')}"
+                f"{(m.group('scheme') + ' ') if m.group('scheme') else ''}{_REDACTED}")),
+    # key=value / key: value where the key names a credential
+    (re.compile(
+        r"(?i)\b(?P<key>token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key"
+        r"|secret[_-]?key|session[_-]?token|bearer|credential)\b"
+        r"(?P<sep>\s*[:=]\s*|\s+)(?P<val>[^\s,;)\"']+)"),
+     lambda m: f"{m.group('key')}{m.group('sep')}{_REDACTED}"),
+    # AWS access key ids and long opaque secret-ish blobs
+    (re.compile(r"\b(?:AKIA|ASIA|ABSK)[0-9A-Za-z_-]{8,}\b"), lambda _m: _REDACTED),
+    # query strings can carry anything; drop the whole thing rather than guess
+    (re.compile(r"\?[^\s\"']{4,}"), lambda _m: f"?{_REDACTED}"),
+)
+
+
+def _safe_error_text(exc: BaseException, *, limit: int = 300) -> str:
+    """Exception text safe to hand an untrusted MCP peer.
+
+    Keeps the message's diagnostic shape while removing credential-shaped substrings, and
+    bounds the length so a huge payload echoed back through an exception cannot be used to
+    flood the protocol channel.
+    """
+    text = str(exc)
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
 
 
 class GovernanceUnavailable(RuntimeError):
@@ -196,7 +282,15 @@ def _discover_tools() -> Dict[str, Dict[str, Any]]:
             doc = (mod.__doc__ or "").strip().split("\n")[0]
             tools[tool_name] = {"module": mod, "description": doc}
         except Exception as exc:
-            tools[tool_name] = {"module": None, "description": f"[LOAD ERROR: {exc}]"}
+            # INV-MCP-4: this description is SERVED to the peer by list_tools, so an
+            # import-time failure must not publish a path, a connection string or a
+            # credential as a tool description. Logged in full locally.
+            get_logger(__name__).warning(
+                "tool %s failed to load: %s: %s", tool_name, type(exc).__name__, exc)
+            tools[tool_name] = {
+                "module": None,
+                "description": f"[LOAD ERROR: {type(exc).__name__}: {_safe_error_text(exc, limit=120)}]",
+            }
 
     return tools
 
@@ -226,7 +320,10 @@ def _invoke_tool(tool_name: str, mod: Any, event: Dict[str, Any]) -> str:
         result = mod.handler(event, _STUB_CONTEXT)
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
-        return json.dumps({"error": type(exc).__name__, "message": str(exc)})
+        # INV-MCP-4: the message crosses the trust boundary, so it is redacted. The
+        # exception TYPE is kept — that is the part a caller can act on.
+        return json.dumps({"error": type(exc).__name__,
+                           "message": _safe_error_text(exc)})
 
 
 def create_server():
