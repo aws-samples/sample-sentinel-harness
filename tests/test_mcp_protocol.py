@@ -30,37 +30,31 @@ def anyio_backend():
 pytestmark = pytest.mark.anyio
 
 
-async def _create_session(monkeypatch=None, env_overrides=None):
-    """Create an in-memory MCP client session connected to our server."""
-    import os
-    from mcp.shared.memory import create_connected_server_and_client_session
-    from sentinel_harness.mcp_server import create_server
-
-    if env_overrides:
-        for k, v in env_overrides.items():
-            os.environ[k] = v
-
-    server, _ = create_server()
-    return create_connected_server_and_client_session(server, raise_exceptions=True)
+# `_create_session(monkeypatch, env_overrides)` used to live here. It was DEAD — defined,
+# never called; every test below builds its own server inline. Removed while routing the
+# eight inline `create_connected_server_and_client_session` imports through
+# `tests/mcp_session.py`, because a helper nobody calls still has to be migrated on every SDK
+# change and still reads as supported. It was also the only caller of `raise_exceptions=True`,
+# so nothing else depends on that behaviour.
 
 
 class TestMcpProtocolRoundTrip:
     """Full protocol-level tests via in-memory transport."""
 
     async def test_initialize_handshake(self):
-        from mcp.shared.memory import create_connected_server_and_client_session
+        from mcp_session import connected_session
         from sentinel_harness.mcp_server import create_server
 
         server, _ = create_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with connected_session(server) as session:
             assert session is not None
 
     async def test_list_tools_returns_governance_filtered_set(self):
-        from mcp.shared.memory import create_connected_server_and_client_session
+        from mcp_session import connected_session
         from sentinel_harness.mcp_server import create_server
 
         server, _ = create_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with connected_session(server) as session:
             result = await session.list_tools()
             tool_names = {t.name for t in result.tools}
             # Default: pending tools (web_search) and control-plane (harness_ops,
@@ -75,23 +69,23 @@ class TestMcpProtocolRoundTrip:
             assert len(tool_names) >= 17
 
     async def test_list_tools_with_control_plane_enabled(self, monkeypatch):
-        from mcp.shared.memory import create_connected_server_and_client_session
+        from mcp_session import connected_session
         from sentinel_harness.mcp_server import create_server
 
         monkeypatch.setenv("SENTINEL_MCP_EXPOSE_CONTROL_PLANE", "1")
         server, _ = create_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with connected_session(server) as session:
             result = await session.list_tools()
             tool_names = {t.name for t in result.tools}
             assert "harness_ops" in tool_names
             assert "run_evaluation" in tool_names
 
     async def test_call_tool_sigma_yara_lint_valid(self):
-        from mcp.shared.memory import create_connected_server_and_client_session
+        from mcp_session import connected_session
         from sentinel_harness.mcp_server import create_server
 
         server, _ = create_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with connected_session(server) as session:
             result = await session.call_tool("sigma_yara_lint", arguments={
                 "event": {
                     "rule_type": "sigma",
@@ -110,11 +104,11 @@ class TestMcpProtocolRoundTrip:
             assert "errors" in payload
 
     async def test_call_tool_unknown_returns_structured_error(self):
-        from mcp.shared.memory import create_connected_server_and_client_session
+        from mcp_session import connected_session
         from sentinel_harness.mcp_server import create_server
 
         server, _ = create_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with connected_session(server) as session:
             result = await session.call_tool("nonexistent_tool_xyz", arguments={})
             assert len(result.content) == 1
             payload = json.loads(result.content[0].text)
@@ -122,11 +116,11 @@ class TestMcpProtocolRoundTrip:
 
     async def test_call_tool_bare_arguments_fallback(self):
         """When event key is absent, arguments are passed directly as the event."""
-        from mcp.shared.memory import create_connected_server_and_client_session
+        from mcp_session import connected_session
         from sentinel_harness.mcp_server import create_server
 
         server, _ = create_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with connected_session(server) as session:
             result = await session.call_tool("sigma_yara_lint", arguments={
                 "rule_type": "sigma",
                 "content": (
@@ -142,11 +136,11 @@ class TestMcpProtocolRoundTrip:
             assert payload["ok"] is True
 
     async def test_call_tool_detection_audit_empty_rules(self):
-        from mcp.shared.memory import create_connected_server_and_client_session
+        from mcp_session import connected_session
         from sentinel_harness.mcp_server import create_server
 
         server, _ = create_server()
-        async with create_connected_server_and_client_session(server) as session:
+        async with connected_session(server) as session:
             result = await session.call_tool("detection_audit", arguments={
                 "event": {"rules": []}
             })

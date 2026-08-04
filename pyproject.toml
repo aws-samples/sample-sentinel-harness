@@ -17,8 +17,37 @@ dependencies = ["boto3>=1.40.0", "botocore>=1.43.0", "pyyaml>=6.0"]
 # packaging tripwire — which reads pyproject.toml as data — silently SKIPPED its whole
 # file on 3.10, the project's own declared minimum, taking the INV-MCP-2 wheel guard with
 # it. Marker-gated so 3.11+ does not install a redundant dependency.
-test = ["pytest>=8.0", "hypothesis>=6.0", "pytest-randomly>=3.15", "coverage>=7.0", "mcp>=1.0", "anyio[trio]>=4.0", "pytest-anyio>=0.0.0", "tomli>=2.0; python_version<'3.11'"]
-mcp = ["mcp>=1.0"]
+test = ["pytest>=8.0", "hypothesis>=6.0", "pytest-randomly>=3.15", "coverage>=7.0", "mcp>=1.0,<2", "anyio[trio]>=4.0", "pytest-anyio>=0.0.0", "tomli>=2.0; python_version<'3.11'"]
+# UPPER BOUND REQUIRED — `mcp>=1.0` was an unbounded range, and mcp 2.0.0 is a breaking
+# rewrite of the low-level server API this package is built on. `Server.list_tools()` and
+# `Server.call_tool()` — the two decorators `sentinel_harness/mcp_server.py` registers its
+# handlers with — DO NOT EXIST on 2.0's `Server`:
+#
+#   mcp 1.28.1   Server(...).list_tools  -> present
+#   mcp 2.0.0    Server(...).list_tools  -> AttributeError
+#
+# Verified against a real 2.0.0 install: `create_server()` raises
+# `AttributeError: 'Server' object has no attribute 'list_tools'`, so
+# `pip install sentinel-harness[mcp] && sentinel mcp serve` could not start AT ALL. That is
+# an install-time, user-facing break on the current PyPI release, not a test artifact.
+#
+# Note what hid it: CI never installed `mcp` (it hand-copied a partial dep list instead of
+# the `test` extra — see INV-CI-1), so every test that would have caught this SKIPPED. The
+# silent skip was not concealing a stale test; it was concealing a broken published
+# dependency contract.
+#
+# Also note the check that was NOT sufficient: `from mcp.server import Server` still
+# succeeds on 2.0.0, and I first read that as "production is compatible". An import
+# resolving proves a module attribute exists, not that the API it exposes has the same
+# shape. Compatibility has to be probed by CALLING the surface.
+#
+# To lift this bound, port mcp_server.py to 2.0's request-handler API
+# (`add_request_handler` / middleware) and re-verify with:
+#   uv run --with 'mcp>=2.0' python -c \
+#     "from sentinel_harness.mcp_server import create_server; create_server()"
+# `tests/test_mcp_version_bound.py` fails if this bound is removed while the code still
+# depends on the 1.x decorators.
+mcp = ["mcp>=1.0,<2"]
 
 [project.scripts]
 sentinel = "sentinel_harness.cli:main"

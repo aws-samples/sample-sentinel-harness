@@ -161,6 +161,57 @@ def test_quoted_counts_match_reality():
     )
 
 
+def test_quoted_test_FILE_counts_match_reality():
+    """INV-DOC-2, second number: the count of test FILES, not just of tests.
+
+    The guard above tracked "3806 offline tests" and caught every drift in it. Meanwhile
+    "across **137** test files" — in the SAME SENTENCE of `docs/FIDELITY-REPORT.md`, and in
+    a ROADMAP table row — had drifted to a real 157 and nothing noticed, because the
+    regexes only ever captured the test count.
+
+    That is this repo's most-recorded shape once more, at the level of a CLAIM rather than a
+    code path: a guard written for one number in a sentence leaves the other numbers in that
+    sentence unguarded. A stale file count understates the suite by 13%, and a reference
+    whose checkable claims are wrong is judged on exactly that.
+    """
+    # A DEDICATED tolerance, not `_TEST_COUNT_TOLERANCE`. My first version reused it and the
+    # mutation "revert 157 back to 137" SURVIVED: ±60 is 1.6% of ~3800 tests (sensible) but
+    # ±38% of 157 files, so the check accepted almost any number while reporting green. A
+    # tolerance is calibrated to a MAGNITUDE; borrowing one across two magnitudes in the same
+    # file yields a guard that runs and verifies nothing. Files are added a handful at a time,
+    # so ±3 is generous and still catches real drift.
+    _FILE_COUNT_TOLERANCE = 3
+    actual = len([n for n in os.listdir(os.path.join(REPO_ROOT, "tests"))
+                  if n.startswith("test_") and n.endswith(".py")])
+    patterns = (
+        re.compile(r"across (\d{2,4}) test files"),
+        re.compile(r"\|\s*`tests/`\s*\|\s*(\d{2,4}) files"),
+    )
+    quoted: dict[str, list[int]] = {}
+    for rel in _DOC_FILES:
+        if not os.path.isfile(os.path.join(REPO_ROOT, rel)):
+            continue
+        text = _read(rel)
+        hits = [int(m.group(1)) for rx in patterns for m in rx.finditer(text)]
+        if hits:
+            quoted[rel] = hits
+
+    # Positive control: a scan that matches nothing proves nothing. If the phrasing
+    # changed, this must fail loudly rather than vacuously pass.
+    assert quoted, (
+        "no test-FILE-count claims found in the docs. Either the phrasing changed "
+        "(update the patterns above) or the claims were removed — but this guard silently "
+        "matching nothing is how the 137-vs-157 drift survived in the first place."
+    )
+    stale = {rel: [n for n in nums if abs(n - actual) > _FILE_COUNT_TOLERANCE]
+             for rel, nums in quoted.items()}
+    stale = {rel: nums for rel, nums in stale.items() if nums}
+    assert not stale, (
+        f"docs quote a stale test-FILE count (tests/ really has {actual} test_*.py files, "
+        f"tolerance ±{_FILE_COUNT_TOLERANCE}): {stale}."
+    )
+
+
 def test_quoted_test_counts_do_not_contradict_each_other():
     """Two files (or two lines) must never assert DIFFERENT current sizes.
 

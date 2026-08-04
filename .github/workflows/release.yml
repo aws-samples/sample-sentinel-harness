@@ -46,8 +46,13 @@ jobs:
       - name: Install (mirrors ci.yml toolchain)
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
-          pip install pytest pytest-randomly coverage ruff==0.15.20 hypothesis
+          # `[test]` extra, matching ci.yml. Both files previously hand-copied a partial
+          # dep list that omitted `mcp` + `anyio[trio]`, so the release gate skipped the
+          # MCP protocol E2E layer too — the release gate is the LAST place a silently
+          # narrowed test run should go unnoticed. See the long comment in ci.yml.
+          pip install -e ".[test]"
+          pip install ruff==0.15.20
+          python -c "import mcp, anyio, trio, hypothesis, pytest_randomly, coverage; print('test extra OK')"
       - name: Lint (ruff)
         run: ruff check .
       - name: Test suite (coverage-gated, same 88% floor as CI)
