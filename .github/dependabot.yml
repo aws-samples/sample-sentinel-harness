@@ -53,6 +53,21 @@ updates:
           - "typescript"
           - "ts-node"
           - "@types/*"
+    # TypeScript is held at 5.x, with evidence rather than caution. Tested empirically:
+    # under 7.0.2 `tsc --noEmit` is CLEAN (the 7 x TS2591 "Cannot find name 'process'"
+    # errors were only a missing `types: ["node"]`, now declared in tsconfig.json), but
+    # ALL 8 stack tests die at startup with `TypeError: Cannot read properties of
+    # undefined (reading 'fileExists')` — TS 7 is the native rewrite and no longer
+    # exposes the `ts.sys` JS surface that `ts-node` reads its tsconfig through.
+    #
+    # `.github/workflows/ci.yml` runs those tests via `npx ts-node` per file (no jest),
+    # so adopting TS 7 means the IaC test layer cannot start at all. Lifting this needs a
+    # runner migration (tsx, `node --experimental-strip-types`, or jest+swc) as its own
+    # change, not a version bump. Re-verify with:
+    #     npm install typescript@~7 && npx tsc --noEmit && npx ts-node test/*.test.ts
+    ignore:
+      - dependency-name: "typescript"
+        versions: [">=7.0.0"]
 
   # --- GitHub Actions -----------------------------------------------------
   - package-ecosystem: "github-actions"
