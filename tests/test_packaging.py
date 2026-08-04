@@ -17,10 +17,21 @@ import sys
 
 import pytest
 
+# TOML reader. `tomllib` is stdlib from 3.11; on 3.10 — which `requires-python = ">=3.10"`
+# declares as supported — the standard backport `tomli` provides the identical API.
+#
+# This used to be `tomllib = None` on 3.10, and the fixture skipped. The consequence was
+# that EVERY test reading pyproject.toml — 7 of this file's 12, including the INV-MCP-2
+# packaging guard added in round 20 — was inert on the project's own minimum version. CI
+# covers 3.11+ so the guard still had teeth there, but a guard that evaporates on the
+# floor version is a guard with a documented hole in it.
 if sys.version_info >= (3, 11):
     import tomllib
-else:  # pragma: no cover — py3.10 fallback
-    tomllib = None
+else:  # pragma: no cover — py3.10 path, exercised in the 3.10 CI leg
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ImportError:  # pragma: no cover
+        tomllib = None  # type: ignore[assignment]
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PYPROJECT = os.path.join(_REPO_ROOT, "pyproject.toml")
