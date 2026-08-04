@@ -34,6 +34,7 @@ from __future__ import annotations
 import os, json, time, uuid
 import boto3
 from botocore.config import Config
+from typing import Any
 
 from .logutil import get_logger
 
@@ -47,8 +48,71 @@ _DATA_CONFIG = Config(read_timeout=180, connect_timeout=15, retries={"max_attemp
 # with _data (bounded connect/read + retries) instead of relying on boto defaults.
 _CONTROL_CONFIG = Config(read_timeout=60, connect_timeout=15, retries={"max_attempts": 3})
 
-_control = boto3.client("bedrock-agentcore-control", region_name=REGION, config=_CONTROL_CONFIG)
-_data = boto3.client("bedrock-agentcore", region_name=REGION, config=_DATA_CONFIG)
+class _LazyClient:
+    """A boto3 client built on FIRST USE, not at import time.
+
+    Why this exists. `boto3.client("bedrock-agentcore-control")` costs ~2.1s and
+    `boto3.client("bedrock-agentcore")` ~2.0s — service models with 153 operations get
+    parsed and the credential chain resolved. Constructing both at import time meant a
+    bare ``import sentinel_harness`` took **4.5s at 7% CPU**: not computing, waiting.
+
+    Three consequences, the third being the one that matters most:
+
+    1. Every subprocess test paid it. 26 of them (the scenario + README-CLI E2E layers)
+       cost ~4.5s each — about 115s of a 202s suite, more than half, spent on work
+       nothing asked for.
+    2. **Importing a library had side effects.** `import sentinel_harness` read
+       ``~/.aws/``, and on an EC2 host the credential chain can reach the instance
+       metadata service. A library must not touch the network or the user's credential
+       store just to be imported.
+    3. It forced the testing style. Because the real clients already existed by the time
+       any test ran, the only way to substitute a fake was to patch the module global
+       after the fact — which ~48 test files do.
+
+    Deliberately a proxy rather than a function, so nothing about the call sites or the
+    tests changes: `_control.create_harness(...)` still works, and
+    `monkeypatch.setattr(core, "_control", fake)` still replaces the whole object. Sibling
+    modules that bind `from .core import _control` get this proxy, and `set_region` still
+    rebinds them explicitly.
+
+    Thread-safety is deliberately NOT added. Two threads racing the first access would
+    build two clients and one would be discarded — wasteful, never wrong, since boto3
+    clients are independent. A lock here would be a hot-path cost paid by every call to
+    protect against a harmless race.
+
+    No ``__slots__``, deliberately. The first version had it and broke
+    ``test_gateway.py::test_scenario_named_supervisor_imports_without_aws``, which patches
+    a method ON the client object (``setattr(sh._control, "create_gateway", ...)``) rather
+    than replacing the client wholesale. That is a legitimate existing pattern — it proves
+    importing a scenario makes no AWS call — and supporting it is part of the contract this
+    proxy has to keep. Three instances exist per process, so the memory `__slots__` would
+    save is irrelevant next to breaking a caller.
+    """
+
+    def __init__(self, service: str, config: Config) -> None:
+        self._service = service
+        self._config = config
+        self._client: Any = None
+
+    def _resolve(self) -> Any:
+        if self._client is None:
+            self._client = boto3.client(
+                self._service, region_name=REGION, config=self._config
+            )
+        return self._client
+
+    def __getattr__(self, name: str) -> Any:
+        # __slots__ names are handled by the descriptors, so anything reaching here is a
+        # boto3 API surface (`create_harness`, `exceptions`, `meta`, ...).
+        return getattr(self._resolve(), name)
+
+    def __repr__(self) -> str:
+        state = "built" if self._client is not None else "not yet built"
+        return f"<_LazyClient {self._service!r} ({state})>"
+
+
+_control: Any = _LazyClient("bedrock-agentcore-control", _CONTROL_CONFIG)
+_data: Any = _LazyClient("bedrock-agentcore", _DATA_CONFIG)
 
 
 def set_region(region: str) -> None:
@@ -66,8 +130,13 @@ def set_region(region: str) -> None:
         raise ValueError("region must be a non-empty string")
     REGION = region
     os.environ["SENTINEL_REGION"] = region
-    _control = boto3.client("bedrock-agentcore-control", region_name=region, config=_CONTROL_CONFIG)
-    _data = boto3.client("bedrock-agentcore", region_name=region, config=_DATA_CONFIG)
+    # Lazy, like the import-time pair: `set_region` is called by the CLI's `--region`
+    # flag before any AWS work happens, so building the clients here would put the ~4.2s
+    # construction back on the startup path of every command — including the offline
+    # detection commands, which never touch AWS at all. `_LazyClient` reads the
+    # module-global REGION when it resolves, which this function has already updated.
+    _control = _LazyClient("bedrock-agentcore-control", _CONTROL_CONFIG)
+    _data = _LazyClient("bedrock-agentcore", _DATA_CONFIG)
     # Sibling modules bind `from .core import _control` at import time, so their
     # local name still points at the OLD client after we reassign ours. Rebind the
     # borrowers explicitly (best-effort: they may not be imported yet) so a runtime
