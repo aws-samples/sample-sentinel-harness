@@ -76,7 +76,7 @@ entire suite stays green (all tests pass under the `--include` run).
 ## Current M3 numbers
 
 Ground truth from the `--include` run above over the full `tests/` suite
-(3755 passed, 9 skipped; branch coverage on).
+(3772 passed, 9 skipped; branch coverage on).
 
 > These numbers are **checked, not asserted**.
 > `tests/test_coverage_doc.py` re-measures every row against a fresh coverage run and
@@ -97,7 +97,7 @@ Ground truth from the `--include` run above over the full `tests/` suite
 | `longrunning/detonation/src/vm.py` | 93% | 281, 327, 340, 348 |
 | `specialists/attack-mapper/agent_a2a.py` | 100% | — |
 | `specialists/threat-hunt/agent_a2a.py` | 100% | — |
-| `specialists/cve-intel/agent_a2a.py` | 60% | 166-171, 216-237 (`build_app` / `serve` wrappers behind guarded optional deps) |
+| `specialists/cve-intel/agent_a2a.py` | 100% | — (was **60%**; see the note below) |
 
 Whole-repo `TOTAL` under these include globs: **92%**.
 
@@ -113,8 +113,23 @@ asserted `callable(build_loop)` without ever calling it. 27 tests later it is at
 and 5/5 mutations of its security logic are caught (INV-PLAY-3 checkpoint substitution,
 the session-cap restart path, and the two deliberately-swallowed exceptions).
 
-The remaining `build_app` / `serve` wrapper gaps sit behind optional heavy deps
-(`strands` / `bedrock_agentcore` / `a2a`) that CI guards with `importorskip`.
+All four specialists now sit at 100%, and how they got there is worth recording. Round 8
+compared them and found `cve-intel` at 60% while its three structurally identical siblings
+were at 100%. The gap was **not** difficulty: `tests/test_attack_mapper.py` reaches the
+lazily-imported `strands` / `mcp` / `fastapi` paths by injecting stub module trees with
+`monkeypatch.setitem(sys.modules, ...)`, and that technique had simply never been carried to
+`cve-intel`'s tests. "A fix applied to one call site is not an invariant" — this time the
+thing applied to one call site was a TESTING TECHNIQUE.
+
+The same comparison caught `adversarial-reviewer` at 96.5%: three unreached branches in
+`_artifact_to_text` / `_condition_line` (a list nested in a list, a bare scalar artifact, and
+the no-condition fallback), all trivially reachable.
+
+Both sets are mutation-tested. One of the six mutations initially SURVIVED — dropping nested
+lists from the artifact text — because the new assertion checked `"a" in text`, which still
+holds when the list renders as Python's repr `- ['a', 'b']`. Substring standing in for
+structure, the error this repo has recorded more than any other. The assertion now checks the
+line structure and indentation and rejects a leaked repr; the mutation is caught.
 
 ## Guard: the coverage smoke test
 
