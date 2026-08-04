@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import os
 import pathlib
-import subprocess
 
 import pytest
+
+import child_pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCENARIO_DIR = REPO_ROOT / "scenarios"
@@ -91,6 +92,32 @@ _OFFLINE_RUNNABLE = (
 )
 
 
+def _hermetic_env() -> dict:
+    """The environment an offline scenario runs in: no AWS credentials, no ambient
+    SENTINEL_* config.
+
+    Credentials are actively STRIPPED rather than merely absent, so a developer's ambient
+    profile cannot make a live-only scenario look hermetic — and cannot let these tests
+    reach AWS. `PATH`/`HOME` and the uv/venv variables are preserved because the child
+    launcher needs them to start at all: stripping them was how the first version of this
+    module died on CI.
+    """
+    # Drop exactly the two families that could make a live-only scenario look hermetic;
+    # keep everything else, because the child launcher needs PATH/HOME/UV_*/VIRTUAL_ENV to
+    # start at all. The first version of this module built the env from a tiny allowlist
+    # and died on CI — the launcher could not run.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("AWS_", "SENTINEL_"))}
+    env["SENTINEL_REGION"] = "us-east-1"
+    env["AWS_DEFAULT_REGION"] = "us-east-1"
+    # A placeholder role: offline scenarios must not need a real one, but several read the
+    # variable at import time and refuse loudly when it is unset (correct behaviour).
+    env["SENTINEL_EXECUTION_ROLE_ARN"] = (
+        "arn:aws:iam::000000000000:role/sentinel-offline-test-role"
+    )
+    return env
+
+
 def _all_scenarios() -> list[str]:
     return sorted(p.stem for p in SCENARIO_DIR.glob("scenario_*.py"))
 
@@ -133,22 +160,8 @@ def test_an_offline_scenario_runs_clean(name):
     profile cannot make a live-only scenario look hermetic — and cannot let this test
     reach AWS.
     """
-    env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("AWS_", "SENTINEL_"))}
-    env["SENTINEL_REGION"] = "us-east-1"
-    env["AWS_DEFAULT_REGION"] = "us-east-1"
-    # A placeholder role: offline scenarios must not need a real one, but several read
-    # the variable at import time and refuse loudly when it is unset (correct behaviour).
-    env["SENTINEL_EXECUTION_ROLE_ARN"] = (
-        "arn:aws:iam::000000000000:role/sentinel-offline-test-role"
-    )
-    env["PATH"] = os.environ.get("PATH", "")
-    env["HOME"] = os.environ.get("HOME", "")
-
-    result = subprocess.run(
-        ["uv", "run", "python", f"scenarios/{name}.py"],
-        cwd=REPO_ROOT, capture_output=True, text=True, timeout=600, env=env,
-    )
+    result = child_pytest.run_python_script(
+        f"scenarios/{name}.py", env=_hermetic_env())
     output = (result.stdout or "") + (result.stderr or "")
     assert "NoCredentialsError" not in output, (
         f"{name} tried to reach AWS but is classified as offline-runnable — move it to "
@@ -170,20 +183,8 @@ def test_the_agent_authored_loop_proves_the_happy_path():
     """
     import json
 
-    env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("AWS_", "SENTINEL_"))}
-    env.update({
-        "SENTINEL_REGION": "us-east-1",
-        "AWS_DEFAULT_REGION": "us-east-1",
-        "SENTINEL_EXECUTION_ROLE_ARN":
-            "arn:aws:iam::000000000000:role/sentinel-offline-test-role",
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": os.environ.get("HOME", ""),
-    })
-    result = subprocess.run(
-        ["uv", "run", "python", "scenarios/scenario_agent_authored_loop.py"],
-        cwd=REPO_ROOT, capture_output=True, text=True, timeout=600, env=env,
-    )
+    result = child_pytest.run_python_script(
+        "scenarios/scenario_agent_authored_loop.py", env=_hermetic_env())
     assert result.returncode == 0, (result.stdout + result.stderr)[-1200:]
 
     evidence = REPO_ROOT / "evidence" / "agent_authored_loop_result.json"
