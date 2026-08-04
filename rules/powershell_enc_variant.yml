@@ -1,0 +1,21 @@
+title: Encoded PowerShell spawned by Explorer
+id: 8c2f1a44-1f2e-4a7b-9a1d-3c5e7b9d1102
+status: experimental
+level: high
+description: >-
+  Near-duplicate of the EncodedCommand rule, kept deliberately so
+  `detection audit` has a real redundancy finding to report.
+logsource:
+    product: windows
+    category: process_creation
+tags:
+    - attack.execution
+    - attack.t1059.001
+falsepositives:
+    - Same as the rule it duplicates
+detection:
+    selection:
+        Image|endswith: '\powershell.exe'
+        CommandLine|contains: '-enc'
+        ParentImage|endswith: '\explorer.exe'
+    condition: selection
