@@ -28,11 +28,24 @@
 # code the tests actually exercise, so the gate below is honest.
 [run]
 branch = true
+# The globs are anchored with a leading `*/` per coverage.py's matching, but they must NOT
+# be so loose that they swallow third-party code. `*/tools/*` alone matched
+# `site-packages/mcp/server/fastmcp/tools/` — 96 statements of somebody else's library, 46
+# of them uncovered, dragging the reported figure from ~92.6% down to 90.75%. That makes
+# the 88 floor LOOSER than it looks, because the denominator carries code this repo neither
+# owns nor should test. Excluding site-packages explicitly is the narrow fix: the include
+# globs stay simple (they have to, for the path-loaded flat trees described above) and the
+# omit rules cut out anything that is not ours.
 include =
     */tools/*
     */longrunning/*
     */specialists/*
     */sentinel_harness/*
+omit =
+    */site-packages/*
+    */.venv/*
+    */node_modules/*
+    */build/*
 
 [report]
 show_missing = true

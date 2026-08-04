@@ -76,22 +76,38 @@ entire suite stays green (all tests pass under the `--include` run).
 ## Current M3 numbers
 
 Ground truth from the `--include` run above over the full `tests/` suite
-(591 passed, 3 skipped; branch coverage on). These are the M3-relevant modules:
+(3725 passed, 6 skipped; branch coverage on).
+
+> These numbers are **checked, not asserted**.
+> `tests/test_coverage_doc.py` re-measures every row against a fresh coverage run and
+> fails the build when one drifts more than 5 points. The table below was a hand-written
+> M3-era snapshot for a long time — taken when the suite had 591 tests — and by the time a
+> sweep re-measured it, **five of its seven rows were wrong by 16 to 61 points, every one
+> of them UNDERSTATING the real coverage.** A document that makes the project look worse
+> than it is misdirects effort exactly as much as one that flatters it, and nothing was
+> checking this one.
 
 | Module | Cover | Notable missing (branch) |
 |---|--:|---|
-| `tools/sigma_match/handler.py` | 65% | 137-212 (minimal-YAML fallback parser, only when PyYAML is absent); 234-242, 270, 354, 401, 445, 459, 463, 472, 495-497, 550-570 (matcher/condition edge branches) |
-| `tools/asset_lookup/handler.py` | 90% | 192, 243, 275, 298, 311-313 (and it has no dedicated test file — only exercised via `test_attack_mapper.py`) |
-| `longrunning/bas-runner/bas_cases.py` | 84% | 280-283, 298-300, 420-439 (tails) |
-| `longrunning/detonation/bedrock_entrypoint.py` | 35% | 103-109, 150-167, 205-206, 238-287 (`@app.entrypoint` async generator `run_detonation` orchestration + event yields + error/restart branches) |
-| `longrunning/detonation/src/vm.py` | 92% | 192, 234, 247, 255 |
-| `specialists/attack-mapper/agent_a2a.py` | 80% | 469-474, 519-533 (`build_app` / `serve` wrappers behind guarded deps) |
-| `specialists/threat-hunt/agent_a2a.py` | 81% | 479-484, 529-543 (same `serve` / `build_app` wrappers) |
+| `tools/sigma_match/handler.py` | 98% | 140, 143, 890-910 (fallback-parser tails; the minimal-YAML path is now covered) |
+| `tools/asset_lookup/handler.py` | 90% | 350, 386, 389, 407, 438, 450-452, 506, 516-520 (live-path error branches) |
+| `longrunning/bas-runner/bas_cases.py` | 100% | — |
+| `longrunning/bas-runner/bedrock_entrypoint.py` | 19% | 68-236 — the `@app.entrypoint` async generator. **The lowest file in the repo**, and the honest reason is that it is an AgentCore Runtime entrypoint: it needs the `bedrock_agentcore` app harness plus a live session to drive its event yields. Its sibling `longrunning/detonation/bedrock_entrypoint.py` reaches 96% because that one factors its orchestration into callable helpers; doing the same here is the concrete way to close this gap. |
+| `longrunning/detonation/bedrock_entrypoint.py` | 96% | 61 |
+| `longrunning/detonation/src/vm.py` | 93% | 281, 327, 340, 348 |
+| `specialists/attack-mapper/agent_a2a.py` | 100% | — |
+| `specialists/threat-hunt/agent_a2a.py` | 100% | — |
+| `specialists/cve-intel/agent_a2a.py` | 60% | 166-171, 216-237 (`build_app` / `serve` wrappers behind guarded optional deps) |
 
-Whole-repo `TOTAL` under these include globs: **77%**.
+Whole-repo `TOTAL` under these include globs: **91%**.
 
-The larger gaps (`sigma_match` fallback parser, `bedrock_entrypoint` async
-main flow) are the biggest measurable M3 targets; the `build_app`/`serve`
+That total is measured with `site-packages` **omitted**. Until a sweep caught it, the
+`*/tools/*` include glob also matched `site-packages/mcp/server/fastmcp/tools/` — 96
+statements of a third-party library, 46 uncovered — which dragged the reported figure from
+91.19% down to 90.75% and made the 88 floor looser than it looked, because the denominator
+carried code this repo neither owns nor should test.
+
+The remaining real gap is `bas-runner/bedrock_entrypoint.py`; the `build_app`/`serve`
 wrapper gaps sit behind optional heavy deps (`strands` / `bedrock_agentcore` /
 `a2a`) that CI guards with `importorskip`.
 
