@@ -22,7 +22,14 @@
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "outDir": "dist",
-    "typeRoots": ["./node_modules/@types"]
+    "typeRoots": ["./node_modules/@types"],
+    // Explicit, and load-bearing from TypeScript 7. Up to 5.x an unset `types` meant
+    // "include every @types/* package found under typeRoots", so `process`, `crypto`,
+    // `path` and `__dirname` resolved implicitly. TS 7 no longer does that, and the
+    // upgrade failed with 7 x TS2591/TS2304 "Cannot find name 'process'" until this
+    // line was added. `@types/node` was already a devDependency the whole time — only
+    // the declaration was missing.
+    "types": ["node"]
   },
   "include": ["bin/**/*.ts", "lib/**/*.ts"],
   "exclude": ["node_modules", "cdk.out", "dist"]
