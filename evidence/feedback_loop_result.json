@@ -58,7 +58,7 @@
           "match_type": "domain_suffix"
         },
         "suppressed_count": 3,
-        "sigma_filter_yaml": "detection:\n    filter_known_good:\n        dst_domain|endswith: 'assets.example.com'\n    condition: selection and not filter_known_good\n",
+        "sigma_filter_yaml": "detection:\n    filter_known_good_apex:\n        dst_domain: 'assets.example.com'\n    filter_known_good_sub:\n        dst_domain|endswith: '.assets.example.com'\n    condition: selection and not (filter_known_good_apex or filter_known_good_sub)\n",
         "preserves_tp": true
       }
     },

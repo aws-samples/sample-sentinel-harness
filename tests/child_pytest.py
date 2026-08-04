@@ -159,3 +159,90 @@ def run_child_suite(
             f"status cannot be read as a verdict:\n{output[-400:]}"
         )
     return ChildResult(completed.returncode, output)
+
+
+# --------------------------------------------------------------------------- #
+# The same problem for a plain PYTHON script                                   #
+# --------------------------------------------------------------------------- #
+# `tests/test_scenarios_execute.py` runs `scenarios/*.py` in a subprocess. It first
+# hardcoded ["uv", "run", "python", ...] and died on CI with returncode 255, because CI
+# has no `uv` — the FIFTH time this launcher mistake has been made in this repo, and the
+# first time inside a test written AFTER the module built to prevent it.
+#
+# The lesson that keeps not sticking: a helper only prevents the recurrence for the call
+# shape it actually exports. `child_pytest` exported "run pytest" and nothing else, so the
+# next author (me) needing "run a python script" copied the pattern instead of reusing the
+# resolution. Hence this sibling.
+_PY_CANDIDATES: tuple[List[str], ...] = (
+    # The parent's own interpreter — correct in CI, in a venv, and under `uv run`, and
+    # needs nothing on PATH.
+    [sys.executable],
+    # A uv-managed environment where sys.executable somehow cannot import the package.
+    ["uv", "run", "python"],
+    ["python3"],
+)
+
+_resolved_py: Optional[List[str]] = None
+
+
+def _probe_python(launcher: List[str]) -> bool:
+    """True if this launcher can run python AND import the package under test.
+
+    Importing `sentinel_harness` is part of the probe on purpose: a bare `python3` on PATH
+    may exist while having none of the dependencies, and a launcher that starts but cannot
+    import turns every scenario into a false failure.
+    """
+    try:
+        result = subprocess.run(
+            [*launcher, "-c", "import sentinel_harness"],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=180,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def resolve_python_launcher() -> List[str]:
+    """The argv prefix that runs a repo python script in this environment. Cached."""
+    global _resolved_py
+    if _resolved_py is not None:
+        return _resolved_py
+    for candidate in _PY_CANDIDATES:
+        if _probe_python(candidate):
+            _resolved_py = candidate
+            return _resolved_py
+    raise ChildNeverRan(
+        "no way to launch a child python that can import sentinel_harness was found. "
+        "Tried: " + "; ".join(" ".join(c) for c in _PY_CANDIDATES)
+    )
+
+
+def run_python_script(
+    relpath: str,
+    *,
+    env: Optional[dict] = None,
+    timeout: float = 600,
+) -> subprocess.CompletedProcess:
+    """Run a repo-relative python script in a subprocess and return the completed process.
+
+    Raises :class:`ChildNeverRan` when the launcher itself could not start, so "the child
+    never ran" can never be mistaken for "the script failed" — the distinction that made
+    three separate guards look healthy while proving nothing.
+    """
+    launcher = resolve_python_launcher()
+    run_env = dict(env) if env is not None else None
+    try:
+        return subprocess.run(
+            [*launcher, relpath],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+            timeout=timeout, env=run_env,
+        )
+    except FileNotFoundError as exc:
+        raise ChildNeverRan(
+            f"the python launcher {launcher!r} vanished between probe and run: {exc}"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ChildNeverRan(
+            f"{relpath} did not finish within {timeout}s, so its exit status cannot be "
+            f"interpreted: {exc}"
+        ) from exc

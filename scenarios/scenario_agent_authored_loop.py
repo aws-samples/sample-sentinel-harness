@@ -102,8 +102,18 @@ def _scripted_agent(calls: List[Dict[str, Any]]):
 
 def _passing_eval(inp: Dict[str, Any]) -> Dict[str, Any]:
     """A deterministic eval handler that names its subject — REQUIRED for the
-    subject-bound witness gate (an unbound pass witnesses nothing)."""
-    return {"score": 0.92, "dimension_scores": {"correctness": 0.92, "safety": 1.0},
+    subject-bound witness gate (an unbound pass witnesses nothing).
+
+    It must also score EVERY veto dimension. `groundedness` was missing, so
+    INV-PROMOTE-3's fail-closed rule ("a judge's silence is not a pass") refused the
+    happy path and this scenario exited 1 while still writing its evidence file —
+    a committed artifact claiming to prove the promotion path actually recorded it
+    failing. The stub went stale when M18.1 added the requirement; nothing caught it
+    because no test runs this scenario (round 21 added one).
+    """
+    return {"score": 0.92,
+            "dimension_scores": {"correctness": 0.92, "safety": 1.0,
+                                 "groundedness": 0.95},
             "feedback": {}, "harness_id": SUBJECT}
 
 
