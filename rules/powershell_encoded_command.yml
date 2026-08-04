@@ -1,0 +1,23 @@
+title: PowerShell EncodedCommand from Explorer
+id: 8c2f1a44-1f2e-4a7b-9a1d-3c5e7b9d1101
+status: experimental
+level: high
+description: >-
+  powershell.exe launched by explorer.exe with -EncodedCommand. Base64-encoded
+  command lines are a common way to hide payloads from log review.
+references:
+  - https://attack.mitre.org/techniques/T1059/001/
+logsource:
+    product: windows
+    category: process_creation
+tags:
+    - attack.execution
+    - attack.t1059.001
+falsepositives:
+    - Administrative scripts that legitimately pass encoded arguments
+detection:
+    selection:
+        Image|endswith: '\powershell.exe'
+        CommandLine|contains: '-EncodedCommand'
+        ParentImage|endswith: '\explorer.exe'
+    condition: selection

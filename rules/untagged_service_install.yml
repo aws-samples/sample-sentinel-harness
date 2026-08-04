@@ -1,0 +1,17 @@
+title: New Windows Service Installed
+id: 8c2f1a44-1f2e-4a7b-9a1d-3c5e7b9d1104
+status: experimental
+level: medium
+description: >-
+  A new service was installed. Intentionally carries NO attack.* tag, so
+  `detection audit --techniques` reports it as contributing no ATT&CK coverage —
+  an untagged rule under-reports itself, which is the conservative direction.
+logsource:
+    product: windows
+    service: system
+falsepositives:
+    - Software installation and patching windows
+detection:
+    selection:
+        EventID: 7045
+    condition: selection
