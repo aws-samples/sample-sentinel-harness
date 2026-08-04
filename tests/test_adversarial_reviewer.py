@@ -841,3 +841,72 @@ def test_default_model_id_is_version_pinned():
             assert _MODEL_VERSION_SUFFIX_RE.search(found), (
                 f"default model id {found!r} is not version-pinned"
             )
+
+
+# --------------------------------------------------------------------------- #
+# The three branches the sibling-symmetry sweep found uncovered               #
+# --------------------------------------------------------------------------- #
+class TestArtifactRenderingEdgeBranches:
+    """Round 8 compared the four structurally identical specialists and found this one at
+    96.5% while its siblings sat at 100%. The three uncovered lines were not hard to reach —
+    a nested list-in-list, a scalar-only artifact, and the no-condition fallback. Same
+    "untested, not untestable" pattern the sweep found in `cve-intel`.
+
+    They matter because `_artifact_to_text` is what turns a rule artifact into the text the
+    REVIEWER agent reads. A shape it renders wrongly (or drops) is a rule reviewed on
+    incomplete evidence.
+    """
+
+    def test_a_list_nested_inside_a_list_is_rendered(self):
+        """The `isinstance(item, (dict, list))` recursion inside the list branch.
+
+        Asserted STRUCTURALLY, not by substring. My first version checked
+        `"a" in text and "b" in text` — and a mutation that drops the `list` half of the
+        isinstance check SURVIVED it, because the nested list then falls to the `else` arm
+        and renders as Python's repr, `- ['a', 'b']`, which still contains the letters a
+        and b. Substring standing in for structure, again; this repo has recorded that
+        exact error more times than any other.
+
+        The real property is that each element gets its OWN line at a deeper indent, and
+        that no Python repr leaks into text a reviewer reads as a rule.
+        """
+        text = agent_a2a._artifact_to_text({"selection": [["a", "b"], "c"]})
+        lines = text.splitlines()
+        assert "['" not in text and '["' not in text, (
+            f"a Python list repr leaked into the artifact text: {text!r}"
+        )
+        nested = [ln for ln in lines if ln.strip() in ("- a", "- b")]
+        assert len(nested) == 2, (
+            f"the nested list was not expanded element-by-element: {lines!r}"
+        )
+        outer = [ln for ln in lines if ln.strip() == "- c"]
+        assert len(outer) == 1, f"the outer element is missing: {lines!r}"
+        # The nested elements sit DEEPER than the outer one — that is what the recursive
+        # `indent + 1` buys, and a flattened render would lose the rule's shape.
+        indent_of = lambda ln: len(ln) - len(ln.lstrip())  # noqa: E731
+        assert indent_of(nested[0]) > indent_of(outer[0]), (
+            f"nested elements are not indented deeper than the outer list: {lines!r}"
+        )
+
+    def test_a_dict_nested_inside_a_list_is_rendered(self):
+        text = agent_a2a._artifact_to_text({"selection": [{"EventID": 4624}, "tail"]})
+        assert "EventID" in text and "4624" in text, text
+        assert "tail" in text
+
+    def test_a_bare_scalar_artifact_renders_as_itself(self):
+        """The `else` arm: an artifact that is neither dict nor list. Passing a bare string
+        must not produce empty text — the reviewer would then see no rule at all."""
+        assert agent_a2a._artifact_to_text("condition: selection") == "condition: selection"
+        assert agent_a2a._artifact_to_text(42) == "42"
+
+    def test_a_rule_with_no_condition_yields_none(self):
+        """`_condition_line`'s fallback. `None` is the signal "this rule declares no
+        condition", which downstream treats as non-actionable — collapsing it to an empty
+        string would make a rule that can never fire look like one with an empty condition.
+        """
+        assert agent_a2a._condition_line("title: t\nlogsource:\n  product: windows") is None
+
+    def test_a_condition_is_extracted_after_the_marker(self):
+        """CONTROL: the fallback must not swallow a real condition."""
+        found = agent_a2a._condition_line("detection:\n  condition: selection and not filter")
+        assert found == "selection and not filter", found
