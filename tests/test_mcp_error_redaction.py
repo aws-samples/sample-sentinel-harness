@@ -343,7 +343,7 @@ async def test_a_raising_tool_returns_redacted_text_over_the_protocol(monkeypatc
     repeatedly.
     """
     pytest.importorskip("mcp", reason="the MCP SDK provides the in-memory transport")
-    from mcp.shared.memory import create_connected_server_and_client_session
+    from mcp_session import connected_session
 
     secret = "SUPERSECRET_PW"
 
@@ -360,7 +360,7 @@ async def test_a_raising_tool_returns_redacted_text_over_the_protocol(monkeypatc
 
     monkeypatch.setattr(ms, "_discover_tools", _with_a_raising_tool)
     server, _ = ms.create_server()
-    async with create_connected_server_and_client_session(server) as session:
+    async with connected_session(server) as session:
         result = await session.call_tool("probe_raiser", {"event": {}})
         text = "".join(getattr(c, "text", "") for c in result.content)
         assert secret not in text, f"the password crossed the protocol boundary: {text}"
@@ -374,10 +374,10 @@ async def test_an_unknown_tool_name_does_not_echo_the_registry(monkeypatch):
     error, and it is also a listing an untrusted peer could otherwise not obtain if
     governance excluded a tool — so it must only name tools the peer can already see."""
     pytest.importorskip("mcp")
-    from mcp.shared.memory import create_connected_server_and_client_session
+    from mcp_session import connected_session
 
     server, _ = ms.create_server()
-    async with create_connected_server_and_client_session(server) as session:
+    async with connected_session(server) as session:
         listed = {t.name for t in (await session.list_tools()).tools}
         result = await session.call_tool("no_such_tool", {"event": {}})
         text = "".join(getattr(c, "text", "") for c in result.content)

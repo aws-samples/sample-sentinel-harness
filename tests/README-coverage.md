@@ -76,7 +76,7 @@ entire suite stays green (all tests pass under the `--include` run).
 ## Current M3 numbers
 
 Ground truth from the `--include` run above over the full `tests/` suite
-(3812 passed, 6 skipped; branch coverage on).
+(3817 passed, 6 skipped; branch coverage on).
 
 > These numbers are **checked, not asserted**.
 > `tests/test_coverage_doc.py` re-measures every row against a fresh coverage run and
