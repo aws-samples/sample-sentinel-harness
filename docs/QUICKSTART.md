@@ -86,10 +86,28 @@ make destroy        # removes all sentinel-* CDK stacks (leaves the CDKToolkit b
 When configuration isn't enough, export a harness to editable [Strands](https://strandsagents.com/) agent code and migrate off the managed harness:
 
 ```bash
+# By NAME — works from anywhere, including a `pip install sentinel-harness`
+# with no checkout on disk. All 8 shipped harnesses resolve this way.
+sentinel export alert-triage
+
+# Or by PATH, when you are editing a harness inside a checkout:
 sentinel export harnesses/alert-triage/harness.yaml
 ```
 
 The command reads a `harness.yaml` via the loader and emits an editable Python Strands Agent skeleton (model · system prompt · tools · memory) — a real, standalone text artifact. Strands does not need to be installed to run the export.
+
+Several harnesses reference their AWS resources through `${SENTINEL_*}` placeholders (12-factor
+config), so export **refuses** rather than emitting a skeleton with an empty ARN:
+
+```bash
+export SENTINEL_GATEWAY_ARN=arn:aws:bedrock-agentcore:us-east-1:<account>:gateway/<id>
+export SENTINEL_MEMORY_ID=<memory-id>
+sentinel export alert-triage > my_agent.py
+```
+
+Without them you get `error: environment variable ${SENTINEL_GATEWAY_ARN} referenced by
+harness.yaml … is not set` and a non-zero exit — an explicit refusal, not a silently
+half-configured agent.
 
 ---
 

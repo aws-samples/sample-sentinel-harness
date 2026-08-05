@@ -353,3 +353,89 @@ def test_the_release_workflow_builds_from_a_fresh_checkout():
                 f"release job {name!r} restores a cache covering {cached!r}, which can "
                 "resurrect a stale build/lib/ staging tree in the published artifact."
             )
+
+# --------------------------------------------------------------------------- #
+# harnesses/ — the documented no-lock-in escape hatch (INV-PKG-4)             #
+# --------------------------------------------------------------------------- #
+def _disk_harnesses() -> set:
+    d = os.path.join(REPO_ROOT, "harnesses")
+    return {
+        name for name in os.listdir(d)
+        if os.path.isfile(os.path.join(d, name, "harness.yaml"))
+    }
+
+
+def _wheel_harnesses(wheel: str) -> set:
+    with zipfile.ZipFile(wheel) as zf:
+        return {
+            n.split("/")[1] for n in zf.namelist()
+            if n.startswith("harnesses/") and n.endswith("/harness.yaml")
+        }
+
+
+def test_every_harness_reaches_the_wheel(built_wheel):
+    """`sentinel export <name>` is the documented no-lock-in escape hatch, and it could not
+    work on an installed wheel.
+
+    Reproduced from a directory unrelated to any checkout:
+
+        sentinel export alert-triage
+        -> error: could not resolve harness 'alert-triage' ... under <site-packages>/harnesses/
+
+    The resolver was correct — `_REPO_ROOT` is the parent of `sentinel_harness/`, which is
+    site-packages on an installed wheel, so it looked in exactly the right place and named it.
+    The DATA was missing: `packages.find.include` listed `sentinel_harness*`, `intake*`,
+    `tools*`, `mockdata*` and not `harnesses*`.
+
+    INV-MCP-2 fixed precisely this shape for `registry/` — a data tree omitted from the wheel,
+    breaking an installed-only path. `harnesses/` was left out of that fix, so this is "a fix
+    applied to one call site is not an invariant" landing on a packaging include list. Hence a
+    guard over the whole set rather than over one name.
+
+    All 8 harnesses verified to export from an installed wheel (108-143 lines of Strands code
+    each), with the required 12-factor env vars set.
+    """
+    missing = sorted(_disk_harnesses() - _wheel_harnesses(built_wheel))
+    assert not missing, (
+        f"harness(es) present in harnesses/ but absent from the wheel: {missing}. "
+        "`sentinel export <name>` — taught in README.md and docs/QUICKSTART.md — cannot "
+        "resolve them on an installed wheel. Add `harnesses*` to "
+        "[tool.setuptools.packages.find].include."
+    )
+    # Positive control: comparing two empty sets succeeds.
+    assert len(_disk_harnesses()) >= 5, (
+        f"only found {len(_disk_harnesses())} harnesses on disk — this guard is now blind"
+    )
+
+
+def test_the_wheel_ships_no_harness_that_was_deleted(built_wheel):
+    """The other direction, same reasoning as the tool-handler check above: a stale build/lib/
+    staging tree resurrects removed entries (INV-PKG-2), and a harness nobody maintains is as
+    bad as a tool nobody maintains."""
+    ghosts = sorted(_wheel_harnesses(built_wheel) - _disk_harnesses())
+    assert not ghosts, (
+        f"the wheel ships harness(es) deleted from harnesses/: {ghosts}. Run `make clean`."
+    )
+
+
+def test_each_shipped_harness_carries_its_system_prompt(built_wheel):
+    """A harness.yaml without its prompt file exports a broken agent.
+
+    Checked because `packages.find` with `namespaces = true` ships whatever files sit beside
+    the package — which is convenient and therefore easy to over-trust. `harness.yaml`
+    reaching the wheel does not imply the `.md` beside it did.
+    """
+    with zipfile.ZipFile(built_wheel) as zf:
+        names = set(zf.namelist())
+    incomplete = []
+    for name in sorted(_disk_harnesses()):
+        prompt_on_disk = os.path.join(REPO_ROOT, "harnesses", name, "system_prompt.md")
+        if not os.path.isfile(prompt_on_disk):
+            continue  # not every harness uses a separate prompt file
+        if f"harnesses/{name}/system_prompt.md" not in names:
+            incomplete.append(name)
+    assert not incomplete, (
+        f"harness(es) shipped without their system_prompt.md: {incomplete}. The exported agent "
+        "would carry no instructions. package-data/namespace packaging includes non-.py files "
+        "only if they match — verify rather than assume."
+    )
