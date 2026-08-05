@@ -57,6 +57,18 @@ jobs:
           # guard that skips in CI is the failure mode INV-CI-1 and INV-DOC-5 both record.
           pip install build
           python -c "import build; print('build backend OK')"
+          # `uv` is needed by tests/test_installed_cli_e2e.py (INV-PKG-4), which installs the
+          # built wheel into an ISOLATED environment (`uv run --no-project --with <wheel>`) and
+          # runs the documented CLI there. That isolation is the whole point: it is the only
+          # configuration in which "the file is in the wheel but the command does not work" is
+          # visible, and it found `sentinel export <name>` broken for all 8 harnesses.
+          #
+          # The guard REFUSES to skip when CI=1, so the first run of this layer failed the job
+          # with "uv is not available but CI=1" — working exactly as intended. The fix is to
+          # provide the tool, not to relax the guard: INV-CI-1, INV-DOC-5, INV-PKG-1 and
+          # INV-PKG-2 are all records of a check that went quiet instead of failing.
+          pip install uv
+          uv --version
           # Fail loudly here rather than skipping quietly later: if an optional test
           # dependency did not install, every test that needs it would report "skipped",
           # which is indistinguishable from "there was nothing to run".
