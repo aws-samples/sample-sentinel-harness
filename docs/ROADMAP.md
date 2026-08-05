@@ -46,12 +46,12 @@ live) · 🟡 skeleton / partial · 🔴 gap.
 |---|---|:--:|---|
 | `harnesses/` | `alert-triage` / `detection-eng` / `research-supervisor` | ✅ loader-consumed | missing meta / ops / self-improving harnesses |
 | `scenarios/` | 15 runnable scenarios incl. `cve_triage` / `detection_gen` / `hitl_resume` / `multi_harness` / `named_supervisor` / `play_mode` / `agent_factory_loop` / `self_improve_loop` / `bas_replay` / `egress_control` / `alert_triage_poc` / `feedback_loop` / `cve_asset_triage` / `detonation` / `registry_governance` (evidence present for all except the live-only `named_supervisor`, whose Gateway proof is `gateway_lifecycle_result.json`) | ✅ | self-iteration loop scenario DELIVERED (`agent_factory_loop` / `self_improve_loop`) |
-| `tools/` | 20 tools incl. data-plane `siem_query` / `asset_lookup` / `enrich_ioc` / `create_ticket` / `ops_query`, the detection-engineering suite `sigma_match` / `sigma_yara_lint` / `detection_translate` / `detection_dedup` / `detection_coverage` / `detection_audit` / `detection_navigator` / `detection_baseline`, ops `harness_ops` / `run_evaluation` / `whitelist_optimizer`, and reference stubs `attack_lookup` / `epss_kev` / `nvd_lookup` / `web_search` | 🟩 | data-plane + detection suite DELIVERED (mock world + `*_LIVE` seams) |
+| `tools/` | 20 tools incl. data-plane `siem_query` / `asset_lookup` / `enrich_ioc` / `create_ticket` / `ops_query`, the detection-engineering suite `sigma_match` / `sigma_yara_lint` / `detection_translate` / `detection_dedup` / `detection_coverage` / `detection_audit` / `detection_navigator` / `detection_baseline`, ops `harness_ops` / `run_evaluation` / `allowlist_optimizer`, and reference stubs `attack_lookup` / `epss_kev` / `nvd_lookup` / `web_search` | 🟩 | data-plane + detection suite DELIVERED (mock world + `*_LIVE` seams) |
 | `skills/` | 9 skills incl. `cve-triage-rubric` / `attack-path-reasoning` / `detection-writing-sop` / `ioc-vetting` / `cve-asset-triage` / `soc-ip-lookup` / `soc-triage` / `incident-ticketing` / `multi-account-ops` | 🟩 | add domain skills as your SecOps program needs them |
 | `specialists/` | `cve-intel` (docker-build + live-validated on AgentCore Runtime) + `attack-mapper` / `threat-hunt` (real graph/plan builders) + `adversarial-reviewer` (agent_a2a + local_a2a + two-stage Dockerfile + contract test) | ✅ | all four specialists shipped |
 | `longrunning/` | `bas-runner` (BAS case-gen + detection-replay) + `detonation` (full simulated microVM lifecycle + orchestrator) | 🟩 | both built + tested; detonation stays an honest SIMULATED no-op |
 | `iac-cdk/lib/` | 9 synth-green stacks — `gateway` / `registry` / `memory` / `network` / `identity` / `guardrail` / `observability` / `harness` / `runtime` (+ `iam`); `iac-terraform/` mirror is `terraform validate`-clean | ✅ | `guardrail` / `identity` / `observability` LIVE-deployed (us-east-1); the Registry + `runtime` custom-resource/raw-CfnResource stacks synth clean but fail on deploy until their CFN types are GA (both control-plane APIs are separately live-verified — Registry via `registry_live.py`, `CreateAgentRuntime` via a real arm64 microVM that served a live A2A call, HTTP 200, real Bedrock model, on a non-prod test account, then torn down — `evidence/live_a2a_runtime_result.json`) |
-| `tests/` | 159 files, **3830 offline passing** (+6 skipped) | ✅ | add tests with each new module |
+| `tests/` | 160 files, **3837 offline passing** (+6 skipped) | ✅ | add tests with each new module |
 | `evidence/` | 37 evidence sets | ✅ | add one per milestone |
 
 ### 0.3 Fit score (vs. a full three-layer SecOps agent program)
@@ -181,8 +181,8 @@ Each milestone gives: **goal / files / reused APIs / acceptance (live evidence) 
 Suggest one feature branch per milestone.
 
 ### M0 — Environment & baseline reproduction (half a day)
-**Goal:** on a fresh machine, get all 3830 offline tests green and reproduce ≥1 live scenario.
-- [ ] `uv sync` + `uv run pytest -q` → 3830 passing (+6 skipped) (offline).
+**Goal:** on a fresh machine, get all 3837 offline tests green and reproduce ≥1 live scenario.
+- [ ] `uv sync` + `uv run pytest -q` → 3837 passing (+6 skipped) (offline).
 - [ ] Configure `SENTINEL_EXECUTION_ROLE_ARN` / `SENTINEL_REGION` / `AWS_PROFILE` (non-prod) — see `docs/SETUP.md`.
 - [ ] Run `scenarios/scenario_cve_triage.py`; compare `evidence/cve_triage_result.json` shape.
 - [ ] Run `scenarios/scenario_hitl_resume.py`; reproduce pause→approve→resume.
@@ -392,13 +392,13 @@ un-exercised seam to a real backend (needs a target account + the backend's MCP/
 ### M6 — Feedback-loop automation (strategy self-iteration closed) — ✅ DELIVERED (offline, deterministic)
 **Goal:** disposition results auto-feed strategy.
 - [x] After alert-triage writes TP/FP to Memory `facts/{tenant}` (a `managed_memory_writer` seam),
-      **auto-trigger** whitelist optimization / rule regeneration — event-driven via
+      **auto-trigger** allowlist optimization / rule regeneration — event-driven via
       `feedback.detect_triggers` (fp_rate + min_events thresholds), not just a memory write. — `sentinel_harness/feedback.py`
 - [x] Wire the M1/M2 self-iteration engine into the strategy domain: an only-FP / hit-rate-drop rule
       auto-generates a `rule_regeneration` task handed toward `harnesses/self-improving` (via `harness_ops`). — `scenarios/scenario_feedback_loop.py`
 
 **Acceptance (`evidence/feedback_loop_result.json`, closed:true):** a batch of FP dispositions for the
-noisy rule "Known-Good CDN Traffic" auto-triggered a `whitelist_optimization` task; `tools/whitelist_optimizer`
+noisy rule "Known-Good CDN Traffic" auto-triggered an `allowlist_optimization` task; `tools/allowlist_optimizer`
 synthesized a Sigma filter (`dst_domain|endswith: assets.example.com`) that suppresses 3/3 FPs while
 **provably preserving the Log4Shell true positive**; the healthy TP rule produced no task; and nothing
 publishes except through the `request_publish_approval` HITL gate. Deterministic + offline; the rule-regen
@@ -419,7 +419,7 @@ hand-off reuses the live-capable M1/M2 engine (driven offline here, labeled a wi
       (`make deploy`, cost note, `make destroy`) + the no-lock-in export. — `docs/QUICKSTART.md`
 - [x] `tests/smoke/`: offline acceptance suite (default offline; `SENTINEL_SMOKE_LIVE=1` opt-in for live). — `tests/smoke/`
 
-**Acceptance:** `make test` → 3830 offline tests green; `make seed-registry` → dual-gate `ok`;
+**Acceptance:** `make test` → 3837 offline tests green; `make seed-registry` → dual-gate `ok`;
 `make create-harnesses` (DRY_RUN=1) → 8 harnesses validate offline with zero AWS; `sentinel export` → valid
 compilable Strands Python; `make smoke` → the offline acceptance suite green. A fresh non-prod account can then
 run `make deploy` (free-tier foundation) and the live scenarios; `make destroy` tears it all down.
@@ -440,7 +440,7 @@ run `make deploy` (free-tier foundation) and the live scenarios; `make destroy` 
 Make the "provable core / ~90% coverage / type-hinted / lint-clean" story CI-gated, not asserted.
 - [x] Coverage measurement + `--fail-under=88` gate in the CI test job + `.coveragerc` (measured ~90%). — `ci.yml`, `.coveragerc`
 - [x] Ruff as a HARD gate (`ruff check .` required, no best-effort skip) + a lenient mypy job over the core modules. — `ci.yml`, `mypy.ini`
-- [x] Hypothesis property tests for the three deterministic cores: `sigma_match`, `whitelist_optimizer` (never suppresses a provided TP), blast-radius (determinism). — `tests/test_prop_*.py`
+- [x] Hypothesis property tests for the three deterministic cores: `sigma_match`, `allowlist_optimizer` (never suppresses a provided TP), blast-radius (determinism). — `tests/test_prop_*.py`
 - [x] `make ci` mirroring CI exactly; py3.13 added to the matrix; pytest-randomly; pre-commit hooks (ruff + the name/key scan). — `Makefile`, `.pre-commit-config.yaml`
 
 ### M9 — Security-product credibility (offline) — ✅ DELIVERED
@@ -627,7 +627,7 @@ if eval.score >= criteria:
 ---
 
 ## 6. Testing & acceptance charter
-- **offline**: every new module gets `tests/test_*.py` (mock AWS); keep `uv run pytest -q` green (now 2352, +6 skipped, only grows).
+- **offline**: every new module gets `tests/test_*.py` (mock AWS); keep `uv run pytest -q` green (now 3837, +6 skipped, only grows).
 - **config parity**: every new `harness.yaml` must pass `factory.provision_fleet(dry_run=True)` + `test_config_validation.py`.
 - **live evidence**: each milestone runs one real call, drops `evidence/<milestone>_result.json` + `.log`.
 - **governance**: each new tool keeps `registry.governance_check().ok == True`.
@@ -870,7 +870,7 @@ mechanism does not deliver:
 
 R9-6's fix surfaced a follow-on: suppressing that rule's alert **cohort** is not a
 safe fallback either (those alerts fired on exactly the indicators we refused to
-allowlist), and with the whitelist task correctly withheld the rule produced **no
+allowlist), and with the allowlist task correctly withheld the rule produced **no
 task at all** — silence about a rule firing 75% noise. A
 `rule_regeneration / noisy_but_unsuppressable` branch now covers it: the rule
 needs to become more specific, not filtered.
@@ -1008,7 +1008,7 @@ carries 42 invariants across eight families.
 `detection_navigator` (does the emitted ATT&CK-Navigator layer's scoring match the
 coverage it was built from, now that coverage excludes dead rules?),
 `detection_baseline` (can a regression be hidden by reordering, or by a rule set
-that shrinks?), and `whitelist_optimizer`'s synthesised Sigma filter (does the
+that shrinks?), and `allowlist_optimizer`'s synthesised Sigma filter (does the
 generated filter suppress ONLY the FP cohort it was given — i.e. the same match-set
 question R11 asked of dedup, applied to a GENERATED rule).
 
@@ -1029,12 +1029,12 @@ that turns OFF a real detection.**
 
 | # | Gap | Invariant | Why it survived 11 rounds |
 |---|---|---|---|
-| R12-1 | **whitelist_optimizer synthesized a filter that suppressed MORE than the FP cohort — including the TP it certified as preserved.** Its guard `_clause_matches` compares with Python `==`/`endswith`, but the Sigma filter it EMITS is read by any engine (incl. this repo's own matcher) with `*`/`?` as live wildcards. `process_name: 'a*.exe'` was certified "preserving 1 true-positive" while the deployed filter globbed away `attack.exe` (that TP), `agent.exe`, `abc.exe`. Same class via a public-suffix domain (`co.uk`), a weak field (`dst_port`), a TP missing the whitelisted field (guard vacuously satisfied), an n=1 over-generalization, a single-quote YAML break, and a /48 IPv6 block. | INV-WL-1/2/3 | The module was impressively self-aware — its comments warn verbatim that the emitted Sigma "MUST match EXACTLY what `_clause_matches` certifies" — but the check was written against the LITERAL semantics on both sides, so it never noticed the emitted side is interpreted as a glob. The repo had even fixed this same TP-safety class twice before (CHANGELOG domain_suffix apex, bare-suffix), on the FP-leak side; this was the strictly-worse detection-deletion side. |
+| R12-1 | **allowlist_optimizer synthesized a filter that suppressed MORE than the FP cohort — including the TP it certified as preserved.** Its guard `_clause_matches` compares with Python `==`/`endswith`, but the Sigma filter it EMITS is read by any engine (incl. this repo's own matcher) with `*`/`?` as live wildcards. `process_name: 'a*.exe'` was certified "preserving 1 true-positive" while the deployed filter globbed away `attack.exe` (that TP), `agent.exe`, `abc.exe`. Same class via a public-suffix domain (`co.uk`), a weak field (`dst_port`), a TP missing the allowlisted field (guard vacuously satisfied), an n=1 over-generalization, a single-quote YAML break, and a /48 IPv6 block. | INV-WL-1/2/3 | The module was impressively self-aware — its comments warn verbatim that the emitted Sigma "MUST match EXACTLY what `_clause_matches` certifies" — but the check was written against the LITERAL semantics on both sides, so it never noticed the emitted side is interpreted as a glob. The repo had even fixed this same TP-safety class twice before (CHANGELOG domain_suffix apex, bare-suffix), on the FP-leak side; this was the strictly-worse detection-deletion side. |
 | R12-2 | **detection_baseline let a real regression pass green.** A shrinking library reported an "improvement" (score rose while coverage dropped); a trimmed target list relabelled real blind spots "resolved"; an empty/malformed baseline FAILED OPEN (health defaulted to 0, so everything scored an improvement). | INV-BASELINE-1/2/3 | It snapshotted six fields and diffed only the uncovered/invalid/dup SETS + the scalar score. Coverage that dropped without a target list never entered `uncovered`; the covered SET was never snapshotted; and the malformed-baseline path had no fail-closed guard. |
 | R12-3 | **detection_navigator disagreed with the round-11 coverage fix.** A technique claimed only by a rule that cannot fire vanished from the layer, which then asserted 100% coverage over a real blind spot. | INV-NAV-1 | Navigator faithfully delegated to coverage for `covered`/`uncovered` — but R11 added a THIRD class (`non_actionable_rules`) that navigator did not consume, so the newest coverage output and the layer silently diverged the moment R11 shipped. |
 
-The fixes are scoped, not blanket: whitelist_optimizer still synthesizes the
-classic CDN-subdomain whitelist and n=1 EXACT matches; baseline still passes a
+The fixes are scoped, not blanket: allowlist_optimizer still synthesizes the
+classic CDN-subdomain allowlist and n=1 EXACT matches; baseline still passes a
 genuine improvement; navigator still reports 100% on a clean rule set. A private
 registrable suffix is allowed where a public suffix is refused, and the fix set was
 validated end-to-end by replaying emitted filters through the repo's OWN Sigma

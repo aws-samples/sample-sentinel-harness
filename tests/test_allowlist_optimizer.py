@@ -1,15 +1,15 @@
 """
-Offline unit tests for the whitelist_optimizer tool handler
+Offline unit tests for the allowlist_optimizer tool handler
 ===========================================================
-``tools/whitelist_optimizer`` is the *real, deterministic, LLM-free* core of
+``tools/allowlist_optimizer`` is the *real, deterministic, LLM-free* core of
 the M6 feedback loop: it turns a cohort of confirmed false-positive alerts
-into a safe Sigma-style suppression/whitelist clause so a noisy detection rule
+into a safe Sigma-style suppression/allowlist clause so a noisy detection rule
 stops firing on known-good traffic — WITHOUT going blind to real threats.
 
-Because a bad whitelist could silently suppress a true detection, every branch
+Because a bad allowlist could silently suppress a true detection, every branch
 matters: correct common-discriminator extraction (CDN domain, backup process,
 tight CIDR), correct suppressed_count, the true-positive guard (a mixed set
-must NOT be suppressed), the "no safe whitelist" refusal (no overfitting), and
+must NOT be suppressed), the "no safe allowlist" refusal (no overfitting), and
 malformed-input validation.
 
 HARD RULE: ZERO network, ZERO tokens, ZERO AWS. The tool is pure Python by
@@ -25,9 +25,9 @@ import os
 # the tests don't depend on tools/ being importable or collide with siblings.
 _HANDLER_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "tools", "whitelist_optimizer", "handler.py",
+    "tools", "allowlist_optimizer", "handler.py",
 )
-_spec = importlib.util.spec_from_file_location("whitelist_optimizer_handler", _HANDLER_PATH)
+_spec = importlib.util.spec_from_file_location("allowlist_optimizer_handler", _HANDLER_PATH)
 wl = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wl)
 
@@ -37,9 +37,9 @@ def optimize(event) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# FPs sharing a CDN domain -> a domain whitelist that suppresses them          #
+# FPs sharing a CDN domain -> a domain allowlist that suppresses them          #
 # --------------------------------------------------------------------------- #
-def test_cdn_domain_whitelist_suppresses_all():
+def test_cdn_domain_allowlist_suppresses_all():
     ev = {
         "rule_name": "Malware Beacon to C2 Domain",
         "fp_events": [
@@ -52,9 +52,9 @@ def test_cdn_domain_whitelist_suppresses_all():
     assert r["ok"] is True
     assert r["source"] == "stub"
     assert r["rule_name"] == "Malware Beacon to C2 Domain"
-    assert r["whitelist"] is not None
-    assert r["whitelist"]["fields"] == {"dst_domain": "assets.example.com"}
-    assert r["whitelist"]["match_type"] in ("domain_exact", "domain_suffix")
+    assert r["allowlist"] is not None
+    assert r["allowlist"]["fields"] == {"dst_domain": "assets.example.com"}
+    assert r["allowlist"]["match_type"] in ("domain_exact", "domain_suffix")
     assert r["suppressed_count"] == 3
     assert "filter_known_good" in r["sigma_filter_yaml"]
     assert "not filter_known_good" in r["sigma_filter_yaml"]
@@ -62,7 +62,7 @@ def test_cdn_domain_whitelist_suppresses_all():
 
 
 def test_cdn_domain_suffix_when_subdomains_differ():
-    # Different subdomains under one parent -> a safe suffix whitelist.
+    # Different subdomains under one parent -> a safe suffix allowlist.
     ev = {
         "rule_name": "Suspicious Outbound HTTP",
         "fp_events": [
@@ -71,8 +71,8 @@ def test_cdn_domain_suffix_when_subdomains_differ():
         ],
     }
     r = optimize(ev)
-    assert r["whitelist"]["match_type"] == "domain_suffix"
-    assert r["whitelist"]["fields"] == {"dst_domain": "assets.example.com"}
+    assert r["allowlist"]["match_type"] == "domain_suffix"
+    assert r["allowlist"]["fields"] == {"dst_domain": "assets.example.com"}
     assert r["suppressed_count"] == 2
     # The emitted clause is anchored on a LABEL BOUNDARY (leading dot), matching the
     # guard's strict-subdomain semantics. A bare `endswith: 'assets.example.com'`
@@ -82,11 +82,11 @@ def test_cdn_domain_suffix_when_subdomains_differ():
 
 
 def test_domain_suffix_does_not_suppress_cross_boundary_tp():
-    """TP-safety regression (audit finding whitelist-endswith-broader-than-tp-guard):
+    """TP-safety regression (audit finding allowlist-endswith-broader-than-tp-guard):
     FPs a.example.com + b.example.com yield suffix 'example.com'. A bare
     `endswith: 'example.com'` would ALSO match the true positive 'evilexample.com'
     and silently suppress it, while the tool's own TP guard (dot-anchored) judged
-    that TP safe — the tool would certify a whitelist that suppresses a TP. The
+    that TP safe — the tool would certify an allowlist that suppresses a TP. The
     emitted clause must be dot-anchored ('.example.com') so it does NOT match
     'evilexample.com'. This asserts the emitted artifact agrees with the guard."""
     ev = {
@@ -101,7 +101,7 @@ def test_domain_suffix_does_not_suppress_cross_boundary_tp():
     }
     r = optimize(ev)
     # The tool must not have emitted a clause that suppresses the TP.
-    if r.get("whitelist") is not None:
+    if r.get("allowlist") is not None:
         yaml = r["sigma_filter_yaml"]
         # dotted anchor present, bare suffix absent -> evilexample.com is NOT matched
         assert "dst_domain|endswith: '.example.com'" in yaml
@@ -111,7 +111,7 @@ def test_domain_suffix_does_not_suppress_cross_boundary_tp():
 
 
 def test_domain_suffix_of_only_tld_is_rejected():
-    # Sharing only ".com" must NOT become a whitelist on the whole TLD.
+    # Sharing only ".com" must NOT become an allowlist on the whole TLD.
     ev = {
         "rule_name": "Outbound HTTP",
         "fp_events": [
@@ -120,15 +120,15 @@ def test_domain_suffix_of_only_tld_is_rejected():
         ],
     }
     r = optimize(ev)
-    assert r["whitelist"] is None
-    assert r["verdict"] == "no_safe_whitelist"
+    assert r["allowlist"] is None
+    assert r["verdict"] == "no_safe_allowlist"
     assert r["suppressed_count"] == 0
 
 
 # --------------------------------------------------------------------------- #
-# FPs sharing a backup process -> a process whitelist                          #
+# FPs sharing a backup process -> a process allowlist                          #
 # --------------------------------------------------------------------------- #
-def test_backup_process_whitelist():
+def test_backup_process_allowlist():
     ev = {
         "rule_name": "EDR Suspicious Binary",
         "fp_events": [
@@ -138,13 +138,13 @@ def test_backup_process_whitelist():
     }
     r = optimize(ev)
     assert r["ok"] is True
-    assert r["whitelist"]["fields"] == {"process_name": "backup.exe"}
-    assert r["whitelist"]["match_type"] == "exact"
+    assert r["allowlist"]["fields"] == {"process_name": "backup.exe"}
+    assert r["allowlist"]["match_type"] == "exact"
     assert r["suppressed_count"] == 2
     assert "process_name: 'backup.exe'" in r["sigma_filter_yaml"]
 
 
-def test_process_whitelist_is_case_insensitive_count():
+def test_process_allowlist_is_case_insensitive_count():
     ev = {
         "rule_name": "EDR Suspicious Binary",
         "fp_events": [
@@ -153,14 +153,14 @@ def test_process_whitelist_is_case_insensitive_count():
         ],
     }
     r = optimize(ev)
-    assert r["whitelist"]["match_type"] == "exact"
+    assert r["allowlist"]["match_type"] == "exact"
     assert r["suppressed_count"] == 2
 
 
 # --------------------------------------------------------------------------- #
-# FPs sharing a tight src_ip CIDR -> a CIDR whitelist                          #
+# FPs sharing a tight src_ip CIDR -> a CIDR allowlist                          #
 # --------------------------------------------------------------------------- #
-def test_shared_cidr_whitelist():
+def test_shared_cidr_allowlist():
     ev = {
         "rule_name": "Port Scan Detected",
         "fp_events": [
@@ -170,8 +170,8 @@ def test_shared_cidr_whitelist():
         ],
     }
     r = optimize(ev)
-    assert r["whitelist"]["match_type"] in ("cidr", "exact")
-    assert r["whitelist"]["fields"].get("src_ip") is not None
+    assert r["allowlist"]["match_type"] in ("cidr", "exact")
+    assert r["allowlist"]["fields"].get("src_ip") is not None
     assert r["suppressed_count"] == 3
     assert "src_ip" in r["sigma_filter_yaml"]
 
@@ -185,13 +185,13 @@ def test_identical_ip_is_exact_match():
         ],
     }
     r = optimize(ev)
-    assert r["whitelist"]["match_type"] == "exact"
-    assert r["whitelist"]["fields"] == {"src_ip": "192.0.2.10"}
+    assert r["allowlist"]["match_type"] == "exact"
+    assert r["allowlist"]["fields"] == {"src_ip": "192.0.2.10"}
     assert r["suppressed_count"] == 2
 
 
 def test_overbroad_ip_range_is_rejected():
-    # Addresses spanning a /8 must not collapse into a whitelist on 10.0.0.0/8.
+    # Addresses spanning a /8 must not collapse into an allowlist on 10.0.0.0/8.
     ev = {
         "rule_name": "Port Scan Detected",
         "fp_events": [
@@ -200,14 +200,14 @@ def test_overbroad_ip_range_is_rejected():
         ],
     }
     r = optimize(ev)
-    assert r["whitelist"] is None
-    assert r["verdict"] == "no_safe_whitelist"
+    assert r["allowlist"] is None
+    assert r["verdict"] == "no_safe_allowlist"
 
 
 # --------------------------------------------------------------------------- #
-# FPs with NO common field -> "no safe whitelist" (does not overfit)           #
+# FPs with NO common field -> "no safe allowlist" (does not overfit)           #
 # --------------------------------------------------------------------------- #
-def test_no_common_field_refuses_whitelist():
+def test_no_common_field_refuses_allowlist():
     ev = {
         "rule_name": "Grab Bag Rule",
         "fp_events": [
@@ -218,18 +218,18 @@ def test_no_common_field_refuses_whitelist():
     }
     r = optimize(ev)
     assert r["ok"] is True
-    assert r["whitelist"] is None
-    assert r["verdict"] == "no_safe_whitelist"
+    assert r["allowlist"] is None
+    assert r["verdict"] == "no_safe_allowlist"
     assert r["suppressed_count"] == 0
     assert "no common" in r["rationale"].lower()
 
 
 # --------------------------------------------------------------------------- #
-# Mixed set including a TP -> whitelist must NOT suppress the TP                #
+# Mixed set including a TP -> allowlist must NOT suppress the TP                #
 # --------------------------------------------------------------------------- #
-def test_whitelist_must_not_suppress_provided_tp_example():
+def test_allowlist_must_not_suppress_provided_tp_example():
     # FPs all share the CDN domain; a real detection on a DIFFERENT domain is
-    # passed as a TP example. The chosen whitelist must not catch it.
+    # passed as a TP example. The chosen allowlist must not catch it.
     ev = {
         "rule_name": "Malware Beacon to C2 Domain",
         "fp_events": [
@@ -241,19 +241,19 @@ def test_whitelist_must_not_suppress_provided_tp_example():
         ],
     }
     r = optimize(ev)
-    assert r["whitelist"] is not None
-    assert r["whitelist"]["fields"] == {"dst_domain": "assets.example.com"}
+    assert r["allowlist"] is not None
+    assert r["allowlist"]["fields"] == {"dst_domain": "assets.example.com"}
     # Prove the emitted clause does not match the true-positive.
     field = "dst_domain"
-    mt = r["whitelist"]["match_type"]
-    val = r["whitelist"]["fields"][field]
+    mt = r["allowlist"]["match_type"]
+    val = r["allowlist"]["fields"][field]
     assert wl._clause_matches(ev["tp_examples"][0], field, mt, val) is False
     assert r["suppressed_count"] == 2
 
 
 def test_tp_forces_refusal_when_only_shared_field_hits_tp():
     # The ONLY common discriminator (dst_domain) also matches the TP, so there
-    # is no safe whitelist — refuse rather than blind the rule.
+    # is no safe allowlist — refuse rather than blind the rule.
     ev = {
         "rule_name": "Beacon Rule",
         "fp_events": [
@@ -265,8 +265,8 @@ def test_tp_forces_refusal_when_only_shared_field_hits_tp():
         ],
     }
     r = optimize(ev)
-    assert r["whitelist"] is None
-    assert r["verdict"] == "no_safe_whitelist"
+    assert r["allowlist"] is None
+    assert r["verdict"] == "no_safe_allowlist"
     assert "true-positive" in r["rationale"].lower()
 
 
@@ -282,14 +282,14 @@ def test_inline_true_positive_flag_is_treated_as_guard():
         ],
     }
     r = optimize(ev)
-    assert r["whitelist"]["fields"] == {"dst_domain": "assets.example.com"}
+    assert r["allowlist"]["fields"] == {"dst_domain": "assets.example.com"}
     # Only the 2 real FPs are suppressed; the inline TP is excluded.
     assert r["suppressed_count"] == 2
     assert wl._clause_matches(
         {"dst_domain": "cdn-update.example.test"},
         "dst_domain",
-        r["whitelist"]["match_type"],
-        r["whitelist"]["fields"]["dst_domain"],
+        r["allowlist"]["match_type"],
+        r["allowlist"]["fields"]["dst_domain"],
     ) is False
 
 
@@ -309,8 +309,8 @@ def test_suppressed_count_partial_when_field_absent_in_some():
         ],
     }
     r = optimize(ev)
-    assert r["whitelist"] is None
-    assert r["verdict"] == "no_safe_whitelist"
+    assert r["allowlist"] is None
+    assert r["verdict"] == "no_safe_allowlist"
 
 
 # --------------------------------------------------------------------------- #

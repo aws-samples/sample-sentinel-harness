@@ -44,7 +44,7 @@ _DOMAINS = {
     },
     "feedback_loop_golden.jsonl": {
         "dispositions": {
-            "whitelist_optimization", "rule_regeneration", "no_action",
+            "allowlist_optimization", "rule_regeneration", "no_action",
             "reject_task", "refuse_unsafe",
         },
         "reject": {"reject_task"},

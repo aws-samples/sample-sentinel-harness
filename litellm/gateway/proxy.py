@@ -54,7 +54,7 @@ DEFAULT_MODEL_ID = os.environ.get(
 _audit_log = logging.getLogger("sentinel.litellm.gateway.audit")
 
 # Field names we consider secret-ish and will NEVER copy into an audit record. This
-# is belt-and-suspenders: the builder already whitelists only non-sensitive fields,
+# is belt-and-suspenders: the builder already allowlists only non-sensitive fields,
 # but we keep an explicit denylist so a future edit can't accidentally leak one.
 _SECRET_HINT_KEYS = frozenset({
     "api_key", "apikey", "authorization", "auth", "token", "secret",

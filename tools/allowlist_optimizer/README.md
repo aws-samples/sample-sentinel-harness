@@ -1,14 +1,14 @@
-# whitelist_optimizer — deterministic offline FP-to-whitelist synthesizer
+# allowlist_optimizer — deterministic offline FP-to-allowlist synthesizer
 
-`whitelist_optimizer` is the engine that closes the **M6 feedback loop**:
+`allowlist_optimizer` is the engine that closes the **M6 feedback loop**:
 when alert triage dispositions an alert as a **false positive**, this tool
 turns that cohort of FP events into a concrete Sigma-style
-suppression/whitelist clause, so a noisy detection rule stops firing on
+suppression/allowlist clause, so a noisy detection rule stops firing on
 known-good traffic — **without going blind** to the real threats it was
 built to catch.
 
 > Given a noisy `rule_name` and a set of confirmed false-positive events,
-> what is the *safe* whitelist clause that suppresses them?
+> what is the *safe* allowlist clause that suppresses them?
 
 ## What it does
 
@@ -26,15 +26,15 @@ built to catch.
 2. **Synthesizes a Sigma `filter`** selection plus a merged
    `condition: <base> and not filter_known_good` snippet.
 3. **Refuses to overfit.** If the FPs share no safe common field, it returns
-   a `no_safe_whitelist` verdict instead of fabricating a clause.
-4. **Protects true positives.** It never emits a whitelist that would also
+   a `no_safe_allowlist` verdict instead of fabricating a clause.
+4. **Protects true positives.** It never emits an allowlist that would also
    suppress a provided true-positive example (`tp_examples`) or an
    in-line `disposition: true_positive` event in a mixed set.
 
 ## Provable core (real vs stub)
 
 The synthesis is **real deterministic offline logic** — same input always
-yields the same whitelist, no LLM, no tokens, no network. It is labelled
+yields the same allowlist, no LLM, no tokens, no network. It is labelled
 `source: "stub"` because it performs no model reasoning: the downstream
 **rule-regeneration RUN** that consumes this clause reuses the M1/M2
 self-improving loop, driven in-process/offline for the POC. Nothing here is
@@ -52,29 +52,29 @@ handler(event, context)
 # }
 ```
 
-Safe whitelist found:
+Safe allowlist found:
 
 ```json
 {
   "ok": true,
   "source": "stub",
   "rule_name": "Malware Beacon to C2 Domain",
-  "whitelist": {"fields": {"dst_domain": "assets.example.com"}, "match_type": "domain_suffix"},
+  "allowlist": {"fields": {"dst_domain": "assets.example.com"}, "match_type": "domain_suffix"},
   "suppressed_count": 2,
   "sigma_filter_yaml": "detection:\n    filter_known_good:\n        dst_domain|endswith: 'assets.example.com'\n    condition: selection and not filter_known_good\n",
   "rationale": "All 2 false-positive event(s) ... share dst_domain='assets.example.com' ..."
 }
 ```
 
-No safe whitelist (shares nothing, or every shared field hits a TP):
+No safe allowlist (shares nothing, or every shared field hits a TP):
 
 ```json
 {
   "ok": true,
   "source": "stub",
   "rule_name": "Grab Bag Rule",
-  "whitelist": null,
-  "verdict": "no_safe_whitelist",
+  "allowlist": null,
+  "verdict": "no_safe_allowlist",
   "suppressed_count": 0,
   "rationale": "... share no common discriminating field. Refusing to synthesize ..."
 }
@@ -101,9 +101,9 @@ bad `existing_rule` type.
 
 ## Over-suppression guards
 
-- No FP-common field → **no whitelist** (never overfit the exact events).
-- Domain suffix must be ≥ 2 labels → **never** whitelist a whole TLD.
-- CIDR must be ≤ `/24` (v4) / `/48` (v6) → **never** whitelist a huge block.
+- No FP-common field → **no allowlist** (never overfit the exact events).
+- Domain suffix must be ≥ 2 labels → **never** allowlist a whole TLD.
+- CIDR must be ≤ `/24` (v4) / `/48` (v6) → **never** allowlist a huge block.
 - The emitted clause must not match any `tp_examples` or in-line
   `true_positive` event → **never** blind the rule to a real detection.
 
@@ -126,11 +126,11 @@ self-contained and fully offline.
 To make this tool live, SecOps adds it to `registry/tools.yaml`:
 
 ```yaml
-  - name: whitelist_optimizer
+  - name: allowlist_optimizer
     owner: detection-engineering
     status: approved
     description: >-
-      Deterministic, LLM-free FP-to-whitelist synthesizer for the M6 feedback
+      Deterministic, LLM-free FP-to-allowlist synthesizer for the M6 feedback
       loop: turns a cohort of false-positive events into a safe Sigma-style
       suppression clause (domain / process / CIDR discriminator) with a
       condition: selection and not filter snippet. Refuses to overfit or to
@@ -143,9 +143,9 @@ and lists it in the governance assertions of `tests/test_registry.py`
 ## Run the demo / tests
 
 ```bash
-python tools/whitelist_optimizer/handler.py
+python tools/allowlist_optimizer/handler.py
 SENTINEL_EXECUTION_ROLE_ARN=arn:aws:iam::000000000000:role/test \
 AWS_DEFAULT_REGION=us-east-1 \
   uv run --no-project --python 3.13 --with pytest --with boto3 --with pyyaml --with . \
-  python -m pytest tests/test_whitelist_optimizer.py -q
+  python -m pytest tests/test_allowlist_optimizer.py -q
 ```

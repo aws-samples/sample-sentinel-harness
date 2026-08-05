@@ -29,7 +29,7 @@ running many harnesses concurrently and synthesizing with a supervisor harness
 | Research (ATT&CK / CVE lookup / sample attribution / threat hunting) | `research-supervisor` harness + specialist harnesses, delegated in parallel |
 | Detection-rule generation + cross-review + human merge | `detection-eng`: generator harness → **independent adversarial-reviewer harness** → deterministic Sigma/YARA lint → `inline_function` publish gate (human merge) |
 | Alert triage (TP/FP, multi-source correlation, response, impact) | `alert-triage` harness; containment behind a human gate |
-| Feedback loop | verdicts and whitelist decisions persisted to AgentCore **Memory** (`facts/{actor}`), feeding future research/detection |
+| Feedback loop | verdicts and allowlist decisions persisted to AgentCore **Memory** (`facts/{actor}`), feeding future research/detection |
 
 ### Layer 2 — Simulation
 

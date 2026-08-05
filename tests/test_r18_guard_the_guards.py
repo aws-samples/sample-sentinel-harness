@@ -66,7 +66,7 @@ _SCAN_CALLS = frozenset({"read_text", "getsource", "parse", "walk", "rglob", "gl
 # component that can hide a real violation, which is why it — and not scanning in
 # general — is what these invariants govern.
 _EXEMPTION_HINTS = ("allow", "exempt", "skip", "ignore", "waive", "argued",
-                    "known", "whitelist", "expected_offenders")
+                    "known", "allowlist", "expected_offenders")
 
 # Markers a positive control announces itself with. Kept as an explicit list so adding
 # a control is a deliberate act rather than an accident of naming.

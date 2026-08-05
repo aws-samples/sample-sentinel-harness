@@ -5,7 +5,7 @@ Round-6 audited gateway / exporter / observability / benchmark_models / scenario
 a2a-contract. 9 findings survived independent skeptic verification; this file pins
 each so it cannot silently regress:
 
-  * whitelist_optimizer (HIGH) — for a domain_suffix whitelist whose FP cohort
+  * allowlist_optimizer (HIGH) — for a domain_suffix allowlist whose FP cohort
     includes the apex, the matcher CERTIFIED suppression of the apex (dv == sv) but
     the emitted Sigma only had `|endswith: '.suffix'` (misses the apex) → a
     false-green: scenario reported closed=True while a real FP leaked. Now the
@@ -63,9 +63,9 @@ def _load_specialist_mod(rel_path: str, unique: str):
 
 
 # --------------------------------------------------------------------------- #
-# #1 (HIGH) — whitelist_optimizer domain_suffix apex is actually suppressed   #
+# #1 (HIGH) — allowlist_optimizer domain_suffix apex is actually suppressed   #
 # --------------------------------------------------------------------------- #
-wl = _load_tool("whitelist_optimizer")
+wl = _load_tool("allowlist_optimizer")
 sm = _load_tool("sigma_match")
 
 

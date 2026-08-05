@@ -5,7 +5,7 @@ R11 asked "does this governance NUMBER reflect capability?". R12 pushed the same
 match-set question into three tools that either GENERATE a rule or GATE on a
 comparison, where a wrong answer actively degrades the detection posture:
 
-1. **whitelist_optimizer synthesizes a filter that suppressed MORE than the FP
+1. **allowlist_optimizer synthesizes a filter that suppressed MORE than the FP
    cohort — including true positives it certified as preserved.** The tool's TP
    guard (`_clause_matches`) compares values with Python `==`/`endswith`, but the
    Sigma filter it EMITS is read by any engine with `*`/`?` as live wildcards. So
@@ -14,7 +14,7 @@ comparison, where a wrong answer actively degrades the detection posture:
    (the TP), `agent.exe`, `abc.exe`, ... — the single guarantee the tool exists to
    make, violated on the exact input the guard was written for. Same class via a
    public-suffix domain (`co.uk`), a weak context field (`dst_port`), a TP missing
-   the whitelisted field, and an n=1 over-generalization.
+   the allowlisted field, and an n=1 over-generalization.
 
 2. **detection_baseline let a real regression pass green.** A shrinking rule
    library reported an "improvement"; a trimmed target list relabelled real blind
@@ -53,14 +53,14 @@ def _load(unique_name: str, rel_path: str):
     return module
 
 
-wl = _load("whitelist_optimizer_r12", "tools/whitelist_optimizer/handler.py")
+wl = _load("allowlist_optimizer_r12", "tools/allowlist_optimizer/handler.py")
 base = _load("detection_baseline_r12", "tools/detection_baseline/handler.py")
 nav = _load("detection_navigator_r12", "tools/detection_navigator/handler.py")
 sm = _load("sigma_match_r12", "tools/sigma_match/handler.py")
 
 
 # --------------------------------------------------------------------------- #
-# whitelist_optimizer — the emitted filter's match set must equal the cohort  #
+# allowlist_optimizer — the emitted filter's match set must equal the cohort  #
 # --------------------------------------------------------------------------- #
 def _emitted(fp_events, tp_examples=None, rule_name="R"):
     payload = {"rule_name": rule_name, "fp_events": fp_events}
@@ -83,7 +83,7 @@ def _deploys_suppress(sigma_filter_yaml, base_selection, event):
     return b and not a          # True == the filter suppressed an event the base alerted on
 
 
-class TestWhitelistNeverSuppressesBeyondCohort:
+class TestAllowlistNeverSuppressesBeyondCohort:
     """INV-WL-1/2: a synthesized filter must suppress ONLY the FP cohort — never a
     true positive, never an unbounded glob expansion."""
 
@@ -94,8 +94,8 @@ class TestWhitelistNeverSuppressesBeyondCohort:
             [{"process_name": "a*.exe"}, {"process_name": "A*.EXE"}],
             tp_examples=[{"process_name": "attack.exe"}],
         )
-        assert out["whitelist"] is None, "emitted a filter from a wildcard-bearing value"
-        assert out["verdict"] == "no_safe_whitelist"
+        assert out["allowlist"] is None, "emitted a filter from a wildcard-bearing value"
+        assert out["verdict"] == "no_safe_allowlist"
 
     def test_if_a_wildcard_filter_were_emitted_it_would_suppress_the_tp(self):
         """Proves the refusal is load-bearing: had a filter been emitted, replaying
@@ -107,10 +107,10 @@ class TestWhitelistNeverSuppressesBeyondCohort:
         assert out.get("sigma_filter_yaml") is None
 
     def test_public_suffix_domain_is_refused(self):
-        """`a.co.uk` + `b.co.uk` share `co.uk`, a public suffix — whitelisting it
+        """`a.co.uk` + `b.co.uk` share `co.uk`, a public suffix — allowlisting it
         suppresses every `.co.uk` C2."""
         out = _emitted([{"dst_domain": "news.bbc.co.uk"}, {"dst_domain": "foo.bar.co.uk"}])
-        assert out["whitelist"] is None
+        assert out["allowlist"] is None
 
     @pytest.mark.parametrize("suffix_pair", [
         ("a.blob.core.windows.net", "b.blob.core.windows.net"),
@@ -119,40 +119,40 @@ class TestWhitelistNeverSuppressesBeyondCohort:
     ])
     def test_cloud_public_suffixes_are_refused(self, suffix_pair):
         out = _emitted([{"dst_domain": suffix_pair[0]}, {"dst_domain": suffix_pair[1]}])
-        assert out["whitelist"] is None
+        assert out["allowlist"] is None
 
     def test_private_registrable_suffix_is_still_allowed(self):
         """The fix must not over-refuse: a genuine shared private domain is safe and
-        must still produce a whitelist."""
+        must still produce an allowlist."""
         out = _emitted([{"dst_domain": "a.assets.example.com"},
                         {"dst_domain": "b.assets.example.com"}])
-        assert out["whitelist"] is not None
-        assert out["whitelist"]["match_type"] == "domain_suffix"
-        assert out["whitelist"]["fields"]["dst_domain"] == "assets.example.com"
+        assert out["allowlist"] is not None
+        assert out["allowlist"]["match_type"] == "domain_suffix"
+        assert out["allowlist"]["fields"]["dst_domain"] == "assets.example.com"
 
     @pytest.mark.parametrize("weak_field", ["dst_port", "port", "user", "username",
                                             "host", "hostname"])
     def test_weak_context_field_is_not_a_sole_discriminator(self, weak_field):
-        """A port / user / host is context, not benign identity — whitelisting it
+        """A port / user / host is context, not benign identity — allowlisting it
         suppresses the real threats too. R12 showed one beating an explicit TP guard."""
         out = _emitted([{weak_field: "445"}, {weak_field: "445"}])
-        assert out["whitelist"] is None
+        assert out["allowlist"] is None
 
-    def test_tp_missing_the_whitelisted_field_fails_closed(self):
-        """A TP that lacks the whitelisted field cannot be PROVEN safe — absence of
+    def test_tp_missing_the_allowlisted_field_fails_closed(self):
+        """A TP that lacks the allowlisted field cannot be PROVEN safe — absence of
         evidence is not evidence of safety. Refuse the field rather than certify a
         preservation it cannot check."""
         out = _emitted(
             [{"src_ip": "10.0.0.1"}, {"src_ip": "10.0.0.2"}],
             tp_examples=[{"dst_domain": "evil.example.test"}],  # no src_ip
         )
-        assert out["whitelist"] is None
+        assert out["allowlist"] is None
 
     def test_single_quote_value_is_refused(self):
         """A single quote breaks the single-quoted YAML the filter is emitted in
         (and would need escaping); refuse rather than emit invalid/altered Sigma."""
         out = _emitted([{"process_name": "o'brien.exe"}, {"process_name": "o'brien.exe"}])
-        assert out["whitelist"] is None
+        assert out["allowlist"] is None
 
     def test_n1_cohort_refuses_class_generalization(self):
         """A single FP is not enough to generalize a CIDR/suffix class."""
@@ -160,26 +160,26 @@ class TestWhitelistNeverSuppressesBeyondCohort:
         # a lone IP is an EXACT match (suppresses only that IP) — allowed;
         # but if it could only form a broad class it must refuse. Force the class
         # path with two-octet-different IPs is n=2; here n=1 exact is the allowed case.
-        assert out["whitelist"] is not None
-        assert out["whitelist"]["match_type"] == "exact"
+        assert out["allowlist"] is not None
+        assert out["allowlist"]["match_type"] == "exact"
 
     def test_n1_domain_is_exact_not_suffix(self):
         out = _emitted([{"dst_domain": "a.b.example.com"}])
-        assert out["whitelist"]["match_type"] == "domain_exact"
+        assert out["allowlist"]["match_type"] == "domain_exact"
 
     def test_ipv6_48_is_too_broad(self):
         """A /48 authorizes 2**80 addresses — absurd from two FP events."""
         out = _emitted([{"src_ip": "2001:db8:0:1::1"}, {"src_ip": "2001:db8:0:2::1"}])
-        assert out["whitelist"] is None
+        assert out["allowlist"] is None
 
     def test_the_classic_cdn_case_still_works(self):
         """Regression: the intended happy path (a shared CDN subdomain, a TP that
-        does not share it) must still synthesize a safe whitelist."""
+        does not share it) must still synthesize a safe allowlist."""
         out = _emitted(
             [{"dst_domain": "img.assets.example.com"}, {"dst_domain": "js.assets.example.com"}],
             tp_examples=[{"dst_domain": "evil.example.test"}],
         )
-        assert out["whitelist"] is not None
+        assert out["allowlist"] is not None
 
     def test_a_valid_emitted_filter_suppresses_only_the_cohort(self):
         """End-to-end match-set check via the repo's Sigma engine: the emitted filter

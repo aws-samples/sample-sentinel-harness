@@ -1,10 +1,10 @@
-"""whitelist_optimizer — deterministic, offline FP-to-whitelist synthesizer.
+"""allowlist_optimizer — deterministic, offline FP-to-allowlist synthesizer.
 
 SecOps purpose (M6 feedback loop)
 ---------------------------------
 When alert triage dispositions an alert as a FALSE POSITIVE, the detection
 strategy should *learn* from it: a noisy rule that keeps firing on known-good
-traffic should be given a tuned suppression/whitelist clause so it stops
+traffic should be given a tuned suppression/allowlist clause so it stops
 crying wolf — WITHOUT going blind to the real threats it was built to catch.
 
 This tool is the deterministic engine that closes that loop. Given a rule
@@ -16,16 +16,16 @@ name and a cohort of confirmed false-positive events, it:
      tight CIDR).
   2. Synthesizes a Sigma-style ``filter`` clause on that discriminator plus a
      ``condition: selection and not filter`` snippet.
-  3. Guards against over-suppression: it will REFUSE to emit a whitelist that
+  3. Guards against over-suppression: it will REFUSE to emit an allowlist that
      (a) has no safe common discriminator, or (b) would also suppress a
      provided true-positive example. In those cases it returns a clear
-     "no safe whitelist" verdict instead of overfitting or suppressing
+     "no safe allowlist" verdict instead of overfitting or suppressing
      everything.
 
 Honesty label
 -------------
 This synthesis is REAL deterministic offline logic — same input always yields
-the same whitelist. It is labelled ``source: "stub"`` because it performs no
+the same allowlist. It is labelled ``source: "stub"`` because it performs no
 LLM reasoning and makes no network calls; the downstream rule-regeneration
 RUN that consumes this clause reuses the M1/M2 self-improving loop, driven
 in-process/offline for the POC. Nothing here is "live".
@@ -43,26 +43,26 @@ via ``disposition``/``verdict``/``label`` == "true_positive"/"tp", or
 ``is_true_positive: true``; such events are treated as TP guards, never as
 FPs to suppress.
 
-Output contract (safe whitelist found)
+Output contract (safe allowlist found)
 --------------------------------------
 {
     "ok": True,
     "source": "stub",
     "rule_name": "...",
-    "whitelist": {"fields": {"<field>": "<value>"}, "match_type": "..."},
+    "allowlist": {"fields": {"<field>": "<value>"}, "match_type": "..."},
     "suppressed_count": 2,
     "sigma_filter_yaml": "detection:\\n    filter_known_good:\\n ...",
     "rationale": "...",
 }
 
-Output contract (no safe whitelist)
+Output contract (no safe allowlist)
 ------------------------------------
 {
     "ok": True,
     "source": "stub",
     "rule_name": "...",
-    "whitelist": None,
-    "verdict": "no_safe_whitelist",
+    "allowlist": None,
+    "verdict": "no_safe_allowlist",
     "suppressed_count": 0,
     "rationale": "...",
 }
@@ -129,11 +129,11 @@ _CANDIDATE_FIELDS: List[Tuple[str, str]] = [
 ]
 
 # Fields that are NOT a benign-identity discriminator on their own. A port, a
-# user, or a hostname is CONTEXT, not identity: whitelisting "all traffic on
+# user, or a hostname is CONTEXT, not identity: allowlisting "all traffic on
 # dst_port 443" or "everything user SYSTEM does" suppresses the real threats the
 # rule was built to catch, right alongside the FP. R12 reproduced this — a single
 # weak field beat an explicit tp_examples guard. Such a field may only NARROW a
-# whitelist already anchored on a strong discriminator (a future enhancement); on
+# allowlist already anchored on a strong discriminator (a future enhancement); on
 # its own it is refused. (The strong fields — domain / process / hash / ip — each
 # name a specific actor or artifact and are safe to anchor on.)
 _WEAK_FIELDS = frozenset({
@@ -151,7 +151,7 @@ _WEAK_FIELDS = frozenset({
 _UNSAFE_VALUE_CHARS = ("*", "?", "'", '"', "\\", "\n", "\r")
 
 # Minimum CIDR prefix lengths accepted, to avoid over-suppression. A CIDR
-# broader than these is rejected as an unsafe whitelist. v6 was /48 — 2**80
+# broader than these is rejected as an unsafe allowlist. v6 was /48 — 2**80
 # addresses, absurd to authorize from a couple of FP events — tightened to /64
 # (a single subnet, matching the v4 /24 "one small block" intent).
 _MIN_PREFIX_V4 = 24
@@ -159,7 +159,7 @@ _MIN_PREFIX_V6 = 64
 
 # Public suffixes (a minimal, offline PSL subset). `_common_domain`'s "shared
 # parent of >= 2 labels" heuristic wrongly treats these as a safe private suffix,
-# so two UNRELATED FPs on `a.co.uk` + `b.co.uk` synthesized a whitelist on the
+# so two UNRELATED FPs on `a.co.uk` + `b.co.uk` synthesized an allowlist on the
 # entire `co.uk` — suppressing every `.co.uk` C2. A safe domain suffix must extend
 # at least one label BELOW the registrable boundary (i.e. include a private label).
 _PUBLIC_SUFFIXES = frozenset({
@@ -171,7 +171,7 @@ _PUBLIC_SUFFIXES = frozenset({
     "pages.dev", "workers.dev", "r2.dev",
 })
 
-# A cohort of ONE FP is not enough evidence to generalize a whitelist from: a
+# A cohort of ONE FP is not enough evidence to generalize an allowlist from: a
 # single benign hit does not establish that a discriminator characterizes
 # known-good traffic rather than this one event. Below this floor the tool refuses
 # for anything but an EXACT full-value match (which suppresses only that one value,
@@ -300,7 +300,7 @@ def _is_tp_marked(ev: Dict[str, Any]) -> bool:
 
     Recognizes the alert-triage disposition vocabulary so a "mixed set" that
     accidentally (or intentionally) includes a real detection never gets
-    suppressed by the synthesized whitelist.
+    suppressed by the synthesized allowlist.
     """
     if ev.get("is_true_positive") is True:
         return True
@@ -346,7 +346,7 @@ def _common_domain(domains: List[str]) -> Optional[Tuple[str, str]]:
 
     Returns ``(match_type, value)`` where match_type is ``domain_exact`` (all
     identical) or ``domain_suffix`` (a shared parent of >= 2 labels, so we
-    don't whitelist an entire TLD). Returns None if no safe common domain.
+    don't allowlist an entire TLD). Returns None if no safe common domain.
     """
     low = [d.lower().rstrip(".") for d in domains]
     if len(set(low)) == 1:
@@ -364,7 +364,7 @@ def _common_domain(domains: List[str]) -> Optional[Tuple[str, str]]:
         suffix = ".".join(reversed(common))
         # The shared suffix must be a PRIVATE (registrable) domain, not a public
         # suffix. Two unrelated FPs on a.co.uk + b.co.uk share "co.uk", but
-        # whitelisting co.uk suppresses every .co.uk C2. Require at least one label
+        # allowlisting co.uk suppresses every .co.uk C2. Require at least one label
         # below the public-suffix boundary: "example.co.uk" is safe, "co.uk" is not.
         if _is_public_suffix(suffix):
             return None
@@ -373,7 +373,7 @@ def _common_domain(domains: List[str]) -> Optional[Tuple[str, str]]:
 
 
 def _is_public_suffix(domain: str) -> bool:
-    """True if ``domain`` is a public suffix (a registry boundary), so whitelisting
+    """True if ``domain`` is a public suffix (a registry boundary), so allowlisting
     it would suppress an entire shared registrar space rather than one tenant.
 
     Offline heuristic against a minimal PSL subset (:data:`_PUBLIC_SUFFIXES`): the
@@ -393,7 +393,7 @@ def _common_cidr(ip_strings: List[str]) -> Optional[Tuple[str, str]]:
     Returns ``(match_type, value)``: ``exact`` if all IPs are identical, else
     ``cidr`` with the smallest network containing them — but only if that
     network is no broader than the configured minimum prefix, otherwise None
-    (too broad to be a safe whitelist).
+    (too broad to be a safe allowlist).
     """
     try:
         addrs = [ipaddress.ip_address(s) for s in ip_strings]
@@ -417,7 +417,7 @@ def _common_cidr(ip_strings: List[str]) -> Optional[Tuple[str, str]]:
 
     min_prefix = _MIN_PREFIX_V4 if version == 4 else _MIN_PREFIX_V6
     if prefix < min_prefix:
-        return None  # network too broad — refuse to whitelist a huge block
+        return None  # network too broad — refuse to allowlist a huge block
 
     network_int = first & (((1 << prefix) - 1) << (bits - prefix)) if prefix else 0
     net = ipaddress.ip_network((int(network_int), prefix), strict=False)
@@ -433,7 +433,7 @@ def _discriminator_for_field(
     safe common representation for the field's type.
     """
     # A weak/context field (port, user, host) is never a benign-IDENTITY
-    # discriminator on its own — whitelisting it suppresses the real threats too.
+    # discriminator on its own — allowlisting it suppresses the real threats too.
     if field in _WEAK_FIELDS:
         return None
 
@@ -470,7 +470,7 @@ def _has_unsafe_char(value: str) -> bool:
 # Clause matching (authoritative for suppressed_count + TP guard)
 # --------------------------------------------------------------------------
 def _clause_matches(ev: Dict[str, Any], field: str, match_type: str, value: str) -> bool:
-    """Does one event match the synthesized whitelist clause?
+    """Does one event match the synthesized allowlist clause?
 
     This is the single source of truth used both to count suppressed FPs and
     to prove the clause does not catch a true-positive.
@@ -490,7 +490,7 @@ def _clause_matches(ev: Dict[str, Any], field: str, match_type: str, value: str)
         # cross-label-boundary lexical match like "evilexample.com". This MUST stay
         # in lock-step with the emitted Sigma clause in `_sigma_filter_yaml` (which
         # emits an OR of `|endswith: '.suffix'` and an exact `: 'suffix'`), or the
-        # tool would certify a whitelist as TP-preserving while the artifact it emits
+        # tool would certify an allowlist as TP-preserving while the artifact it emits
         # actually suppresses that true positive.
         dv = raw.lower().rstrip(".")
         sv = value.lower().rstrip(".")
@@ -555,10 +555,10 @@ def _sigma_filter_yaml(field: str, match_type: str, value: str, base_condition: 
 # Handler
 # --------------------------------------------------------------------------
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """Turn a cohort of false-positive events into a safe Sigma whitelist clause.
+    """Turn a cohort of false-positive events into a safe Sigma allowlist clause.
 
     Deterministic and offline: same input always yields the same result. Never
-    emits a whitelist that suppresses a provided true-positive, and never
+    emits an allowlist that suppresses a provided true-positive, and never
     fabricates one when the FPs share no safe common discriminator.
     """
     try:
@@ -583,12 +583,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "ok": True,
             "source": "stub",
             "rule_name": rule_name,
-            "whitelist": None,
-            "verdict": "no_safe_whitelist",
+            "allowlist": None,
+            "verdict": "no_safe_allowlist",
             "suppressed_count": 0,
             "rationale": (
                 "No false-positive events remain to analyze after separating "
-                "true-positive-flagged events; refusing to synthesize a whitelist."
+                "true-positive-flagged events; refusing to synthesize an allowlist."
             ),
         }
 
@@ -603,7 +603,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         match_type, value = disc
 
         # n=1 floor: a single FP is not enough to generalize a class-level
-        # whitelist (a suffix / CIDR / class). Only an EXACT full-value match — which
+        # allowlist (a suffix / CIDR / class). Only an EXACT full-value match — which
         # suppresses that one value and nothing broader — may be synthesized from a
         # lone FP; anything generalizing is refused as overfitting.
         # EXACT full-value matches (a single IP, a single full domain) suppress only
@@ -616,7 +616,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         # Guard: the clause must NOT suppress any known true-positive — and it must
         # be able to PROVE that for each guard. A tp_example that lacks the
-        # whitelisted field makes `_clause_matches` return False (looks safe), but
+        # allowlisted field makes `_clause_matches` return False (looks safe), but
         # that is absence of evidence, not evidence of safety: the real event the
         # guard stands for may well carry the field. Fail CLOSED — a guard we cannot
         # evaluate against this field disqualifies the field (INV-WL-3).
@@ -633,7 +633,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         rationale = (
             f"All {len(fp_cohort)} false-positive event(s) for rule "
             f"'{rule_name}' share {field}={value!r} ({match_type}); a "
-            f"whitelist on this discriminator suppresses {suppressed_count} of "
+            f"allowlist on this discriminator suppresses {suppressed_count} of "
             f"them"
             + (
                 f" while preserving {len(tp_guards)} true-positive example(s)."
@@ -645,7 +645,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "ok": True,
             "source": "stub",
             "rule_name": rule_name,
-            "whitelist": {"fields": {field: value}, "match_type": match_type},
+            "allowlist": {"fields": {field: value}, "match_type": match_type},
             "suppressed_count": suppressed_count,
             "sigma_filter_yaml": sigma_yaml,
             "rationale": rationale,
@@ -658,14 +658,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             f"The false-positive events for rule '{rule_name}' share "
             f"discriminator(s) on {sorted(set(rejected_for_tp))}, but every one "
             "would also suppress a provided true-positive example (or could not be "
-            "proven safe against one). Refusing to emit a whitelist that would blind "
+            "proven safe against one). Refusing to emit an allowlist that would blind "
             "the rule to a real detection."
         )
     elif rejected_thin:
         rationale = (
             f"The lone false-positive event for rule '{rule_name}' shares "
             f"discriminator(s) on {sorted(set(rejected_thin))}, but a single event is "
-            "not enough evidence to generalize a class-level whitelist (a suffix / "
+            "not enough evidence to generalize a class-level allowlist (a suffix / "
             "CIDR / class match) — that would overfit one benign hit into suppressing "
             "a whole class. Provide more false-positive examples, or accept only an "
             "exact full-value match."
@@ -674,15 +674,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         rationale = (
             f"The {len(fp_cohort)} false-positive events for rule '{rule_name}' "
             "share no common discriminating field. Refusing to synthesize a "
-            "whitelist that would overfit these exact events or suppress "
+            "allowlist that would overfit these exact events or suppress "
             "legitimate traffic."
         )
     return {
         "ok": True,
         "source": "stub",
         "rule_name": rule_name,
-        "whitelist": None,
-        "verdict": "no_safe_whitelist",
+        "allowlist": None,
+        "verdict": "no_safe_allowlist",
         "suppressed_count": 0,
         "rationale": rationale,
     }

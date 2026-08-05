@@ -32,7 +32,7 @@ AgentCore gives us two agent-hosting primitives (both seen in the samples):
 | 检测规则自动生成 + 多轮Agent交叉Review + 白名单优化 | **`detection-eng` Harness (GRAPH-style fixed pipeline)** | A LangGraph pipeline (chatbot `docker-graph` pattern): `enrich → hypothesize → write_rule → adversarial_review → maybe_revise → lint → publish`. Deterministic nodes for **Sigma/YARA lint** (pure Python, no tokens). Conditional edge on review verdict. |
 | 人工合并 (human merge) | **`inline_function` HITL gate** | Between `adversarial_review` and `publish`: an inline_function pauses, posts the diff to a review channel, waits for analyst approve/reject. |
 | 告警处置 (TP/FP分诊 / 多源溯源 / 自动响应 / 影响评估) | **`alert-triage` Harness** | Per-alert isolated session. Tools: `siem_query`, `asset_lookup`, `enrich_ioc`, `create_ticket`, `contain_action` (contain is HITL-gated). |
-| feedback loop | **AgentCore Memory** (semantic + summary strategies) | Triage verdicts and FP whitelist decisions written to Memory namespaces `facts/{tenant}`, feeding future research/detection. |
+| feedback loop | **AgentCore Memory** (semantic + summary strategies) | Triage verdicts and FP allowlist decisions written to Memory namespaces `facts/{tenant}`, feeding future research/detection. |
 
 ### Layer 2 — 验证模拟 (Validation / Simulation) — designed, one scenario built
 

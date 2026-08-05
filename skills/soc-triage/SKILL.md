@@ -1,6 +1,6 @@
 ---
 name: soc-triage
-description: General true-positive / false-positive alert triage rubric for a SOC analyst. Use when any SIEM alert needs a disposition and the analyst must corroborate the signal across siem_query, asset_lookup, and enrich_ioc, assign a severity, decide TP/FP/benign/escalate, and feed confirmed false positives back into a whitelist tuning loop. Keeps severity and disposition deterministic, requires corroboration from at least two independent planes before a true-positive call, and human-gates any containment or ticket-closing action.
+description: General true-positive / false-positive alert triage rubric for a SOC analyst. Use when any SIEM alert needs a disposition and the analyst must corroborate the signal across siem_query, asset_lookup, and enrich_ioc, assign a severity, decide TP/FP/benign/escalate, and feed confirmed false positives back into an allowlist tuning loop. Keeps severity and disposition deterministic, requires corroboration from at least two independent planes before a true-positive call, and human-gates any containment or ticket-closing action.
 ---
 
 # SOC Alert Triage Rubric
@@ -12,7 +12,7 @@ The everyday decision an analyst makes on an incoming alert: is it a **true posi
 1. **Corroborate across planes.** A single signal is a lead, not a verdict. A true-positive call requires agreement across at least two independent planes: SIEM events (`siem_query`), asset context (`asset_lookup`), and IOC reputation (`enrich_ioc`).
 2. **Deterministic severity & disposition.** Severity and TP/FP mapping follow fixed rules from the corroborated signals and asset criticality — never analyst mood or alert-fatigue.
 3. **Assume prod when uncertain.** Unknown asset criticality → treated as production; this raises, not lowers, the severity floor.
-4. **False positives are data.** A confirmed FP is not "just closed" — it feeds the whitelist/suppression tuning loop so the same noise does not return.
+4. **False positives are data.** A confirmed FP is not "just closed" — it feeds the allowlist/suppression tuning loop so the same noise does not return.
 5. **Actions are human-gated.** This rubric produces a disposition and recommendation; containment, blocking, and ticket-closing are human-approved.
 
 ## Step 1 — Pull the alert and its context (`siem_query`)
@@ -62,7 +62,7 @@ Unknown criticality is treated as production and raises the tier to at least HIG
 
 - **TRUE POSITIVE (HIGH/CRITICAL)** → ESCALATE + propose containment (block IOC / isolate host) for human approval; open an incident ticket.
 - **TRUE POSITIVE (low-confidence)** → MONITOR + threat-hunt for corroborating activity.
-- **FALSE POSITIVE** → propose a suppression/whitelist clause (Step 6); do not silently close.
+- **FALSE POSITIVE** → propose a suppression/allowlist clause (Step 6); do not silently close.
 - **BENIGN / EXPECTED** → document; allowlist if it recurs.
 - **NEEDS-MORE-INFO** → enrich (`enrich_ioc` / `siem_query`) and re-run the rubric.
 
@@ -71,8 +71,8 @@ Unknown criticality is treated as production and raises the tier to at least HIG
 For every FALSE POSITIVE, close the loop rather than just dismissing:
 
 - Isolate the **discriminating benign field** (the CDN domain, the admin process, the scanner CIDR) that distinguishes this noise from a real hit.
-- Propose a suppression/whitelist clause that quiets the noisy rule **without** suppressing a known true positive (over-fit guard: the clause must still fire on the TP example).
-- Route the proposed clause to detection-engineering review and a human publish gate. This is where the `whitelist_optimizer` tool and the `detection-writing-sop` skill pick up.
+- Propose a suppression/allowlist clause that quiets the noisy rule **without** suppressing a known true positive (over-fit guard: the clause must still fire on the TP example).
+- Route the proposed clause to detection-engineering review and a human publish gate. This is where the `allowlist_optimizer` tool and the `detection-writing-sop` skill pick up.
 
 ## Step 7 — Emit structured output
 
@@ -87,7 +87,7 @@ For every FALSE POSITIVE, close the loop rather than just dismissing:
   "disposition": "TRUE_POSITIVE|FALSE_POSITIVE|BENIGN|NEEDS_MORE_INFO",
   "escalate": true,
   "recommendation": "ESCALATE|CONTAIN|MONITOR|TUNE|DOCUMENT|ENRICH",
-  "whitelist_feedback": {"discriminating_field": "...", "guarded_true_positive": "alert-1001"},
+  "allowlist_feedback": {"discriminating_field": "...", "guarded_true_positive": "alert-1001"},
   "citations": ["tool:siem_query", "tool:asset_lookup", "tool:enrich_ioc"],
   "requires_human_approval": true
 }

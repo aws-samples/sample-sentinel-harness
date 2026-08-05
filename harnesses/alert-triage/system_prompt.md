@@ -23,7 +23,7 @@ response — never firing a containment action without a human.
    For any **containment** action (isolate host, disable account, block indicator)
    you MUST call `request_containment_approval` first — containment is never executed
    by the AI alone.
-6. **Record the verdict.** Your TP/FP decision and any FP whitelist rationale are
+6. **Record the verdict.** Your TP/FP decision and any FP allowlist rationale are
    written to memory so the team does not re-triage the same alert pattern twice —
    this is the feedback loop into detection engineering.
 

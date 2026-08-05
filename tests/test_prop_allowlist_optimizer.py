@@ -1,21 +1,21 @@
 """
-Property-based tests for the whitelist_optimizer over-fit guard
+Property-based tests for the allowlist_optimizer over-fit guard
 ===============================================================
-``tools/whitelist_optimizer`` turns a cohort of confirmed false-positive alerts
+``tools/allowlist_optimizer`` turns a cohort of confirmed false-positive alerts
 into a Sigma-style suppression clause. The CRITICAL safety property the whole
-M6 feedback loop rests on: a synthesized whitelist must NEVER suppress a
+M6 feedback loop rests on: a synthesized allowlist must NEVER suppress a
 provided true-positive. If it did, the loop would silently blind a detection
 rule to a real threat. These Hypothesis tests attack that guard with
 arbitrary FP cohorts + TP events instead of a handful of fixed cases.
 
 Invariants exercised (all real, none tautological):
   * OVER-FIT GUARD (the headline): for any generated FP cohort plus any provided
-    true-positive event, the emitted whitelist clause NEVER matches that TP.
+    true-positive event, the emitted allowlist clause NEVER matches that TP.
     Verified against the tool's OWN authoritative ``_clause_matches`` engine.
   * Determinism: identical input yields an identical clause/verdict.
   * suppressed_count is a correct, bounded count of FP-cohort matches.
   * A TP identical to (sharing the discriminator of) the FPs forces the tool to
-    refuse — it must return ``no_safe_whitelist`` rather than an unsafe clause.
+    refuse — it must return ``no_safe_allowlist`` rather than an unsafe clause.
   * No network / no AWS: the module imports and runs with only a placeholder
     role ARN in the environment (asserted implicitly by running offline).
 
@@ -33,9 +33,9 @@ from hypothesis import strategies as st
 # ``handler`` modules (tools/ is a flat scripts tree, every tool ships handler).
 _HANDLER_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "tools", "whitelist_optimizer", "handler.py",
+    "tools", "allowlist_optimizer", "handler.py",
 )
-_spec = importlib.util.spec_from_file_location("whitelist_optimizer_handler__prop", _HANDLER_PATH)
+_spec = importlib.util.spec_from_file_location("allowlist_optimizer_handler__prop", _HANDLER_PATH)
 wl = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wl)
 
@@ -80,16 +80,16 @@ _alert = st.fixed_dictionaries(
 
 
 # --------------------------------------------------------------------------- #
-# THE CRITICAL INVARIANT: a synthesized whitelist never suppresses a TP.       #
+# THE CRITICAL INVARIANT: a synthesized allowlist never suppresses a TP.       #
 # --------------------------------------------------------------------------- #
 @_SETTINGS
 @given(
     fp_events=st.lists(_alert, min_size=1, max_size=6),
     tp_events=st.lists(_alert, min_size=1, max_size=4),
 )
-def test_whitelist_never_suppresses_provided_tp(fp_events, tp_events):
+def test_allowlist_never_suppresses_provided_tp(fp_events, tp_events):
     """For ANY FP cohort + provided true-positive(s): if the tool emits a
-    whitelist, that clause must NOT match any provided TP.
+    allowlist, that clause must NOT match any provided TP.
 
     We verify with the tool's OWN authoritative ``_clause_matches`` so we are
     testing the real suppression semantics, not a re-implementation.
@@ -98,10 +98,10 @@ def test_whitelist_never_suppresses_provided_tp(fp_events, tp_events):
         {"rule_name": "r", "fp_events": fp_events, "tp_examples": tp_events}
     )
     assert result["ok"] is True
-    wlist = result.get("whitelist")
+    wlist = result.get("allowlist")
     if wlist is None:
         # Refusing to synthesize is always safe.
-        assert result["verdict"] == "no_safe_whitelist"
+        assert result["verdict"] == "no_safe_allowlist"
         assert result["suppressed_count"] == 0
         return
 
@@ -133,9 +133,9 @@ def test_tp_equal_to_fp_discriminator_forces_refusal(domain, n_fp):
         {"rule_name": "r", "fp_events": fp_events, "tp_examples": tp_events}
     )
     assert result["ok"] is True
-    # The only shared discriminator matches the TP -> no safe whitelist.
-    assert result["whitelist"] is None
-    assert result["verdict"] == "no_safe_whitelist"
+    # The only shared discriminator matches the TP -> no safe allowlist.
+    assert result["allowlist"] is None
+    assert result["verdict"] == "no_safe_allowlist"
 
 
 # --------------------------------------------------------------------------- #
@@ -154,8 +154,8 @@ def test_inline_tp_marker_is_protected(domain, marker):
     result = _optimize({"rule_name": "r", "fp_events": fp_events})
     assert result["ok"] is True
     # The shared domain also identifies the in-line TP, so it must refuse.
-    assert result["whitelist"] is None
-    assert result["verdict"] == "no_safe_whitelist"
+    assert result["allowlist"] is None
+    assert result["verdict"] == "no_safe_allowlist"
 
 
 # --------------------------------------------------------------------------- #
@@ -179,12 +179,12 @@ def test_deterministic_same_input_same_output(fp_events, tp_events):
 @_SETTINGS
 @given(fp_events=st.lists(_alert, min_size=1, max_size=6))
 def test_suppressed_count_matches_clause_over_cohort(fp_events):
-    """When a whitelist is emitted, suppressed_count equals the number of FP
+    """When an allowlist is emitted, suppressed_count equals the number of FP
     events (that were not TP-marked) the clause actually matches, and is >= 1
     and bounded by the cohort size."""
     result = _optimize({"rule_name": "r", "fp_events": fp_events})
     assert result["ok"] is True
-    wlist = result.get("whitelist")
+    wlist = result.get("allowlist")
     if wlist is None:
         assert result["suppressed_count"] == 0
         return
@@ -208,7 +208,7 @@ def test_makes_no_network_call():
     orig = socket.socket
 
     def _boom(*a, **k):  # pragma: no cover - only fires on a real regression
-        raise AssertionError("whitelist_optimizer attempted a network socket")
+        raise AssertionError("allowlist_optimizer attempted a network socket")
 
     socket.socket = _boom
     try:
@@ -222,6 +222,6 @@ def test_makes_no_network_call():
             }
         )
         assert result["ok"] is True
-        assert result["whitelist"] is not None
+        assert result["allowlist"] is not None
     finally:
         socket.socket = orig

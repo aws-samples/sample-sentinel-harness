@@ -71,7 +71,7 @@ class TestToolDiscovery:
             "detection_coverage", "detection_audit", "detection_navigator",
             "detection_baseline", "enrich_ioc", "asset_lookup", "siem_query",
             "create_ticket", "ops_query", "sigma_match", "nvd_lookup",
-            "epss_kev", "whitelist_optimizer", "attack_lookup",
+            "epss_kev", "allowlist_optimizer", "attack_lookup",
         }
         for name in expected_safe:
             assert name in tools, f"Expected approved tool {name} not discovered"

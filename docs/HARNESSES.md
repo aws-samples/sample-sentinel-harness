@@ -137,7 +137,7 @@ Containment is human-gated; verdicts feed back into detection.
 | Model | Haiku (`SENTINEL_MODEL_HAIKU`), `maxTokens: 4096`, `temperature: 0.1` | Cheap + fast for volume; escalate ambiguous alerts to Sonnet via a per-invocation `model=` override. |
 | Tools | `agentcore_code_interpreter`, `agentcore_gateway` | Deterministic event math; enrichment + ticketing + containment surface. |
 | `allowedTools` | `code_interpreter`, `siem_query`, `asset_lookup`, `enrich_ioc`, `create_ticket`, `request_containment_approval` | Corroborate, count, open tickets, and *request* (never execute) containment. |
-| Memory | SEMANTIC + SUMMARIZATION, 90-day expiry | Recall prior TP/FP verdicts; FP whitelist rationale tunes future detections. |
+| Memory | SEMANTIC + SUMMARIZATION, 90-day expiry | Recall prior TP/FP verdicts; FP allowlist rationale tunes future detections. |
 | `maxIterations` | 12 | Enrichment + verdict + optional containment gate; kept tight. |
 | `timeoutSeconds` | 180 | High-volume path — short ceiling. |
 
