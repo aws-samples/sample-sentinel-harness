@@ -18,6 +18,9 @@ locals {
   # AWS-managed namespace.
   metrics_namespace = "SentinelHarness"
   tokens_metric     = "TokensPerScenario"
+  # Mirror iac-cdk/lib/observability-stack.ts: LATENCY_METRIC_NAME / ERRORS_METRIC_NAME.
+  latency_metric    = "InvokeLatencyMs"
+  errors_metric     = "InvokeErrors"
 }
 
 # ---------------------------------------------------------------------------
@@ -29,6 +32,61 @@ resource "aws_cloudwatch_log_group" "harness" {
 
   tags = {
     Component = "observability"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Metric filters — THE PRODUCERS of the custom metrics the alarm and dashboard
+# below consume. Without these the CDK mirror and this stack are not equivalent:
+# `SentinelHarness/TokensPerScenario` would have no data source at all, the alarm
+# would sit in INSUFFICIENT_DATA forever, and — because it is declared
+# `treat_missing_data = "notBreaching"` — it would never fire and never look broken.
+# An operator who deployed this Terraform believing README's "mirror" claim had a
+# token-overrun alarm that could not fire. Same shape as INV-METRIC-1, where a
+# metric never matched its filter so no alarm ever fired.
+#
+# `sentinel_harness/observability.py` emits one bare JSON line per invocation
+# (see METRIC_FIELDS), so each filter selects a numeric field out of it. The
+# patterns and metric names mirror iac-cdk/lib/observability-stack.ts exactly;
+# `tests/test_iac_observability_parity.py` fails if the two sides drift.
+# ---------------------------------------------------------------------------
+resource "aws_cloudwatch_log_metric_filter" "tokens" {
+  name           = "${var.name_prefix}-tokens"
+  log_group_name = aws_cloudwatch_log_group.harness.name
+  # JSON selector: pull the numeric `tokens` field out of each matching event.
+  pattern = "{ $.tokens = * }"
+
+  metric_transformation {
+    name          = local.tokens_metric
+    namespace     = local.metrics_namespace
+    value         = "$.tokens"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "latency" {
+  name           = "${var.name_prefix}-latency"
+  log_group_name = aws_cloudwatch_log_group.harness.name
+  pattern        = "{ $.latency_ms = * }"
+
+  metric_transformation {
+    name          = local.latency_metric
+    namespace     = local.metrics_namespace
+    value         = "$.latency_ms"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "errors" {
+  name           = "${var.name_prefix}-errors"
+  log_group_name = aws_cloudwatch_log_group.harness.name
+  pattern        = "{ $.errors = * }"
+
+  metric_transformation {
+    name          = local.errors_metric
+    namespace     = local.metrics_namespace
+    value         = "$.errors"
+    default_value = "0"
   }
 }
 
