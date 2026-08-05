@@ -285,10 +285,30 @@ def test_that_job_treats_a_skip_as_a_failure():
         if not any("strands-agents" in (s.get("run") or "") for s in steps):
             continue
         body = " ".join(s.get("run") or "" for s in steps)
-        assert "skipped" in body and "exit 1" in body, (
-            f"job {name!r} installs the real stack but does not fail on a SKIP. If strands or "
-            "litellm silently fail to resolve, every test skips and the job reports green — "
-            f"verifying nothing. Step bodies:\n{body[:500]}"
+
+        # The check is by SKIP REASON, not by the presence of the word or by a count.
+        #
+        # It started as `"skipped" in body`, which broke when the job learned to distinguish
+        # dependency-missing skips from legitimately inapplicable ones — `test_exported_agent_runs.py`
+        # skips per-harness cases for the four harnesses that declare no human-approval gate, so
+        # failing on ANY skip would make those indistinguishable from a broken install. That is
+        # the same conflation this guard exists to prevent, pointed the other way.
+        #
+        # A count threshold was the other option and is worse: it needs editing whenever a
+        # harness gains or loses a gate, and a stale threshold silently absorbs real regressions.
+        assert "exit 1" in body, (
+            f"job {name!r} installs the real stack but never fails the build. Step bodies:\n"
+            f"{body[:500]}"
+        )
+        assert "could not import" in body or "No module named" in body, (
+            f"job {name!r} does not detect a DEPENDENCY-MISSING skip. If strands or litellm "
+            "silently fail to resolve, every test skips and the job reports green — verifying "
+            f"nothing. It must grep the skip REASON. Step bodies:\n{body[:600]}"
+        )
+        assert "passed" in body, (
+            f"job {name!r} does not assert that a substantial number of tests actually RAN. An "
+            "empty selection produces zero skips and would pass the reason check while "
+            f"verifying nothing. Step bodies:\n{body[:600]}"
         )
         return
     pytest.fail("no real-stack job found (the previous test should have caught this)")

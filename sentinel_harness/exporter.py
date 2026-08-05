@@ -60,6 +60,29 @@ def _py_str(text: str) -> str:
     return '"""\\\n' + body + '\n"""'
 
 
+def is_hitl_gate(tool: object) -> bool:
+    """Is `tool` a human-in-the-loop approval gate rather than a business tool?
+
+    THE canonical predicate, exported deliberately. The rule used to be an inline expression
+    inside `export_harness_to_strands`, and a test that needed the same judgement re-implemented
+    it as `"approval" in name.lower()` — two definitions of a SAFETY rule that agree today and
+    would diverge the first time a gate is named differently. A gate the checker misses is a gate
+    the exported code does not warn about, which is a silent safety regression in the artifact.
+
+    The naming contract is `request_<action>_approval`; the four shipped gates are
+    request_containment_approval, request_publish_approval, request_promotion_approval (and
+    ops-automation reuses containment). Anything matching that shape is a gate.
+
+    Callers must use THIS function, not a substring test — substring matching standing in for a
+    structural rule is the defect class this repo has recorded more than any other.
+    """
+    return (
+        isinstance(tool, str)
+        and tool.startswith("request_")
+        and tool.endswith("_approval")
+    )
+
+
 def _comment_safe(value) -> str:
     """Render ``value`` as a single inert line for interpolation into a ``#`` comment.
 
@@ -159,8 +182,7 @@ def export_harness_to_strands(config: dict) -> str:
     # and skip the approval gate — silently shipping an agent with LESS safety than
     # the harness it was exported from. So the gates are called out SEPARATELY, as
     # guardrails, and the builder emits a hard warning when any is present.
-    hitl_gates = [t for t in allowed_tools
-                  if isinstance(t, str) and t.startswith("request_") and t.endswith("_approval")]
+    hitl_gates = [t for t in allowed_tools if is_hitl_gate(t)]
     business_tools = [t for t in allowed_tools if t not in hitl_gates]
     if allowed_tools:
         for t in business_tools:
