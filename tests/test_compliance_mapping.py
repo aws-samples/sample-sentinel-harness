@@ -15,6 +15,11 @@ from __future__ import annotations
 import os
 import re
 
+from repo_infra import require_git_checkout  # noqa: E402
+
+# COMPLIANCE.md anchors cite .github/workflows/release.yml, which the sdist excludes.
+require_git_checkout("test_compliance_mapping (COMPLIANCE.md cites .github/ paths)")
+
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DOC = os.path.join(_REPO, "docs", "COMPLIANCE.md")
 

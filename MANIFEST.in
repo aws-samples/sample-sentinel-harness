@@ -1,0 +1,89 @@
+# What the sdist contains — a DECISION, not setuptools' default (INV-PKG-3).
+#
+# Before this file existed there was no decision at all. setuptools' sdist defaults pull in
+# `tests/` automatically, so the sdist shipped all 162 test files and **none of the trees they
+# read**. Measured, not assumed: installing the sdist and running its own bundled suite the way
+# a downstream packager does (conda-forge / Debian / Fedora all do exactly this) gave
+#
+#     43 errors during collection
+#     12x scenarios/  7x specialists/  3x longrunning/  2x demo/  1x sentinel_inference_gateway/
+#     FileNotFoundError
+#
+# That is the worst of the two coherent options. Either the sdist omits tests (then it is a
+# minimal build input) or it ships tests that RUN (then it must carry what they read). Shipping
+# the tests without their fixtures means a packager who follows the standard workflow hits 43
+# errors and concludes either "skip the tests" — losing the verification the sdist exists to
+# enable — or "this package is broken".
+#
+# The sdist is published to PyPI alongside the wheel, and release.yml's smoke test installs
+# `dist/*.whl` only, so nothing ever exercised it.
+#
+# This repo is an aws-samples REFERENCE implementation: being reproducible from the sdist is
+# worth more than 768 KB of tarball. So: ship the trees.
+#
+# The list below came from an exhaustive scan of `REPO_ROOT / "<name>"` references in tests/,
+# NOT from the 43 failures — those only exposed 5 trees, because pytest stops collecting after
+# the first error in a module and later trees were never reached. Fixing only what failed would
+# have left the next `pip install sdist && pytest` broken in a new place.
+# `tests/test_sdist_contents.py` re-derives this list and fails if a tree is referenced but not
+# shipped, so the two cannot drift.
+
+# --- Runtime data the package itself needs (also in the wheel via package-data) ---
+include LICENSE
+include README.md
+include CHANGELOG.md
+include CONTRIBUTING.md
+# SECURITY.md is cited by COMPLIANCE.md's anchor table (control C15), so omitting it made
+# `test_compliance_mapping.py` fail inside the sdist — a real gap my first draft of this file
+# had, caught by running the sdist's own suite rather than by re-reading the list.
+include SECURITY.md
+include Makefile
+include MANIFEST.in
+include .coveragerc
+include mypy.ini
+include requirements.txt
+# The lockfile is what makes `uv sync` reproduce the exact environment the tests were verified
+# against. An sdist that ships the tests but not the lock leaves a packager resolving fresh.
+include uv.lock
+recursive-include registry *.yaml
+recursive-include sentinel_harness/data *.yaml
+
+# --- Trees the bundled test suite reads ---
+recursive-include tests *.py *.md *.yaml *.yml *.json *.jsonl *.txt
+recursive-include tools *.py *.md *.yaml *.yml *.json
+recursive-include scenarios *.py *.md
+recursive-include specialists *.py *.md *.yaml *.yml *.txt Dockerfile
+recursive-include longrunning *.py *.md *.yaml *.yml *.json *.txt Dockerfile
+recursive-include harnesses *.yaml *.yml *.md
+recursive-include mockdata *.py *.json *.yaml
+recursive-include intake *.py *.md *.yaml
+recursive-include eval *.json *.jsonl *.yaml *.md
+recursive-include rules *.yml *.yaml *.md
+recursive-include skills *.md *.yaml
+recursive-include evidence *.json
+recursive-include demo *.py *.md
+recursive-include sentinel_inference_gateway *.py *.md
+recursive-include deploy *.sh *.md *.py
+recursive-include docs *.md
+recursive-include iac-cdk *.ts *.json *.md
+recursive-include iac-terraform *.tf *.tfvars.example *.md
+
+# --- Never ship build/CI residue or local state ---
+# `build/` matters especially: INV-PKG-2 records a stale build/lib/ staging tree putting a
+# DELETED tool back into a wheel. It must not reach the sdist either.
+prune build
+prune dist
+prune site
+prune .github
+prune .venv
+prune node_modules
+prune htmlcov
+prune iac-cdk/cdk.out
+prune iac-cdk/node_modules
+prune iac-terraform/.terraform
+global-exclude *.pyc *.pyo *.pyd .DS_Store
+global-exclude .coverage .coverage.*
+recursive-exclude * __pycache__
+recursive-exclude * .pytest_cache
+recursive-exclude * .ruff_cache
+recursive-exclude * .hypothesis

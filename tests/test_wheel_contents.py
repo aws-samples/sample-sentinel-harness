@@ -324,7 +324,9 @@ def test_the_release_workflow_builds_from_a_fresh_checkout():
     If the release workflow ever gained a cache or a self-hosted runner with a persistent
     workspace, that assumption breaks — which is what this test watches for.
     """
-    path = os.path.join(REPO_ROOT, ".github", "workflows", "release.yml")
+    from repo_infra import require_workflow
+
+    path = require_workflow("workflows", "release.yml")
     with open(path, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh)
 

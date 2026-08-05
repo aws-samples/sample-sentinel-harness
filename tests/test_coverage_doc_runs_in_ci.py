@@ -38,7 +38,9 @@ import pytest
 yaml = pytest.importorskip("yaml", reason="pyyaml is a CORE dependency; absence is a bug")
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CI_YML = os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")
+from repo_infra import require_workflow  # noqa: E402
+
+CI_YML = require_workflow("workflows", "ci.yml")
 GUARD_MODULE = os.path.join(REPO_ROOT, "tests", "test_coverage_doc.py")
 REQUIRE_ENV = "SENTINEL_REQUIRE_COVERAGE_DATA"
 

@@ -47,8 +47,12 @@ else:  # pragma: no cover - exercised on 3.10 only
 yaml = pytest.importorskip("yaml", reason="pyyaml is a CORE dependency; absence is a bug")
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CI_YML = os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")
-RELEASE_YML = os.path.join(REPO_ROOT, ".github", "workflows", "release.yml")
+# Resolved through the shared helper: a missing workflow FAILS inside a checkout and skips
+# in an unpacked sdist (which excludes .github/ on purpose). See tests/repo_infra.py.
+from repo_infra import require_workflow  # noqa: E402
+
+CI_YML = require_workflow("workflows", "ci.yml")
+RELEASE_YML = require_workflow("workflows", "release.yml")
 PYPROJECT = os.path.join(REPO_ROOT, "pyproject.toml")
 
 # Distribution name -> import name, for the entries whose two names differ.

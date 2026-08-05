@@ -46,8 +46,10 @@ import pytest
 yaml = pytest.importorskip("yaml", reason="PyYAML parses the dependabot config")
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-DEPENDABOT = REPO_ROOT / ".github" / "dependabot.yml"
-CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+from repo_infra import require_workflow  # noqa: E402
+
+DEPENDABOT = pathlib.Path(require_workflow("dependabot.yml"))
+CI_WORKFLOW = pathlib.Path(require_workflow("workflows", "ci.yml"))
 IAC_DIR = REPO_ROOT / "iac-cdk"
 PACKAGE_JSON = IAC_DIR / "package.json"
 TSCONFIG = IAC_DIR / "tsconfig.json"
