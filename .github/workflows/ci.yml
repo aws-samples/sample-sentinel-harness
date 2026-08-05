@@ -51,6 +51,12 @@ jobs:
           # byte-identical between pre-commit, `make ci` and CI.
           pip install -e ".[test]"
           pip install ruff==0.15.20
+          # `build` is needed by tests/test_wheel_contents.py (INV-PKG-2), which builds a real
+          # wheel and checks its CONTENTS — the only way to catch a stale build/lib/ staging tree
+          # shipping a deleted module. Without it those assertions would SKIP, and a packaging
+          # guard that skips in CI is the failure mode INV-CI-1 and INV-DOC-5 both record.
+          pip install build
+          python -c "import build; print('build backend OK')"
           # Fail loudly here rather than skipping quietly later: if an optional test
           # dependency did not install, every test that needs it would report "skipped",
           # which is indistinguishable from "there was nothing to run".

@@ -56,27 +56,33 @@ TOOLS_DIR = os.path.join(REPO_ROOT, "tools")
 
 
 def _build_launcher() -> list:
-    """An argv prefix that can build a wheel, RESOLVED rather than assumed.
+    """An argv prefix that can build a wheel, PROBED for the capability it will actually use.
 
-    Hardcoding one launcher has broken in this repo six times (see `tests/child_pytest.py`),
-    so the candidates are probed. `uv build` is preferred because it is what the Makefile and
-    the release workflow use.
+    Seventh occurrence in this repo of a hardcoded/mis-probed tool launcher, and my first
+    version here repeated the mistake in a new way: it probed `candidate[:1] --version`, i.e.
+    `python --version` for the `python -m build` candidate. That always succeeds, so the
+    function returned a launcher whose `build` module was not installed — CI failed on all four
+    Pythons with `No module named build` while the local run was green (uv is installed here,
+    so the first candidate won and the broken fallback was never exercised).
+
+    **A probe must exercise the capability, not its host.** `python --version` says nothing
+    about whether `python -m build` works. Each candidate is now invoked in the same form it
+    will be used, and its output is checked.
     """
     candidates = [
-        ["uv", "build"],
-        [sys.executable, "-m", "build"],
+        (["uv", "build"], ["uv", "build", "--help"]),
+        ([sys.executable, "-m", "build"], [sys.executable, "-m", "build", "--version"]),
     ]
-    for candidate in candidates:
-        exe = shutil.which(candidate[0])
-        if exe is None:
+    for launcher, probe_argv in candidates:
+        if shutil.which(launcher[0]) is None and launcher[0] != sys.executable:
             continue
         try:
-            probe = subprocess.run([*candidate[:1], "--version"], cwd=REPO_ROOT,
-                                   capture_output=True, text=True, timeout=120)
+            probe = subprocess.run(probe_argv, cwd=REPO_ROOT, capture_output=True,
+                                   text=True, timeout=180)
         except (OSError, subprocess.TimeoutExpired):
             continue
         if probe.returncode == 0:
-            return candidate
+            return launcher
     return []
 
 
@@ -95,6 +101,16 @@ def built_wheel(tmp_path_factory) -> str:
     """
     launcher = _build_launcher()
     if not launcher:
+        # Skip locally, FAIL in CI. Same treatment as INV-DOC-5's coverage data: a packaging
+        # guard that skips where merges are gated has verified nothing, and would have reported
+        # green on the very defect it exists to catch. ci.yml installs `build` and asserts the
+        # import, so reaching this branch there means the install regressed.
+        if os.environ.get("CI", "").strip().lower() in ("1", "true", "yes", "on"):
+            raise AssertionError(
+                "no wheel builder found (tried `uv build`, `python -m build`) but CI=1. "
+                "ci.yml must `pip install build`; without a builder these assertions cannot "
+                "run, and INV-PKG-2 would be unverified in the one place that gates merges."
+            )
         pytest.skip("no way to build a wheel was found (tried `uv build`, `python -m build`)")
 
     src = tmp_path_factory.mktemp("src") / "repo"
