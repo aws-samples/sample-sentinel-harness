@@ -87,6 +87,32 @@ jobs:
         # .coveragerc's [report] fail_under and `make ci`.
         run: coverage report --fail-under=88
 
+      - name: Verify the documented coverage figures (INV-DOC-5)
+        # MUST run AFTER the step above, and as a SEPARATE step. `tests/test_coverage_doc.py`
+        # re-measures every figure in `tests/README-coverage.md` against real coverage data —
+        # but `coverage run -m pytest tests` only WRITES `.coverage` when it exits, so during
+        # the main test step those 3 assertions found no data file and called `pytest.skip`.
+        # They therefore NEVER ran in CI: the guard that keeps the coverage doc honest was
+        # itself only ever verified on a maintainer's laptop. Measured, not assumed —
+        # replicating CI's exact invocation locally reproduced `SKIPPED [3]`.
+        #
+        # This is INV-CI-1's shape again (a check that silently no-ops where it matters most),
+        # so the env var below makes the skip IMPOSSIBLE here: with
+        # SENTINEL_REQUIRE_COVERAGE_DATA=1 the helper raises instead of skipping. Otherwise a
+        # future change to the data-file path would quietly restore the no-op and this step
+        # would still report green.
+        #
+        # A plain `pytest` run does not touch `.coverage`, so this cannot disturb the gate
+        # above (verified: file checksum unchanged).
+        env:
+          SENTINEL_REQUIRE_COVERAGE_DATA: "1"
+          SENTINEL_REGION: us-east-1
+          AWS_DEFAULT_REGION: us-east-1
+          SENTINEL_EXECUTION_ROLE_ARN: arn:aws:iam::000000000000:role/ci-test-role
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: python -m pytest tests/test_coverage_doc.py -q
+
   mypy:
     name: mypy (strict on security modules, lenient elsewhere)
     runs-on: ubuntu-latest
