@@ -61,8 +61,16 @@ build-backend = "setuptools.build_meta"
 # `tool handler not found` from `sentinel detection audit` / `sentinel mcp serve`.
 # find() with namespaces=true ships sentinel_harness + all subpackages, intake, and
 # the flat tools/<name>/handler.py tree (namespace packages — no __init__.py needed).
+#
+# `harnesses*` was added after the same failure mode was measured a THIRD time. The wheel
+# omitted `harnesses/`, so on an installed wheel the documented no-lock-in escape hatch —
+# `sentinel export alert-triage`, taught in README.md and docs/QUICKSTART.md — could not
+# resolve any of the 8 shipped harnesses, and said so while pointing at a site-packages path
+# that did not exist. INV-MCP-2 fixed exactly this for `registry/`; `harnesses/` was left out.
+# "A fix applied to one call site is not an invariant" — this time the call site was a
+# packaging include list. `test_wheel_contents.py` now asserts every harness reaches the wheel.
 [tool.setuptools.packages.find]
-include = ["sentinel_harness*", "intake*", "tools*", "mockdata*"]
+include = ["sentinel_harness*", "intake*", "tools*", "mockdata*", "harnesses*"]
 namespaces = true
 
 # Data files, NOT code. Round 20: `registry/tools.yaml` is the governance decision

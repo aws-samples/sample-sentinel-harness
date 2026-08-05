@@ -66,6 +66,22 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCENARIOS_DIR = os.path.join(_REPO_ROOT, "scenarios")
 HARNESSES_DIR = os.path.join(_REPO_ROOT, "harnesses")
 
+# `HARNESSES_DIR` needs NO second candidate, and that is worth stating because the obvious fix
+# is to add one. `_REPO_ROOT` is the parent of `sentinel_harness/`, which in a checkout is the
+# repo root and on an installed wheel is site-packages — so this single path is already correct
+# in both layouts. What was missing was the DATA, not the lookup: the wheel simply did not ship
+# `harnesses/`, so the resolver pointed at a real, correct, empty location.
+#
+# Reproduced before the fix, from a directory unrelated to any checkout:
+#   sentinel export alert-triage
+#   -> error: could not resolve harness 'alert-triage' ... under <site-packages>/harnesses/...
+# i.e. the message named exactly where it looked, and nothing was there. That is the good kind
+# of error message; the defect was that a command README.md and docs/QUICKSTART.md both teach
+# could never succeed on an installed wheel. Exit code was already 1 — verified, not assumed.
+#
+# Fixed in pyproject (`harnesses*` added to packages.find). Guarded by
+# `test_wheel_contents.py::test_every_harness_reaches_the_wheel`.
+
 
 # --------------------------------------------------------------------------- io
 def _eprint(*args) -> None:
