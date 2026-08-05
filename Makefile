@@ -104,7 +104,20 @@ destroy: ## Tear down all 9 sentinel-* CDK stacks (confirms account+region).
 demo: ## Run the narrated end-to-end platform tour (offline).
 	uv run --no-project --python 3.13 --with boto3 --with pyyaml --with . python demo/platform_demo.py
 
-clean: ## Remove local build/test caches (cdk.out, .pytest_cache, __pycache__, ...).
-	rm -rf iac-cdk/cdk.out .pytest_cache .ruff_cache htmlcov .coverage
+clean: ## Remove local build/test caches (build/, cdk.out, .pytest_cache, __pycache__, ...).
+	# `build/` MUST be here. setuptools stages the whole package tree into build/lib/ and
+	# copies FROM it, never pruning entries whose source has been deleted — so a renamed or
+	# removed module keeps shipping. Measured: after the whitelist_optimizer -> allowlist_optimizer
+	# rename, a locally built wheel carried 21 handlers, including the DELETED
+	# tools/whitelist_optimizer/. Installing it put dead code back on disk. `make clean` used to
+	# leave build/ alone, so the stale copy survived every clean and every rebuild.
+	rm -rf build/ dist/ iac-cdk/cdk.out .pytest_cache .ruff_cache htmlcov .coverage
 	find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 	@echo "cleaned local caches (no source, no evidence removed)."
+
+dist: clean ## Build a wheel + sdist from a CLEAN tree (never reuse a stale build/).
+	# Depends on `clean` deliberately: building on top of an existing build/lib/ is exactly how
+	# a deleted module ends up in the artifact. CI is safe by accident (fresh checkout); this
+	# makes a local build match it on purpose.
+	uv build
+	@echo "built dist/ from a clean tree — verify with: uv run pytest tests/test_wheel_contents.py"
