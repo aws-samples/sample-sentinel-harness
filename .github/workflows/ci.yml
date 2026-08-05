@@ -274,14 +274,33 @@ jobs:
             tests/test_threat_hunt.py \
             tests/test_adversarial_reviewer.py \
             tests/test_inference_gateway.py \
+            tests/test_exported_agent_runs.py \
             tests/test_no_toplevel_name_shadows_a_dependency.py \
             | tee /tmp/real_stack.log
-          # A skip in THIS job means the heavy deps did not resolve, which is precisely the
-          # condition that hid a production defect for the whole life of these tests. Green
-          # must mean "ran", not "declined to run".
-          if grep -qE "^[0-9]+ skipped|, [0-9]+ skipped" /tmp/real_stack.log; then
-            echo "::error::a test SKIPPED in the real-stack job — the heavy deps did not"\
-                 "resolve, so this job verified nothing. See INV-PKG-1."
+          # A skip caused by a MISSING DEPENDENCY means this job verified nothing — the condition
+          # that hid a production defect for the whole life of these tests. Green must mean
+          # "ran", not "declined to run".
+          #
+          # But not every skip is that. `test_exported_agent_runs.py` skips per-harness cases
+          # that are genuinely inapplicable (four of the eight harnesses declare no
+          # human-approval tool, so there is no warning to assert). Failing on ANY skip would
+          # make those legitimate cases indistinguishable from a broken install — the very
+          # conflation this check exists to prevent, pointed the other way.
+          #
+          # So the check is by REASON, not by count. Counting would also drift: the threshold
+          # would need editing every time a harness gains or loses a gate, and a stale threshold
+          # silently absorbs real regressions.
+          if grep -qiE "SKIPPED.*(could not import|No module named|not installed)" /tmp/real_stack.log; then
+            echo "::error::a test SKIPPED for a MISSING DEPENDENCY in the real-stack job — the"\
+                 "heavy deps did not resolve, so this job verified nothing. See INV-PKG-1."
+            grep -iE "SKIPPED.*(could not import|No module named|not installed)" /tmp/real_stack.log
+            exit 1
+          fi
+          # And the job must actually have RUN something substantial: an empty selection would
+          # produce zero skips and pass this check while verifying nothing at all.
+          if ! grep -qE "[0-9]{2,} passed" /tmp/real_stack.log; then
+            echo "::error::the real-stack job ran fewer than 10 tests — the selection is wrong."
+            tail -5 /tmp/real_stack.log
             exit 1
           fi
 
