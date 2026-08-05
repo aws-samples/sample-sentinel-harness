@@ -145,8 +145,8 @@ leaving the process:
 - **sandbox** — `test_sandbox_hooks.py`: the PreToolUse command-allowlist +
   path-containment hook.
 - **exporter** — `test_exporter.py`: harness → standalone code export.
-- **feedback** — `test_feedback.py`: the feedback/whitelist loop primitives
-  (also `test_whitelist_optimizer.py`).
+- **feedback** — `test_feedback.py`: the feedback/allowlist loop primitives
+  (also `test_allowlist_optimizer.py`).
 - **simulation** — `test_simulation.py`: the Play Mode driver (gating, checkpoint
   round-trip).
 - **CLI** — `test_cli.py`: `sentinel` alias→model, tool/memory spec→builder,
@@ -243,7 +243,7 @@ fixtures stay scan-clean.
 | agent factory / harness ops | `test_factory.py`, `test_harness_ops.py` |
 | sandbox PreToolUse hook | `test_sandbox_hooks.py` |
 | exporter | `test_exporter.py` |
-| feedback / whitelist loop | `test_feedback.py`, `test_whitelist_optimizer.py` |
+| feedback / allowlist loop | `test_feedback.py`, `test_allowlist_optimizer.py` |
 | Play Mode simulation | `test_simulation.py` |
 | CLI | `test_cli.py` |
 | offline tool handlers | `test_tool_handlers.py`, `test_asset_lookup.py`, `test_enrich_ioc.py`, `test_ops_query.py`, `test_siem_query.py`, `test_create_ticket.py`, `test_sigma_match.py`, `test_sigma_yara_lint.py`, `test_run_evaluation.py` |

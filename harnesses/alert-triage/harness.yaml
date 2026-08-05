@@ -55,7 +55,7 @@ allowedTools:
 
 memory:
   # SEMANTIC recall of prior TP/FP verdicts + SUMMARIZATION of the alert context.
-  # This is the feedback loop: FP whitelist decisions inform future detection tuning.
+  # This is the feedback loop: FP allowlist decisions inform future detection tuning.
   managedMemoryConfiguration:
     strategies:
       - SEMANTIC

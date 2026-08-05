@@ -6,7 +6,31 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed — BREAKING (tool name and output key)
+
+- **`whitelist_optimizer` is renamed `allowlist_optimizer`**, and its output key
+  `whitelist` is renamed `allowlist`. The project's language rules require
+  allowlist/denylist over whitelist/blacklist, and this was the last violation in the
+  tree — 38 files, a `tools/` directory, both shipped registry copies, and the tool's
+  own response contract.
+
+  This **is** a breaking change, stated as one rather than filed under "docs":
+  `allowlist_optimizer` is a registry-governed tool name that MCP peers call by name and
+  that `harnesses/alert-triage/harness.yaml` references. A caller using the old name
+  gets `unknown_tool`, and one reading `result["whitelist"]` gets `KeyError`. No alias is
+  provided: the registry has no alias mechanism, and adding one to soften a rename would
+  make the non-inclusive name a permanent part of the API.
+
+  Entries for released versions below deliberately keep the OLD name — those releases
+  really did ship it, and rewriting them would falsify the record rather than fix it.
+
+- **New guard `INV-REGISTRY-5`** (written *before* the rename, and verified to fail on it):
+  a registry entry's `name` must equal its `tools/<name>/` directory. Reproduced first —
+  renaming only the registry entry dropped the MCP surface from 17 tools to 16 with **no
+  error at all**, neither name resolvable. `_discover_tools` keys off the directory name,
+  so a mismatched entry is never looked up and the tool simply vanishes. Nothing checked
+  this coupling: `test_registry.py` guarded registry-vs-code-factory and the two YAML
+  copies against each other, but not registry-vs-directory. Three couplings, two guarded.
 
 ## [0.5.1] — 2026-07-21
 

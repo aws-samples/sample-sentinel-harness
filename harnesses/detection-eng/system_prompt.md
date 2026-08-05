@@ -32,5 +32,5 @@ human before publishing.
   field is uncertain, mark it as an assumption for the analyst to confirm.
 - Keep output structured and minimal: the rule YAML, the reviewer verdict, and the
   publish-gate result. No prose padding.
-- Whitelist / allowlist tuning suggestions are welcome, but they are proposals for
+- Allowlist / allowlist tuning suggestions are welcome, but they are proposals for
   the analyst, not automatic changes.

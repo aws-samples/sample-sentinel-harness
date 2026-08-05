@@ -64,7 +64,7 @@ level: high
 
 Rules:
 - Anchor string matches (`endswith`/`startswith`) instead of bare `contains` where possible — reduces evasion and FP.
-- Model the `filter_*` / whitelist blocks explicitly; an empty FP list is a red flag, not a clean rule.
+- Model the `filter_*` / allowlist blocks explicitly; an empty FP list is a red flag, not a clean rule.
 - `level` must match the hypothesis, not aspiration.
 
 ### YARA structure
@@ -93,7 +93,7 @@ Rules:
 ## Step 4 — Scope false positives
 
 - List concrete benign sources that could trigger the rule (admin tooling, backup jobs, CI runners, security scanners).
-- Encode the safe ones as explicit filter/whitelist conditions — do not silently rely on tuning later.
+- Encode the safe ones as explicit filter/allowlist conditions — do not silently rely on tuning later.
 - Estimate FP volume qualitatively (rare / occasional / noisy). Noisy rules need a tighter condition or a correlation, not a higher `level`.
 
 ## Step 5 — Deterministic lint
@@ -112,7 +112,7 @@ A rule that does not lint clean does not proceed.
 - [ ] Mapped to a public technique/CVE/family reference.
 - [ ] Correct rule type for the data (Sigma for events, YARA for files/memory).
 - [ ] `falsepositives` / benign scenarios are named, not empty.
-- [ ] Explicit filter/whitelist conditions for known-benign activity.
+- [ ] Explicit filter/allowlist conditions for known-benign activity.
 - [ ] String/byte matches are anchored/specific — not trivially evadable, not trivially over-broad.
 - [ ] `level`/severity matches the actual hypothesis.
 - [ ] `sigma_yara_lint` passes with zero errors and zero warnings.

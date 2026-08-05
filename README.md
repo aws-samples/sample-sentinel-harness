@@ -13,7 +13,7 @@
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-2997ff"/>
   <img alt="bedrock-agentcore" src="https://img.shields.io/badge/Amazon%20Bedrock-AgentCore%20Harness-ff9900"/>
   <img alt="version" src="https://img.shields.io/badge/version-0.4.0-2997ff"/>
-  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-3830%20passing-1D8102"/>
+  <img alt="tests" src="https://img.shields.io/badge/offline%20tests-3837%20passing-1D8102"/>
   <img alt="coverage" src="https://img.shields.io/badge/coverage-90%25-1D8102"/>
   <img alt="milestones" src="https://img.shields.io/badge/milestones-M0--M15%20delivered-1D8102"/>
   <img alt="hardening" src="https://img.shields.io/badge/adversarial%20audit-100%20defects%20fixed-8b5cf6"/>
@@ -75,7 +75,7 @@ Honest build status per capability — mirrors the self-audit.
 | **L1 Strategy** | Alert triage (TP/FP, correlate, contain) | 🟠 **designed** (loadable harness.yaml) | `harnesses/alert-triage/` |
 | **L1 Strategy** | Gateway wiring + end-to-end named-supervisor scenario | 🟢 **live-validated** (real Gateway create→READY→delete on GA API — `evidence/gateway_lifecycle_result.json`; named-supervisor loads from `harness.yaml`) | `sentinel_harness/gateway.py`, `scenarios/scenario_named_supervisor.py` |
 | **L1 Strategy** | Research supervisor → specialist delegation via registry/A2A | 🟠 **designed** (loadable harness.yaml; A2A specialist skeleton) | `harnesses/research-supervisor/`, `specialists/cve-intel/` |
-| **L1 Strategy** | Feedback loop closure — disposition auto-feeds strategy | 🟢 **live-validated** (offline, deterministic; FP batch auto-triggers whitelist optimization that preserves the TP + a rule-regen task, HITL-gated — `evidence/feedback_loop_result.json`) | `sentinel_harness/feedback.py`, `tools/whitelist_optimizer/`, `scenarios/scenario_feedback_loop.py` |
+| **L1 Strategy** | Feedback loop closure — disposition auto-feeds strategy | 🟢 **live-validated** (offline, deterministic; FP batch auto-triggers allowlist optimization that preserves the TP + a rule-regen task, HITL-gated — `evidence/feedback_loop_result.json`) | `sentinel_harness/feedback.py`, `tools/allowlist_optimizer/`, `scenarios/scenario_feedback_loop.py` |
 | **L1 Strategy** | CVE triage against the asset plane (id → NVD+EPSS/KEV → asset → blast radius → HITL) | 🟢 **validated** (offline, deterministic MOCK; Log4Shell → `web-01` affected + blast radius, KEV-exploited, HITL-gated — `evidence/cve_asset_triage_result.json`) | `scenarios/scenario_cve_asset_triage.py`, `tools/{nvd_lookup,epss_kev,asset_lookup}/` |
 | **L1 Strategy** | Multi-account ops automation (enumerate accounts → triage findings → ticket, HITL) | 🟠 **designed** (loadable harness.yaml over a fictional 4-account inventory; read-only `ops_query`, `OPS_QUERY_LIVE` seam) | `harnesses/ops-automation/`, `tools/ops_query/`, `mockdata/accounts.py` |
 | **L2 Simulation** | Adversary emulation, Play Mode (every step human-gated) + checkpoint/resume | 🟢 **live-validated** | `scenarios/scenario_play_mode.py`, `sentinel_harness/simulation.py` |
@@ -99,7 +99,7 @@ Honest build status per capability — mirrors the self-audit.
 | **Tools** | `nvd_lookup` / `epss_kev` / `attack_lookup` / `web_search` | 🟡 **reference stubs** (offline-safe, contract-tested) | `tools/`, `tests/test_tool_handlers.py` |
 | **Tools** | `siem_query` / `asset_lookup` / `enrich_ioc` / `ops_query` — backend-pluggable | 🟢 **built + tested** (offline mock default; `*_LIVE`=1 switches to a real stdlib-HTTP client — env-driven URL + bearer, timeouts, all failures→`upstream_error` with no silent fallback — proven end-to-end against an in-process 127.0.0.1 mock server, zero external network) | `tools/{siem_query,asset_lookup,enrich_ioc,ops_query}/`, `tests/test_*_live.py` |
 
-🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **3830 offline tests pass** (+6 skipped when optional deps absent).
+🟢 built & validated · 🟡 built, partial · 🟠 designed with loadable config · ⚪ design narrative only. **3837 offline tests pass** (+6 skipped when optional deps absent).
 
 ## 🚀 Quickstart
 
@@ -195,7 +195,7 @@ Each scenario is runnable end-to-end and writes a result JSON to [`evidence/`](e
 | **BAS detection-replay** (L2) | deterministic Sigma matcher replays attack techniques against detection rules to find blind spots | 4 techniques × rules → coverage 0.5, 2 blind spots surfaced — `evidence/bas_replay_result.json` |
 | **Egress control** (L3) | the private VPC is a default-deny island, proven from the live topology | no IGW / no NAT / no `0.0.0.0/0` route; PrivateLink-only — `evidence/egress_control_result.json` |
 | **Alert triage POC** (M5) | cross-linked mock world triaged end-to-end: SIEM → IOC enrich → asset blast-radius → HITL-gated ticket | correlated true-positive, ticket created — `evidence/alert_triage_poc_result.json` |
-| **Feedback loop** (M6) | disposition auto-feeds strategy: an FP batch auto-triggers whitelist optimization that provably preserves the TP + rule regeneration | auto-triggered, TP preserved, HITL-gated — `evidence/feedback_loop_result.json` |
+| **Feedback loop** (M6) | disposition auto-feeds strategy: an FP batch auto-triggers allowlist optimization that provably preserves the TP + rule regeneration | auto-triggered, TP preserved, HITL-gated — `evidence/feedback_loop_result.json` |
 | **CVE-asset triage** (M5) | CVE → `nvd_lookup`+`epss_kev`/KEV → `asset_lookup` blast radius → structured CVETriage → HITL | Log4Shell → `web-01` affected, KEV-exploited, blast radius computed — `evidence/cve_asset_triage_result.json` |
 | **Detonation** (L2) | full `QUEUED → … → DESTROYED` microVM lifecycle + orchestrator — an **honest SIMULATED no-op** | sample-by-reference, sandbox-refused bad action, HITL-gated, always destroyed-after-use — `evidence/detonation_result.json` |
 | **Named supervisor** | loads `research-supervisor` from `harness.yaml`, wires it to a live Gateway (create→READY→delete on the GA API) | 🟢 live-only (Gateway proof: `evidence/gateway_lifecycle_result.json`) |
@@ -247,7 +247,7 @@ Borrowed patterns (see [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md)): supervisor→s
 | [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md) | Registry dual-gate, HITL, sandbox hooks, and tag-guard controls |
 | [`docs/COMPLIANCE.md`](docs/COMPLIANCE.md) | Capability → SOC 2 / ISO 27001 / NIST CSF 2.0 control mapping (anchors machine-verified) |
 | [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | Logging (`logutil`), metrics (token/latency/tool-call/error/eval), the OTEL/Transaction-Search path |
-| [`docs/TESTING.md`](docs/TESTING.md) | The 3830-test offline suite: layout, determinism, how to run |
+| [`docs/TESTING.md`](docs/TESTING.md) | The 3837-test offline suite: layout, determinism, how to run |
 | [`docs/FIDELITY-REPORT.md`](docs/FIDELITY-REPORT.md) | The self-audit — real vs. built vs. designed, with limits stated |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Delivered milestones (M0–M12) and what's next |
 | [**API reference (live)**](https://aws-samples.github.io/sample-sentinel-harness/) | Rendered `sentinel_harness` API docs (pdoc → GitHub Pages) |
@@ -285,7 +285,7 @@ sentinel-harness/
 ├── iac-cdk/              L3 CDK stacks (9; guardrail/identity/obs/vpc live) 🟢
 ├── iac-terraform/        deployable Terraform mirror (validate-clean)  🟢
 ├── docs/                 QUICKSTART · ARCHITECTURE · BLUEPRINT · SETUP · HARNESSES · GOVERNANCE · TESTING · FIDELITY-REPORT · ROADMAP
-├── tests/                offline unit + config tests (3830)     🟢
+├── tests/                offline unit + config tests (3837)     🟢
 └── .github/workflows/    CI incl. a customer-name / secret gate
 ```
 

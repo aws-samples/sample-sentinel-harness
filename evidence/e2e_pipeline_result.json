@@ -65,7 +65,7 @@
         "triggers": [
           {
             "rule_name": "Data Staging: Local Archive Creation",
-            "type": "whitelist_optimization"
+            "type": "allowlist_optimization"
           },
           {
             "rule_name": "Data Staging: Local Archive Creation",
@@ -73,7 +73,7 @@
           },
           {
             "rule_name": "Tor Exit Node Connection (Informational)",
-            "type": "whitelist_optimization"
+            "type": "allowlist_optimization"
           },
           {
             "rule_name": "Tor Exit Node Connection (Informational)",
@@ -132,7 +132,7 @@
         "feedback_triggers": [
           {
             "rule_name": "Data Staging: Local Archive Creation",
-            "type": "whitelist_optimization"
+            "type": "allowlist_optimization"
           },
           {
             "rule_name": "Data Staging: Local Archive Creation",
@@ -140,7 +140,7 @@
           },
           {
             "rule_name": "Tor Exit Node Connection (Informational)",
-            "type": "whitelist_optimization"
+            "type": "allowlist_optimization"
           },
           {
             "rule_name": "Tor Exit Node Connection (Informational)",
@@ -156,7 +156,7 @@
         "single_trace_id": true,
         "span_count": 6,
         "closed": true,
-        "note": "One coherent alert campaign flows through triage -> correlation -> attack-path reasoning (real build_attack_paths) -> feedback (real whitelist trigger) -> self-improvement (real autonomy controller), all under one GenAI/OTEL trace. Deterministic + offline; proves the components COMPOSE into a smooth end-to-end SecOps flow."
+        "note": "One coherent alert campaign flows through triage -> correlation -> attack-path reasoning (real build_attack_paths) -> feedback (real allowlist trigger) -> self-improvement (real autonomy controller), all under one GenAI/OTEL trace. Deterministic + offline; proves the components COMPOSE into a smooth end-to-end SecOps flow."
       }
     }
   ],
@@ -198,7 +198,7 @@
     "feedback_triggers": [
       {
         "rule_name": "Data Staging: Local Archive Creation",
-        "type": "whitelist_optimization"
+        "type": "allowlist_optimization"
       },
       {
         "rule_name": "Data Staging: Local Archive Creation",
@@ -206,7 +206,7 @@
       },
       {
         "rule_name": "Tor Exit Node Connection (Informational)",
-        "type": "whitelist_optimization"
+        "type": "allowlist_optimization"
       },
       {
         "rule_name": "Tor Exit Node Connection (Informational)",
@@ -222,6 +222,6 @@
     "single_trace_id": true,
     "span_count": 6,
     "closed": true,
-    "note": "One coherent alert campaign flows through triage -> correlation -> attack-path reasoning (real build_attack_paths) -> feedback (real whitelist trigger) -> self-improvement (real autonomy controller), all under one GenAI/OTEL trace. Deterministic + offline; proves the components COMPOSE into a smooth end-to-end SecOps flow."
+    "note": "One coherent alert campaign flows through triage -> correlation -> attack-path reasoning (real build_attack_paths) -> feedback (real allowlist trigger) -> self-improvement (real autonomy controller), all under one GenAI/OTEL trace. Deterministic + offline; proves the components COMPOSE into a smooth end-to-end SecOps flow."
   }
 }

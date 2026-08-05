@@ -11,7 +11,7 @@ over **stdio** that exposes the full sentinel-harness tool suite:
 |---|---|
 | **Detection engineering** | `sigma_yara_lint`, `detection_translate`, `detection_dedup`, `detection_coverage`, `detection_audit`, `detection_navigator`, `detection_baseline` |
 | **Security enrichment** | `enrich_ioc`, `nvd_lookup`, `epss_kev`, `attack_lookup`, `web_search` |
-| **SecOps automation** | `siem_query`, `asset_lookup`, `create_ticket`, `ops_query`, `whitelist_optimizer` |
+| **SecOps automation** | `siem_query`, `asset_lookup`, `create_ticket`, `ops_query`, `allowlist_optimizer` |
 | **Platform ops** | `harness_ops`, `run_evaluation`, `sigma_match` |
 
 All tools are **deterministic, LLM-free, offline** (no AWS credentials needed for the default

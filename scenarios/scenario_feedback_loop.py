@@ -15,7 +15,7 @@ WHY this scenario exists
 ------------------------
 M1/M2 gave the harness a self-improving detection loop; M5 gave it a mock world
 and an alert-triage POC that emits a disposition. M6 wires the two together: a
-batch of false-positive dispositions must AUTO-drive whitelist optimization and
+batch of false-positive dispositions must AUTO-drive allowlist optimization and
 (for a dead rule) rule regeneration — event-driven, not a human eyeballing a
 dashboard — and nothing reaches production except through a publish gate.
 
@@ -26,23 +26,23 @@ The loop (the "noisy CDN rule story")
    repeats, enough to cross ``min_events``), a lone "Scheduled Backup Job" FP,
    and the healthy true-positive rule **"Log4Shell JNDI Exploit Attempt"**
    (alert-1001 + repeats).
-2. :func:`feedback.detect_triggers` AUTO-emits a ``whitelist_optimization`` task
+2. :func:`feedback.detect_triggers` AUTO-emits a ``allowlist_optimization`` task
    for the noisy FP rule and emits NOTHING for the healthy TP rule (event-driven,
    deterministic thresholds).
-3. Run ``tools/whitelist_optimizer`` on that task -> a concrete Sigma ``filter``
+3. Run ``tools/allowlist_optimizer`` on that task -> a concrete Sigma ``filter``
    clause that suppresses the FP cohort AND provably does NOT suppress the
    Log4Shell true positive (the tool refuses any clause that would).
 4. The only-FP rule ALSO emits a ``rule_regeneration`` task; :func:`simulate_regen_handoff`
    shows exactly how it WOULD be handed to the M1/M2 self-improving loop
    (``harnesses/self-improving`` driven via ``tools/harness_ops``). This is a
    labeled WIRING POINT — simulated deterministically, not a live invoke.
-5. HITL GATE: the whitelist / regenerated rule is only "published" through a
+5. HITL GATE: the allowlist / regenerated rule is only "published" through a
    ``request_publish_approval``-style gate. Approval is REQUIRED; a rejection
    withholds publish (mirrors the detection-gen publish-gate honesty).
 
 What is real vs. stubbed (honesty)
 ----------------------------------
-- The feedback ENGINE, the trigger thresholds, the whitelist synthesis and the
+- The feedback ENGINE, the trigger thresholds, the allowlist synthesis and the
   task generation are REAL deterministic offline logic (same input -> same
   output). :func:`close_loop` is the unit-testable core.
 - The rule-regeneration RUN reuses the EXISTING M1/M2 self-improving loop, which
@@ -92,10 +92,10 @@ feedback = _load_by_path(
     "sentinel_feedback__feedback_loop",
     os.path.join(REPO_ROOT, "sentinel_harness", "feedback.py"),
 )
-# The deterministic FP->whitelist synthesizer (offline, LLM-free).
-whitelist_optimizer = _load_by_path(
-    "whitelist_optimizer_handler__feedback_loop",
-    os.path.join(REPO_ROOT, "tools", "whitelist_optimizer", "handler.py"),
+# The deterministic FP->allowlist synthesizer (offline, LLM-free).
+allowlist_optimizer = _load_by_path(
+    "allowlist_optimizer_handler__feedback_loop",
+    os.path.join(REPO_ROOT, "tools", "allowlist_optimizer", "handler.py"),
 )
 
 RESULT: Dict[str, Any] = {"scenario": "feedback_loop", "steps": []}
@@ -137,8 +137,8 @@ def build_fp_batch() -> Tuple[List[Any], Dict[str, Dict[str, Any]], List[Dict[st
 
     - ``events`` are :class:`feedback.FeedbackEvent`\\ s (what triage fed back);
     - ``alert_details`` maps each FP ``alert_id`` to the raw alert dict the
-      whitelist optimizer needs (it discriminates on fields like ``dst_domain``);
-    - ``tp_examples`` are the true-positive alert dicts the whitelist must never
+      allowlist optimizer needs (it discriminates on fields like ``dst_domain``);
+    - ``tp_examples`` are the true-positive alert dicts the allowlist must never
       suppress.
 
     The noisy CDN cohort all fetched a subdomain of ``assets.example.com`` (a
@@ -191,7 +191,7 @@ def build_fp_batch() -> Tuple[List[Any], Dict[str, Dict[str, Any]], List[Dict[st
 # HITL publish gate — mirrors the detection-gen request_publish_approval honesty.
 # --------------------------------------------------------------------------
 def request_publish_approval(artifact: Dict[str, Any], approve: bool) -> Dict[str, Any]:
-    """The human-in-the-loop publish gate for a whitelist / regenerated rule.
+    """The human-in-the-loop publish gate for an allowlist / regenerated rule.
 
     Deterministic model of ``request_publish_approval``: publishing ALWAYS
     requires analyst sign-off (``approval_required`` is unconditionally True).
@@ -206,7 +206,7 @@ def request_publish_approval(artifact: Dict[str, Any], approve: bool) -> Dict[st
         "approved": approved,
         "published": approved,
         "artifact_kind": artifact.get("kind"),
-        "note": ("Analyst sign-off is REQUIRED before any whitelist/regenerated rule "
+        "note": ("Analyst sign-off is REQUIRED before any allowlist/regenerated rule "
                  "goes live; an approve publishes, a reject withholds. Mirrors the "
                  "detection-gen publish gate: production is reachable ONLY through this gate."),
     }
@@ -263,9 +263,9 @@ def close_loop(
     heart the tests drive. Steps:
 
     1. ``record_disposition`` -> per-rule ledger.
-    2. ``detect_triggers`` -> AUTO whitelist_optimization + rule_regeneration
+    2. ``detect_triggers`` -> AUTO allowlist_optimization + rule_regeneration
        tasks (event-driven).
-    3. ``whitelist_optimizer`` on the noisy rule's task -> a concrete clause that
+    3. ``allowlist_optimizer`` on the noisy rule's task -> a concrete clause that
        suppresses the FP cohort and provably preserves ``tp_examples``.
     4. ``simulate_regen_handoff`` -> the M1/M2 loop wiring point.
     5. ``request_publish_approval`` gate -> approve publishes, reject withholds.
@@ -279,37 +279,37 @@ def close_loop(
     ledger = feedback.record_disposition(events, tenant=tenant)
     tasks = feedback.detect_triggers(ledger, fp_threshold=fp_threshold, min_events=min_events)
 
-    whitelist_tasks = [t for t in tasks if t["type"] == "whitelist_optimization"]
+    allowlist_tasks = [t for t in tasks if t["type"] == "allowlist_optimization"]
     regen_tasks = [t for t in tasks if t["type"] == "rule_regeneration"]
 
-    auto_triggered_whitelist_task = len(whitelist_tasks) >= 1
+    auto_triggered_allowlist_task = len(allowlist_tasks) >= 1
     # The healthy TP rule must produce NO task of any kind.
     healthy_rule_no_task = not any(t.get("rule_name") == healthy_rule for t in tasks)
     rule_regen_task_generated = len(regen_tasks) >= 1
 
-    # --- Step 3: synthesize a whitelist for the noisy rule (if triggered). ---
-    whitelist_task: Optional[Dict[str, Any]] = whitelist_tasks[0] if whitelist_tasks else None
-    whitelist_result: Optional[Dict[str, Any]] = None
-    whitelist_suppresses_fps = False
-    whitelist_preserves_tp = True  # vacuously safe: no clause emitted => nothing suppressed
-    if whitelist_task is not None:
-        fp_cohort = [alert_details[a] for a in whitelist_task["fp_events"] if a in alert_details]
-        whitelist_result = whitelist_optimizer.handler(
-            {"rule_name": whitelist_task["rule_name"], "fp_events": fp_cohort,
+    # --- Step 3: synthesize an allowlist for the noisy rule (if triggered). ---
+    allowlist_task: Optional[Dict[str, Any]] = allowlist_tasks[0] if allowlist_tasks else None
+    allowlist_result: Optional[Dict[str, Any]] = None
+    allowlist_suppresses_fps = False
+    allowlist_preserves_tp = True  # vacuously safe: no clause emitted => nothing suppressed
+    if allowlist_task is not None:
+        fp_cohort = [alert_details[a] for a in allowlist_task["fp_events"] if a in alert_details]
+        allowlist_result = allowlist_optimizer.handler(
+            {"rule_name": allowlist_task["rule_name"], "fp_events": fp_cohort,
              "tp_examples": tp_examples},
             None,
         )
-        wl = whitelist_result.get("whitelist") if whitelist_result.get("ok") else None
+        wl = allowlist_result.get("allowlist") if allowlist_result.get("ok") else None
         if wl:
-            suppressed = whitelist_result.get("suppressed_count", 0)
-            whitelist_suppresses_fps = bool(fp_cohort) and suppressed == len(fp_cohort)
+            suppressed = allowlist_result.get("suppressed_count", 0)
+            allowlist_suppresses_fps = bool(fp_cohort) and suppressed == len(fp_cohort)
             # Independently verify the clause does NOT match any true positive,
             # using the optimizer's own authoritative matcher.
             field = next(iter(wl["fields"]))
             value = wl["fields"][field]
             match_type = wl["match_type"]
-            whitelist_preserves_tp = not any(
-                whitelist_optimizer._clause_matches(tp, field, match_type, value)
+            allowlist_preserves_tp = not any(
+                allowlist_optimizer._clause_matches(tp, field, match_type, value)
                 for tp in tp_examples
             )
 
@@ -318,8 +318,8 @@ def close_loop(
     regen_handoff = simulate_regen_handoff(regen_task) if regen_task else None
 
     # --- Step 5: HITL publish gate — approve publishes, reject withholds. ---
-    artifact = {"kind": "whitelist_clause", "rule_name": NOISY_RULE,
-                "sigma_filter_yaml": (whitelist_result or {}).get("sigma_filter_yaml")}
+    artifact = {"kind": "allowlist_clause", "rule_name": NOISY_RULE,
+                "sigma_filter_yaml": (allowlist_result or {}).get("sigma_filter_yaml")}
     gate_approve = request_publish_approval(artifact, approve=True)
     gate_reject = request_publish_approval(artifact, approve=False)
     # The gate genuinely governs publish: approval required, approve publishes,
@@ -332,10 +332,10 @@ def close_loop(
     published = gate_approve["published"] if approve else gate_reject["published"]
 
     closed = all([
-        auto_triggered_whitelist_task,
+        auto_triggered_allowlist_task,
         healthy_rule_no_task,
-        whitelist_suppresses_fps,
-        whitelist_preserves_tp,
+        allowlist_suppresses_fps,
+        allowlist_preserves_tp,
         rule_regen_task_generated,
         hitl_gate_required,
         published,
@@ -343,17 +343,17 @@ def close_loop(
 
     return {
         "fp_batch_size": fp_batch_size,
-        "auto_triggered_whitelist_task": auto_triggered_whitelist_task,
+        "auto_triggered_allowlist_task": auto_triggered_allowlist_task,
         "healthy_rule_no_task": healthy_rule_no_task,
-        "whitelist_suppresses_fps": whitelist_suppresses_fps,
-        "whitelist_preserves_tp": whitelist_preserves_tp,
+        "allowlist_suppresses_fps": allowlist_suppresses_fps,
+        "allowlist_preserves_tp": allowlist_preserves_tp,
         "rule_regen_task_generated": rule_regen_task_generated,
         "hitl_gate_required": hitl_gate_required,
         "closed": closed,
         "note": (
             "MOCK POC (offline, deterministic): a batch of false-positive dispositions for the "
-            f"noisy rule '{NOISY_RULE}' AUTO-triggered a whitelist_optimization task (event-driven "
-            "via feedback.detect_triggers, not manual); the whitelist_optimizer synthesized a Sigma "
+            f"noisy rule '{NOISY_RULE}' AUTO-triggered an allowlist_optimization task (event-driven "
+            "via feedback.detect_triggers, not manual); the allowlist_optimizer synthesized a Sigma "
             "filter clause that suppresses the FP cohort while provably preserving the Log4Shell "
             "true positive; the only-FP rule ALSO produced a rule_regeneration task handed (simulated) "
             f"to the M1/M2 self-improving loop; the healthy TP rule '{HEALTHY_RULE}' produced no task; "
@@ -363,8 +363,8 @@ def close_loop(
         ),
         # --- artifacts (for the evidence file / step recorder) ---
         "task_types": sorted({t["type"] for t in tasks}),
-        "whitelist_task": whitelist_task,
-        "whitelist_result": whitelist_result,
+        "allowlist_task": allowlist_task,
+        "allowlist_result": allowlist_result,
         "regen_task": regen_task,
         "regen_handoff": regen_handoff,
         "publish_gate": {"approve": gate_approve, "reject": gate_reject},
@@ -390,24 +390,24 @@ def run() -> Dict[str, Any]:
 
     v = close_loop(events, alert_details, tp_examples, approve=True)
 
-    rec("detect_triggers", v["auto_triggered_whitelist_task"], {
+    rec("detect_triggers", v["auto_triggered_allowlist_task"], {
         "task_types": v["task_types"],
         "healthy_rule_no_task": v["healthy_rule_no_task"],
         "ledger_rules": v["ledger_rules"],
     })
-    rec("whitelist_optimizer", v["whitelist_suppresses_fps"], {
-        "rule_name": (v["whitelist_task"] or {}).get("rule_name"),
-        "whitelist": (v["whitelist_result"] or {}).get("whitelist"),
-        "suppressed_count": (v["whitelist_result"] or {}).get("suppressed_count"),
-        "sigma_filter_yaml": (v["whitelist_result"] or {}).get("sigma_filter_yaml"),
-        "preserves_tp": v["whitelist_preserves_tp"],
+    rec("allowlist_optimizer", v["allowlist_suppresses_fps"], {
+        "rule_name": (v["allowlist_task"] or {}).get("rule_name"),
+        "allowlist": (v["allowlist_result"] or {}).get("allowlist"),
+        "suppressed_count": (v["allowlist_result"] or {}).get("suppressed_count"),
+        "sigma_filter_yaml": (v["allowlist_result"] or {}).get("sigma_filter_yaml"),
+        "preserves_tp": v["allowlist_preserves_tp"],
     })
     rec("rule_regeneration_handoff", v["rule_regen_task_generated"], v["regen_handoff"])
     rec("hitl_publish_gate", v["hitl_gate_required"], v["publish_gate"])
 
     RESULT["verdict"] = {k: v[k] for k in (
-        "fp_batch_size", "auto_triggered_whitelist_task", "healthy_rule_no_task",
-        "whitelist_suppresses_fps", "whitelist_preserves_tp", "rule_regen_task_generated",
+        "fp_batch_size", "auto_triggered_allowlist_task", "healthy_rule_no_task",
+        "allowlist_suppresses_fps", "allowlist_preserves_tp", "rule_regen_task_generated",
         "hitl_gate_required", "closed", "note",
     )}
     rec("verdict", v["closed"], RESULT["verdict"])
@@ -426,7 +426,7 @@ if __name__ == "__main__":
             "LIVE mode is not exercised by this POC. The rule-regeneration hand-off targets the "
             "EXISTING self-improving harness (harnesses/self-improving/harness.yaml) driven via "
             "tools/harness_ops — see scenarios/scenario_self_improve_loop.py for the live "
-            "score->revise->promote loop. The whitelist would be published through the "
+            "score->revise->promote loop. The allowlist would be published through the "
             "request_publish_approval HITL gate. This scenario proves the feedback logic offline first."
         )
         RESULT["live_note"] = note

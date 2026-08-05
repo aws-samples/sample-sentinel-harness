@@ -116,10 +116,27 @@ _TEST_COUNT_CLAIM_RES = (
     re.compile(r"`make test` → (\d{3,5}) offline tests green"),
     re.compile(r"^- \*\*Scale\.\*\* (\d{3,5}) offline tests pass", re.M),
     re.compile(r"offline unit \+ config tests \((\d{3,5})\)"),
+    # site/index.html — the public landing page. Both its <meta description> (what search
+    # engines and social cards quote) and its body prose state the suite size.
+    #
+    # These two are deliberately NARROW. My first attempt used a bare
+    # `(\d{3,5}) offline tests`, which also matched ROADMAP's HISTORICAL changelog lines
+    # ("2126 → 2352 offline passing", "installs 0.4.0 from PyPI; suite 2365 passed") and
+    # reported them as drift. Those record what was true at the time and must not be
+    # rewritten — the same reason this change leaves the old tool name in CHANGELOG's
+    # released sections. A count guard has to distinguish a present-tense CLAIM from a
+    # record of the past, or it pressures you into falsifying history to get green.
+    re.compile(r"(\d{3,5}) tests, \d+ defects fixed"),      # <meta description>
+    re.compile(r"tl-desc\">(\d{3,5}) offline tests green"),  # landing-page timeline entry
 )
 
+# `site/index.html` is a HAND-WRITTEN, git-tracked page published to GitHub Pages — the most
+# public claim this project makes, and the last one to get checked. It sat at "2352 tests"
+# while the suite had 3843: off by 1480, in the <meta description> a search result quotes.
+# The count guard covered README and docs/ and stopped there, so the drift lived in the one
+# file no maintainer opens. Adding it here is cheap; noticing it was not.
 _DOC_FILES = ("README.md", "docs/ROADMAP.md", "docs/FIDELITY-REPORT.md",
-              "docs/TESTING.md")
+              "docs/TESTING.md", "site/index.html")
 
 
 def _quoted_test_counts() -> dict[str, list[int]]:

@@ -3,7 +3,7 @@ Offline tests for the M6 feedback engine
 =========================================
 Exercises ``sentinel_harness/feedback.py`` — the event-driven feedback loop that
 turns triage dispositions (TP/FP/benign) into strategy-improvement TASKS
-(whitelist optimization + rule regeneration). ZERO AWS, ZERO network, no sleep,
+(allowlist optimization + rule regeneration). ZERO AWS, ZERO network, no sleep,
 fast, deterministic.
 
 The engine is pure offline logic, so nothing needs mocking: the default
@@ -112,7 +112,7 @@ def test_record_raises_fp_rate_for_noisy_rule():
     assert rule["tp_count"] == 0
     assert rule["fp_count"] == 3  # false_positive + benign both count as noise
     assert rule["fp_rate"] == 1.0
-    # The FP cohort + indicators are captured for the whitelist task (deduped).
+    # The FP cohort + indicators are captured for the allowlist task (deduped).
     assert rule["fp_alert_ids"] == ["alert-1010", "alert-1011", "alert-1012"]
     assert rule["fp_indicators"] == ["192.0.2.10", "192.0.2.11"]
     assert rule["dispositions"] == {
@@ -130,12 +130,12 @@ def test_record_healthy_rule_low_fp_rate():
 
 
 # --------------------------------------------------------------------------
-# detect_triggers: a mostly-FP rule emits a whitelist_optimization task.
+# detect_triggers: a mostly-FP rule emits an allowlist_optimization task.
 # --------------------------------------------------------------------------
-def test_detect_emits_whitelist_optimization_for_noisy_rule():
+def test_detect_emits_allowlist_optimization_for_noisy_rule():
     ledger = fb.record_disposition(_fp_cdn_events())
     tasks = fb.detect_triggers(ledger, fp_threshold=0.5, min_events=3)
-    wl = [t for t in tasks if t["type"] == "whitelist_optimization"]
+    wl = [t for t in tasks if t["type"] == "allowlist_optimization"]
     assert len(wl) == 1
     task = wl[0]
     assert task["rule_name"] == "Known-Good CDN Traffic"
@@ -151,7 +151,7 @@ def test_detect_emits_whitelist_optimization_for_noisy_rule():
 # --------------------------------------------------------------------------
 def test_detect_emits_nothing_for_healthy_rule():
     ledger = fb.record_disposition(_healthy_rule_events())
-    # fp_rate = 1/3 ~= 0.33 < 0.5 threshold -> no whitelist; has a TP -> no regen.
+    # fp_rate = 1/3 ~= 0.33 < 0.5 threshold -> no allowlist; has a TP -> no regen.
     tasks = fb.detect_triggers(ledger, fp_threshold=0.5, min_events=3)
     assert tasks == []
 
@@ -171,7 +171,7 @@ def test_min_events_guard_suppresses_thin_evidence():
     assert fb.detect_triggers(ledger) == []  # guarded out
     # Lowering the guard to 2 lets it through (proves the guard is the gate).
     tasks = fb.detect_triggers(ledger, min_events=2)
-    assert any(t["type"] == "whitelist_optimization" for t in tasks)
+    assert any(t["type"] == "allowlist_optimization" for t in tasks)
 
 
 # --------------------------------------------------------------------------
@@ -187,13 +187,13 @@ def test_only_fp_rule_emits_rule_regeneration():
     assert task["target"] == "m1_m2_self_improving_loop"
     assert task["sample_size"] == 3
     assert "only false positives" in task["reason"]
-    # An only-FP rule triggers BOTH a whitelist patch AND a regeneration request.
+    # An only-FP rule triggers BOTH an allowlist patch AND a regeneration request.
     assert {t["type"] for t in tasks} == {
-        "whitelist_optimization", "rule_regeneration",
+        "allowlist_optimization", "rule_regeneration",
     }
 
 
-def test_partial_fp_rule_gets_whitelist_but_not_regeneration():
+def test_partial_fp_rule_gets_allowlist_but_not_regeneration():
     """fp_rate over threshold but with a real TP -> tighten, don't regenerate."""
     events = [
         fb.FeedbackEvent(alert_id="a1", rule_name="Noisy But Alive",
@@ -205,7 +205,7 @@ def test_partial_fp_rule_gets_whitelist_but_not_regeneration():
     ]  # fp_rate = 2/3 ~= 0.67 >= 0.5, but tp_count == 1
     ledger = fb.record_disposition(events)
     tasks = fb.detect_triggers(ledger, fp_threshold=0.5, min_events=3)
-    assert {t["type"] for t in tasks} == {"whitelist_optimization"}
+    assert {t["type"] for t in tasks} == {"allowlist_optimization"}
 
 
 # --------------------------------------------------------------------------
@@ -274,10 +274,10 @@ def test_detect_validates_thresholds():
 
 
 # --------------------------------------------------------------------------- #
-# regression (round-2 audit HIGH): a whitelist task must NEVER suppress an     #
+# regression (round-2 audit HIGH): an allowlist task must NEVER suppress an     #
 # indicator that also appears on a TRUE POSITIVE for the same rule            #
 # --------------------------------------------------------------------------- #
-def test_whitelist_never_suppresses_a_true_positive_indicator():
+def test_allowlist_never_suppresses_a_true_positive_indicator():
     events = [
         fb.FeedbackEvent(alert_id="a1", rule_name="R", disposition="false_positive",
                          indicators=["8.8.8.8", "1.2.3.4"]),
@@ -288,7 +288,7 @@ def test_whitelist_never_suppresses_a_true_positive_indicator():
     ]
     ledger = fb.record_disposition(events, tenant="t")
     tasks = fb.detect_triggers(ledger, fp_threshold=0.5, min_events=3)
-    wl = next(t for t in tasks if t["type"] == "whitelist_optimization")
+    wl = next(t for t in tasks if t["type"] == "allowlist_optimization")
     assert "8.8.8.8" not in wl["fp_indicators"]          # the TP indicator is withheld
     assert wl["withheld_tp_indicators"] == ["8.8.8.8"]   # and surfaced, not silently dropped
     assert set(wl["fp_indicators"]) == {"1.2.3.4", "5.6.7.8"}
@@ -301,9 +301,9 @@ def test_ledger_tracks_tp_indicators():
     assert ledger["rules"]["R"]["tp_indicators"] == ["9.9.9.9"]
 
 
-def test_clean_rule_at_zero_threshold_emits_no_whitelist_task():
+def test_clean_rule_at_zero_threshold_emits_no_allowlist_task():
     events = [fb.FeedbackEvent(alert_id=f"c{i}", rule_name="Clean",
                                disposition="true_positive") for i in range(3)]
     ledger = fb.record_disposition(events, tenant="t")
     tasks = fb.detect_triggers(ledger, fp_threshold=0.0, min_events=3)
-    assert not any(t["type"] == "whitelist_optimization" for t in tasks)
+    assert not any(t["type"] == "allowlist_optimization" for t in tasks)

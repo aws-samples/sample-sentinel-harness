@@ -8,7 +8,7 @@ coherent time-series attack campaign, under a single distributed trace:
       ──▶ correlate  (reconstruct the multi-stage kill-chain from the TP alerts)
       ──▶ attack-path (does the observed lateral movement match a known
                        crown-jewel chain? — the REAL build_attack_paths reasoner)
-      ──▶ feedback   (the FP cohort auto-triggers whitelist optimization that
+      ──▶ feedback   (the FP cohort auto-triggers allowlist optimization that
                        provably preserves the true positive)
       ──▶ autonomy   (drive one self-improvement round on a detection agent via
                        the reusable controller: weak -> revise -> pass -> gated promote)
@@ -16,7 +16,7 @@ coherent time-series attack campaign, under a single distributed trace:
 .. warning::
    **DETERMINISTIC OFFLINE — zero AWS, zero network, no LLM, no clock.** Every
    stage runs the repo's REAL deterministic component (triage split, feedback
-   engine + whitelist_optimizer, the attack-path reasoner, the autonomy
+   engine + allowlist_optimizer, the attack-path reasoner, the autonomy
    controller + offline scorer) over CLEARLY-LABELED MOCK DATA
    (``mockdata.campaign`` + ``mockdata.enterprise``, RFC-5737 / example.test).
    The whole run is wrapped in one ``tracing.Tracer`` so it emits a nested
@@ -136,7 +136,7 @@ def _attack_path(reasoner, hosts_touched: List[str]) -> Dict[str, Any]:
 
 def _feedback(fp_alerts: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Fold the FP cohort into the feedback ledger and detect which noisy rules
-    auto-trigger a whitelist-optimization / rule-regeneration task."""
+    auto-trigger an allowlist-optimization / rule-regeneration task."""
     events = [
         fb.FeedbackEvent(
             alert_id=a["alert_id"], rule_name=a["rule_name"],
@@ -246,7 +246,7 @@ def run() -> dict:
         "note": (
             "One coherent alert campaign flows through triage -> correlation -> "
             "attack-path reasoning (real build_attack_paths) -> feedback (real "
-            "whitelist trigger) -> self-improvement (real autonomy controller), "
+            "allowlist trigger) -> self-improvement (real autonomy controller), "
             "all under one GenAI/OTEL trace. Deterministic + offline; proves the "
             "components COMPOSE into a smooth end-to-end SecOps flow."
         ),

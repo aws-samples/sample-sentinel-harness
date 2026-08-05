@@ -86,7 +86,7 @@ _NON_HOST_USES: dict[str, str] = {
     "tools/asset_lookup/handler.py":
         "classifies the QUERY as an IP vs a hostname to pick the lookup key; same "
         "reasoning as enrich_ioc",
-    "tools/whitelist_optimizer/handler.py":
+    "tools/allowlist_optimizer/handler.py":
         "parses firewall-rule addresses to compute CIDR coverage — arithmetic over "
         "operator-authored rules, not a decision about where to send a request",
     "tools/sigma_match/handler.py":

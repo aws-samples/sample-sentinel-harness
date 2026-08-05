@@ -25,14 +25,14 @@ This is the deterministic, offline heart of that loop:
    whole engine is offline-testable with ZERO AWS.
 2. :func:`detect_triggers` turns that ledger into concrete improvement TASKS
    using explicit thresholds: a rule that is mostly false-positive over enough
-   events emits a ``whitelist_optimization`` task; a rule that produced ONLY
+   events emits a ``allowlist_optimization`` task; a rule that produced ONLY
    false positives (a dead/misfiring rule) emits a ``rule_regeneration`` task.
 
 Honesty / what is real vs. stubbed
 ----------------------------------
 - The feedback ENGINE, the fp_rate math, the trigger thresholds and the task
   generation are REAL deterministic offline logic (same input -> same output).
-- The ``whitelist_optimization`` task is a real, directly-actionable artifact
+- The ``allowlist_optimization`` task is a real, directly-actionable artifact
   (it names the exact FP alert cohort to suppress).
 - The ``rule_regeneration`` task is a *request* to the EXISTING M1/M2
   self-improving loop (harnesses/self-improving + tools/run_evaluation +
@@ -117,7 +117,7 @@ class FeedbackEvent:
         The mock host the alert named (``example.test`` world). Optional.
     indicators:
         The indicators (IPs/domains/hashes) the alert carried — the raw material
-        a ``whitelist_optimization`` task turns into suppression predicates.
+        a ``allowlist_optimization`` task turns into suppression predicates.
     ts:
         ISO-8601 timestamp string of the disposition. Carried through verbatim;
         never parsed for clock logic (determinism).
@@ -319,7 +319,7 @@ def record_disposition(
         r["dispositions"][ev.disposition] += 1
         if ev.disposition == TP_DISPOSITION:
             r["tp_count"] += 1
-            # Track TP indicators so a whitelist task can NEVER suppress one (an
+            # Track TP indicators so an allowlist task can NEVER suppress one (an
             # indicator on both an FP and a TP must not be allowlisted away).
             for ind in ev.indicators:
                 if ind and ind not in r["tp_indicators"]:
@@ -362,13 +362,13 @@ def detect_triggers(
     ------------------------------
     For each rule with at least ``min_events`` recorded dispositions:
 
-    - ``fp_rate >= fp_threshold``  ->  a ``whitelist_optimization`` task naming
+    - ``fp_rate >= fp_threshold``  ->  a ``allowlist_optimization`` task naming
       the exact FP alert cohort + indicators to suppress. This is the
       directly-actionable "tighten the allowlist" artifact.
     - the rule produced ONLY false positives (``tp_count == 0`` and
       ``fp_count == total``)  ->  ALSO a ``rule_regeneration`` task: a request
       to the M1/M2 self-improving loop to regenerate the rule, because a
-      whitelist patch cannot fix a rule that never fires a true positive.
+      allowlist patch cannot fix a rule that never fires a true positive.
 
     A rule under ``min_events`` emits NOTHING (guard against acting on thin
     evidence). A healthy rule (fp_rate below threshold) emits NOTHING.
@@ -379,7 +379,7 @@ def detect_triggers(
     -------
     A list of task dicts::
 
-        {"type": "whitelist_optimization", "rule_name": ..., "fp_events": [...],
+        {"type": "allowlist_optimization", "rule_name": ..., "fp_events": [...],
          "fp_indicators": [...], "fp_rate": 1.0, "sample_size": 3,
          "rationale": "..."}
         {"type": "rule_regeneration", "rule_name": ..., "reason": "...",
@@ -415,13 +415,13 @@ def detect_triggers(
         # "Still noise left to suppress" has to be checked against what the task can
         # ACTUALLY act on, not merely fp_count. When every FP indicator was withheld
         # by the true-positive guard AND no alert cohort remains, the task carries an
-        # empty suppression candidate set: whitelist_optimizer can synthesize no
+        # empty suppression candidate set: allowlist_optimizer can synthesize no
         # predicate from it, so the only outcomes are a no-op or an analyst chasing a
-        # ticket with nothing in it. The rule is genuinely noisy, but a whitelist is
+        # ticket with nothing in it. The rule is genuinely noisy, but an allowlist is
         # the WRONG remedy for it — every noisy indicator is also a real detection —
         # and the rule_regeneration path below is the right one. Emitting nothing
         # here is not a silent drop: the caller still gets the regeneration task, and
-        # `no_actionable_suppression` records why the whitelist half was skipped.
+        # `no_actionable_suppression` records why the allowlist half was skipped.
         # Two distinct ways a task can be un-actionable, and only one of them is
         # about the indicator list being empty:
         #  (a) the rule carried indicators, but EVERY one was withheld by the
@@ -440,12 +440,12 @@ def detect_triggers(
             r["no_actionable_suppression"] = (
                 f"every false-positive indicator ({withheld}) also appears on a true "
                 "positive, so suppressing any of them — directly or via their alert "
-                "cohort — would blind the detection; no whitelist_optimization task "
+                "cohort — would blind the detection; no allowlist_optimization task "
                 "was emitted (the rule_regeneration path is the correct remedy)"
             )
         if fp_count > 0 and fp_rate >= fp_threshold and actionable:
             task = {
-                "type": "whitelist_optimization",
+                "type": "allowlist_optimization",
                 "rule_name": rule_name,
                 "fp_events": list(r.get("fp_alert_ids", [])),
                 "fp_indicators": safe_fp_indicators,
@@ -470,7 +470,7 @@ def detect_triggers(
             tasks.append(task)
 
         # --- Dead/misfiring rule: regenerate via the M1/M2 loop. ---
-        # Only-FP over enough events => a whitelist patch cannot save it; the
+        # Only-FP over enough events => an allowlist patch cannot save it; the
         # detection itself must be regenerated.
         #
         # A noisy rule whose every FP indicator is ALSO a true-positive indicator
@@ -560,7 +560,7 @@ def detect_score_decay(
     production at some baseline eval score (the M1/M2 ``score->revise->promote``
     loop, mirrored offline in ``scenario_self_improve_loop``). If a later
     re-score shows the score has decayed past a threshold — or fallen below an
-    absolute floor — a whitelist patch is irrelevant: the *detection itself*
+    absolute floor — an allowlist patch is irrelevant: the *detection itself*
     must be regenerated. This function emits exactly that hand-off, using the
     SAME ``rule_regeneration`` task shape (``type`` + ``target``) the existing
     only-FP path emits, tagged with ``trigger="eval_score_decay"`` so a consumer
@@ -669,7 +669,7 @@ def detect_score_decay(
         "sample_size": len(hist),
         "reason": (
             f"Promoted harness '{harness_id}' eval score " + " and ".join(causes)
-            + ". A whitelist patch cannot restore eval quality — hand off to the "
+            + ". An allowlist patch cannot restore eval quality — hand off to the "
             "M1/M2 self-improving loop to regenerate the detection "
             "(offline-driven in this POC; live-capable)."
         ),

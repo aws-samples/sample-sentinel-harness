@@ -342,12 +342,12 @@ class TestUnsuppressableNoise:
     Worse, suppressing that rule's alert COHORT is not a safe fallback: those
     alerts fired on exactly the indicators we just refused to allowlist."""
 
-    def test_all_indicators_withheld_emits_no_whitelist_task(self):
+    def test_all_indicators_withheld_emits_no_allowlist_task(self):
         events = [_ev("Z", f"f{i}", "false_positive", ["8.8.8.8"]) for i in range(3)]
         events.append(_ev("Z", "t1", "true_positive", ["8.8.8.8"]))
         ledger = F.record_disposition(events, tenant="t")
         tasks = F.detect_triggers(ledger)
-        assert "whitelist_optimization" not in _types(tasks)
+        assert "allowlist_optimization" not in _types(tasks)
 
     def test_the_withholding_is_recorded_not_silent(self):
         """A skipped remedy must leave a trace — "checked and found nothing safe"
@@ -370,7 +370,7 @@ class TestUnsuppressableNoise:
         assert regen[0]["trigger"] == "noisy_but_unsuppressable"
         assert regen[0]["withheld_tp_indicators"] == ["8.8.8.8"]
 
-    def test_partial_overlap_still_emits_a_whitelist_task(self):
+    def test_partial_overlap_still_emits_a_allowlist_task(self):
         """When SOME indicators are safe, the task is emitted for those only, with
         the withheld ones surfaced. This is the pre-existing behaviour and must
         not regress into over-suppression of the task."""
@@ -381,17 +381,17 @@ class TestUnsuppressableNoise:
             _ev("P", "t1", "true_positive", ["8.8.8.8"]),
         ]
         tasks = F.detect_triggers(F.record_disposition(events, tenant="t"))
-        wl = [t for t in tasks if t["type"] == "whitelist_optimization"]
+        wl = [t for t in tasks if t["type"] == "allowlist_optimization"]
         assert len(wl) == 1
         assert wl[0]["fp_indicators"] == ["1.2.3.4"]
         assert wl[0]["withheld_tp_indicators"] == ["8.8.8.8"]
 
-    def test_no_indicators_at_all_still_emits_a_whitelist_task(self):
+    def test_no_indicators_at_all_still_emits_a_allowlist_task(self):
         """A rule with no indicators can still be suppressed by alert cohort —
         blunt but legitimate, and NOT the unsuppressable case."""
         events = [_ev("N", f"n{i}", "false_positive", []) for i in range(3)]
         tasks = F.detect_triggers(F.record_disposition(events, tenant="t"))
-        wl = [t for t in tasks if t["type"] == "whitelist_optimization"]
+        wl = [t for t in tasks if t["type"] == "allowlist_optimization"]
         assert len(wl) == 1
         assert wl[0]["fp_events"] == ["n0", "n1", "n2"]
 
@@ -399,7 +399,7 @@ class TestUnsuppressableNoise:
         """Regression: the common case must keep emitting both tasks."""
         events = [_ev("R", f"a{i}", "false_positive", [f"1.1.1.{i}"]) for i in range(3)]
         tasks = F.detect_triggers(F.record_disposition(events, tenant="t"))
-        assert _types(tasks) == ["whitelist_optimization", "rule_regeneration"]
+        assert _types(tasks) == ["allowlist_optimization", "rule_regeneration"]
 
     def test_healthy_rule_emits_nothing(self):
         events = [_ev("H", f"h{i}", "true_positive", [f"3.3.3.{i}"]) for i in range(3)]
@@ -465,7 +465,7 @@ class TestVerifiedSolidSurfaces:
             _ev("Q", "t1", "true_positive", ["9.9.9.9"]),
         ]
         tasks = F.detect_triggers(F.record_disposition(events, tenant="t"))
-        wl = [t for t in tasks if t["type"] == "whitelist_optimization"]
+        wl = [t for t in tasks if t["type"] == "allowlist_optimization"]
         assert wl, "a genuinely suppressable rule must still emit a task"
         assert "9.9.9.9" not in wl[0]["fp_indicators"]
         assert "9.9.9.9" in wl[0]["withheld_tp_indicators"]

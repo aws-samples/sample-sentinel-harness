@@ -2,7 +2,7 @@
  * MemoryStack - AgentCore Memory with semantic + summarization strategies.
  * =========================================================================
  * WHY (docs/BLUEPRINT.md §1 Layer-1 "feedback loop" + core.py `managed_memory`):
- * triage verdicts and FP/whitelist decisions are written to Memory so future
+ * triage verdicts and FP/allowlist decisions are written to Memory so future
  * research/detection runs are grounded in prior facts rather than confabulated.
  *
  * Two strategies are provisioned:

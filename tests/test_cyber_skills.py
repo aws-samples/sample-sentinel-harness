@@ -47,7 +47,7 @@ _MIN_BODY_CHARS = 1500
 
 # Tool-reference detection. Real tools in this repo all end in one of these
 # verb/noun suffixes (siem_query, asset_lookup, enrich_ioc, create_ticket,
-# nvd_lookup, epss_kev, whitelist_optimizer, sigma_match, sigma_yara_lint,
+# nvd_lookup, epss_kev, allowlist_optimizer, sigma_match, sigma_yara_lint,
 # web_search, harness_ops, run_evaluation, ops_query). Matching on these
 # suffixes lets us catch a *hallucinated* tool name (e.g. ``foo_lookup``) while
 # ignoring ordinary snake_case field names (``known_vuln``, ``trust_edges``,

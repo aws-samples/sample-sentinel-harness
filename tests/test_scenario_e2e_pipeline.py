@@ -61,7 +61,7 @@ def test_feedback_triggers_fire_with_real_types():
     _fresh()
     v = scenario.run()["verdict"]
     types = {t["type"] for t in v["feedback_triggers"]}
-    assert "whitelist_optimization" in types
+    assert "allowlist_optimization" in types
 
 
 def test_autonomy_round_promotes():

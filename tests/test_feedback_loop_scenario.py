@@ -2,10 +2,10 @@
 Offline tests for the M6 feedback-loop scenario
 ===============================================
 Validates ``scenarios/scenario_feedback_loop.py`` — the end-to-end proof that a
-batch of FP dispositions AUTO-drives whitelist optimization + rule regeneration,
+batch of FP dispositions AUTO-drives allowlist optimization + rule regeneration,
 HITL-gated. ZERO AWS, ZERO network, no sleep, fast, deterministic.
 
-The whole loop is pure offline logic (the feedback engine + whitelist_optimizer
+The whole loop is pure offline logic (the feedback engine + allowlist_optimizer
 are LLM-free deterministic tools), so nothing needs mocking. We load the scenario
 under a UNIQUE importlib name (never a bare name a sibling test could collide
 with), mirroring how the other scenario tests import repo modules. Importing the
@@ -59,8 +59,8 @@ def test_import_safe_offline():
 def test_pure_run_closes_with_all_booleans_true():
     events, alert_details, tp_examples = fl.build_fp_batch()
     v = fl.close_loop(events, alert_details, tp_examples, approve=True)
-    for key in ("auto_triggered_whitelist_task", "healthy_rule_no_task",
-                "whitelist_suppresses_fps", "whitelist_preserves_tp",
+    for key in ("auto_triggered_allowlist_task", "healthy_rule_no_task",
+                "allowlist_suppresses_fps", "allowlist_preserves_tp",
                 "rule_regen_task_generated", "hitl_gate_required", "closed"):
         assert v[key] is True, f"{key} was not True"
     assert v["fp_batch_size"] == 4  # 3 CDN FPs + 1 backup FP
@@ -81,29 +81,29 @@ def test_determinism_same_batch_same_verdict():
     b2 = fl.build_fp_batch()
     v1 = fl.close_loop(*b1, approve=True)
     v2 = fl.close_loop(*b2, approve=True)
-    keys = ("fp_batch_size", "auto_triggered_whitelist_task", "healthy_rule_no_task",
-            "whitelist_suppresses_fps", "whitelist_preserves_tp",
+    keys = ("fp_batch_size", "auto_triggered_allowlist_task", "healthy_rule_no_task",
+            "allowlist_suppresses_fps", "allowlist_preserves_tp",
             "rule_regen_task_generated", "hitl_gate_required", "closed")
     assert {k: v1[k] for k in keys} == {k: v2[k] for k in keys}
 
 
 # --------------------------------------------------------------------------
-# Event-driven trigger: the whitelist task is auto-emitted for the noisy rule
+# Event-driven trigger: the allowlist task is auto-emitted for the noisy rule
 # and NO task is emitted for the healthy TP rule.
 # --------------------------------------------------------------------------
-def test_whitelist_task_targets_only_the_noisy_rule():
+def test_allowlist_task_targets_only_the_noisy_rule():
     events, alert_details, tp_examples = fl.build_fp_batch()
     v = fl.close_loop(events, alert_details, tp_examples, approve=True)
-    assert v["whitelist_task"]["rule_name"] == fl.NOISY_RULE
-    assert set(v["task_types"]) == {"whitelist_optimization", "rule_regeneration"}
+    assert v["allowlist_task"]["rule_name"] == fl.NOISY_RULE
+    assert set(v["task_types"]) == {"allowlist_optimization", "rule_regeneration"}
     # The healthy TP rule appears in NO task.
     assert v["healthy_rule_no_task"] is True
 
 
 # --------------------------------------------------------------------------
-# A batch with NO FP majority triggers NO whitelist task.
+# A batch with NO FP majority triggers NO allowlist task.
 # --------------------------------------------------------------------------
-def test_no_fp_majority_triggers_no_whitelist_task():
+def test_no_fp_majority_triggers_no_allowlist_task():
     fe = fl.feedback.FeedbackEvent
     # A rule that is mostly true positive (1 FP of 3) -> below the 0.5 threshold.
     events = [
@@ -115,32 +115,32 @@ def test_no_fp_majority_triggers_no_whitelist_task():
            indicators=["198.51.100.9"]),
     ]
     v = fl.close_loop(events, {}, [], approve=True)
-    assert v["auto_triggered_whitelist_task"] is False
-    assert v["whitelist_task"] is None
+    assert v["auto_triggered_allowlist_task"] is False
+    assert v["allowlist_task"] is None
     assert v["task_types"] == []
     # With no trigger there is nothing to publish, so the loop is not "closed".
     assert v["closed"] is False
 
 
 # --------------------------------------------------------------------------
-# The whitelist never suppresses the injected TP.
+# The allowlist never suppresses the injected TP.
 # --------------------------------------------------------------------------
-def test_whitelist_never_suppresses_injected_tp():
+def test_allowlist_never_suppresses_injected_tp():
     events, alert_details, tp_examples = fl.build_fp_batch()
     v = fl.close_loop(events, alert_details, tp_examples, approve=True)
-    wl = v["whitelist_result"]["whitelist"]
+    wl = v["allowlist_result"]["allowlist"]
     field = next(iter(wl["fields"]))
     value = wl["fields"][field]
     match_type = wl["match_type"]
     # The synthesized clause matches every FP...
-    assert v["whitelist_result"]["suppressed_count"] == 3
+    assert v["allowlist_result"]["suppressed_count"] == 3
     # ...and NONE of the true positives (authoritative optimizer matcher).
-    assert v["whitelist_preserves_tp"] is True
+    assert v["allowlist_preserves_tp"] is True
     for tp in tp_examples:
-        assert not fl.whitelist_optimizer._clause_matches(tp, field, match_type, value)
+        assert not fl.allowlist_optimizer._clause_matches(tp, field, match_type, value)
 
 
-def test_whitelist_refuses_clause_that_would_blind_a_tp():
+def test_allowlist_refuses_clause_that_would_blind_a_tp():
     """If a TP shares the FP discriminator, the optimizer must refuse (no unsafe clause)."""
     events, alert_details, _ = fl.build_fp_batch()
     # A poisoned TP that shares EVERY discriminator the FP cohort has (the CDN
@@ -150,9 +150,9 @@ def test_whitelist_refuses_clause_that_would_blind_a_tp():
                     "dst_domain": "evil.assets.example.com", "host": "web-01",
                     "src_ip": "192.0.2.10"}]
     v = fl.close_loop(events, alert_details, poisoned_tp, approve=True)
-    # No safe whitelist -> not suppressed, but also provably didn't blind the TP.
-    assert v["whitelist_suppresses_fps"] is False
-    assert v["whitelist_preserves_tp"] is True
+    # No safe allowlist -> not suppressed, but also provably didn't blind the TP.
+    assert v["allowlist_suppresses_fps"] is False
+    assert v["allowlist_preserves_tp"] is True
     assert v["closed"] is False  # can't close without a safe suppression
 
 
@@ -160,8 +160,8 @@ def test_whitelist_refuses_clause_that_would_blind_a_tp():
 # HITL gate: approval required; reject withholds publish.
 # --------------------------------------------------------------------------
 def test_publish_gate_requires_approval_and_reject_withholds():
-    approve = fl.request_publish_approval({"kind": "whitelist_clause"}, approve=True)
-    reject = fl.request_publish_approval({"kind": "whitelist_clause"}, approve=False)
+    approve = fl.request_publish_approval({"kind": "allowlist_clause"}, approve=True)
+    reject = fl.request_publish_approval({"kind": "allowlist_clause"}, approve=False)
     assert approve["approval_required"] is True and reject["approval_required"] is True
     assert approve["published"] is True
     assert reject["published"] is False
@@ -184,7 +184,7 @@ def test_lone_backup_fp_is_below_min_events_guard():
     v = fl.close_loop(events, alert_details, tp_examples, approve=True)
     # The single Scheduled Backup FP must not produce a task (thin evidence).
     assert fl.BACKUP_RULE not in {t.get("rule_name")
-                                  for t in [v["whitelist_task"], v["regen_task"]] if t}
+                                  for t in [v["allowlist_task"], v["regen_task"]] if t}
     assert v["ledger_rules"][fl.BACKUP_RULE]["total"] == 1
 
 
