@@ -1,5 +1,5 @@
 """
-litellm.gateway.proxy — single model entry-point + audit hook (skeleton)
+sentinel_inference_gateway.proxy — single model entry-point + audit hook (skeleton)
 ========================================================================
 A provider-agnostic **inference gateway**: one place a specialist (or any caller)
 points at instead of talking to a model provider directly, so every completion
@@ -51,7 +51,7 @@ DEFAULT_MODEL_ID = os.environ.get(
 # Dedicated audit logger. Callers can attach a handler / ship it to CloudWatch; we
 # never configure global logging here (library-friendly). The record is emitted at
 # INFO with a structured ``extra={"audit": {...}}`` payload plus a compact message.
-_audit_log = logging.getLogger("sentinel.litellm.gateway.audit")
+_audit_log = logging.getLogger("sentinel.inference_gateway.audit")
 
 # Field names we consider secret-ish and will NEVER copy into an audit record. This
 # is belt-and-suspenders: the builder already allowlists only non-sensitive fields,
@@ -115,7 +115,7 @@ def audit_record(record: dict) -> None:
 
     Kept separate from :func:`build_audit_record` so callers/tests can build a
     record without emitting, and swap the sink by configuring the
-    ``sentinel.litellm.gateway.audit`` logger."""
+    ``sentinel.inference_gateway.audit`` logger."""
     _audit_log.info("inference audit", extra={"audit": record})
 
 
@@ -197,7 +197,7 @@ def complete(messages: Any, *, model_id: str | None = None, **kwargs: Any):
     """Convenience entry-point using a lazily-created default gateway.
 
     A specialist can point at the gateway with a one-liner
-    (``from litellm.gateway import complete``) instead of managing a
+    (``from sentinel_inference_gateway import complete``) instead of managing a
     ``LiteLLMModel``. Pass ``model_id`` to override the env default for one call."""
     global _default_gateway
     if model_id is not None:

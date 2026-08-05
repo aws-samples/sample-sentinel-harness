@@ -1,5 +1,5 @@
 """
-litellm.gateway — a standalone LiteLLM inference-gateway skeleton
+sentinel_inference_gateway — a standalone LiteLLM inference-gateway skeleton
 =================================================================
 A single model entry-point (``complete``) plus a structured request/response
 **audit** hook, provider-agnostic via ``LiteLLMModel``. This is a *skeleton* in

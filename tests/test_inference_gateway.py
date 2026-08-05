@@ -1,5 +1,5 @@
 """
-Offline tests for the litellm.gateway inference-gateway skeleton
+Offline tests for the sentinel_inference_gateway inference-gateway skeleton
 ================================================================
 ZERO AWS calls, ZERO network. The point of the skeleton is that it is importable
 and inspectable WITHOUT the heavy ``litellm`` / ``strands`` stack installed:
@@ -22,8 +22,8 @@ import pytest
 # Load the proxy module by explicit path under a UNIQUE name so it can never collide
 # with anything else in sys.modules (mirrors tests/test_specialist.py loading style).
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_MODULE_PATH = os.path.join(REPO_ROOT, "litellm", "gateway", "proxy.py")
-_UNIQUE_NAME = "sentinel_litellm_gateway_proxy"
+_MODULE_PATH = os.path.join(REPO_ROOT, "sentinel_inference_gateway", "proxy.py")
+_UNIQUE_NAME = "sentinel_inference_gateway_proxy_pathloaded"
 _spec = importlib.util.spec_from_file_location(_UNIQUE_NAME, _MODULE_PATH)
 proxy = importlib.util.module_from_spec(_spec)
 sys.modules[_UNIQUE_NAME] = proxy
@@ -42,10 +42,10 @@ def test_module_imports_without_litellm():
 
 
 def test_package_import_is_guarded():
-    """The real litellm.gateway package must import without litellm installed too."""
+    """The real sentinel_inference_gateway package must import without litellm installed too."""
     sys.path.insert(0, REPO_ROOT)
     import importlib
-    pkg = importlib.import_module("litellm.gateway")
+    pkg = importlib.import_module("sentinel_inference_gateway")
     assert callable(pkg.complete)
     assert callable(pkg.InferenceGateway)
 
@@ -160,7 +160,7 @@ def test_complete_audits_and_reraises_on_error(monkeypatch):
 
 def test_audit_sink_default_logs_structured_record(caplog):
     rec = proxy.build_audit_record(model_id="m", usage={"total_tokens": 1})
-    with caplog.at_level(logging.INFO, logger="sentinel.litellm.gateway.audit"):
+    with caplog.at_level(logging.INFO, logger="sentinel.inference_gateway.audit"):
         proxy.audit_record(rec)
     assert any("inference audit" in r.getMessage() for r in caplog.records)
 

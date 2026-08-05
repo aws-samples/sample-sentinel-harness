@@ -202,6 +202,71 @@ jobs:
             npx ts-node "$t"
           done
 
+  real-stack:
+    # The specialist stack (strands-agents[a2a,litellm] + litellm) is declared in NO extra, so
+    # ten `importorskip("strands")` / `importorskip("litellm")` calls across five test files
+    # skipped in EVERY environment — local and CI alike. One step worse than INV-CI-1, where
+    # the dependency at least existed in an extra: here the suite could not install it at all,
+    # so those tests could never run anywhere.
+    #
+    # They were not redundant. Running them for the first time immediately exposed a real
+    # defect: a top-level `litellm/` directory in this repo shadowed (and was shadowed BY) the
+    # real PyPI `litellm`, so `litellm.gateway` raised ModuleNotFoundError the moment the real
+    # package was installed — which every specialist container does. The gateway was broken in
+    # the only environment it targets, and the skip is why nobody knew. See INV-PKG-1.
+    #
+    # A separate job because the stack is ~108 MB on top of the test extra. It runs the five
+    # affected files, which take ~3s once installed.
+    name: real specialist stack (strands + litellm)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Python 3.13
+        # actions/setup-python v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+
+      - name: Install the package, the test extra, and the REAL specialist stack
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+          # Pinned to the SAME version the specialist containers pin, so this job tests the
+          # stack that actually ships rather than whatever resolves today.
+          pip install "strands-agents[a2a,litellm]==1.9.1"
+          # Fail loudly here rather than skipping quietly later — the entire point of this job
+          # is that these imports resolve. A silent skip would restore the original defect.
+          python -c "import strands, litellm; print('real stack OK')"
+
+      - name: Run the tests that need the real stack (skips are FAILURES here)
+        env:
+          SENTINEL_REGION: us-east-1
+          AWS_DEFAULT_REGION: us-east-1
+          SENTINEL_EXECUTION_ROLE_ARN: arn:aws:iam::000000000000:role/ci-test-role
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        # `-p no:randomly` for a stable report; `-ra` so any skip is visible in the log.
+        run: |
+          python -m pytest -q -p no:randomly -ra \
+            tests/test_specialist.py \
+            tests/test_attack_mapper.py \
+            tests/test_threat_hunt.py \
+            tests/test_adversarial_reviewer.py \
+            tests/test_inference_gateway.py \
+            tests/test_no_toplevel_name_shadows_a_dependency.py \
+            | tee /tmp/real_stack.log
+          # A skip in THIS job means the heavy deps did not resolve, which is precisely the
+          # condition that hid a production defect for the whole life of these tests. Green
+          # must mean "ran", not "declined to run".
+          if grep -qE "^[0-9]+ skipped|, [0-9]+ skipped" /tmp/real_stack.log; then
+            echo "::error::a test SKIPPED in the real-stack job — the heavy deps did not"\
+                 "resolve, so this job verified nothing. See INV-PKG-1."
+            exit 1
+          fi
+
   secret-and-name-scan:
     name: secret-and-name scan
     runs-on: ubuntu-latest
