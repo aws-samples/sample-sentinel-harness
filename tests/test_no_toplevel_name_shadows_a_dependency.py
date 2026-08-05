@@ -46,6 +46,14 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # hyphens/dots are illegal in an import name, and these are data/infra trees.
 _NOT_IMPORT_NAMES = re.compile(r"[-.]")
 
+# Build/vendor output and non-package trees. `site` is on this list for a REASON worth
+# recording, because it looks alarming: it collides with the stdlib `site` module, which the
+# interpreter imports automatically at STARTUP — a far worse collision than the `litellm` one
+# if it were real. Measured instead of assumed: `site/` holds only `index.html`, no `.py` file
+# at all, so it never becomes even a namespace package and `import site` still resolves to the
+# stdlib (verified with `sys.path[0] == ''` from the repo root, the worst case). If a `.py`
+# file is ever added under `site/`, `test_no_python_files_under_the_site_directory` below fails
+# — the shadowing only starts mattering at that moment.
 _IGNORED = {
     "__pycache__", "build", "site", "dist", "node_modules", "venv",
     "sentinel_harness.egg-info",
@@ -282,3 +290,36 @@ def test_that_job_treats_a_skip_as_a_failure():
         )
         return
     pytest.fail("no real-stack job found (the previous test should have caught this)")
+
+def test_no_python_files_under_the_site_directory():
+    """`site/` is exempted from the shadowing scan, so the exemption needs its own guard.
+
+    `site` is the stdlib module the interpreter imports at STARTUP to set up `sys.path` and
+    site-packages. Today `site/` is a published landing page containing only `index.html`, so
+    it cannot shadow anything — a directory with no `.py` file is not even a namespace package.
+    Verified from the repo root with `sys.path[0] == ''`: `import site` still resolves to the
+    stdlib.
+
+    But that safety is a property of the directory's CONTENTS, not of its name. The moment
+    someone adds a `.py` file there, the exemption in `_IGNORED` becomes a hole in a guard
+    whose whole subject is name shadowing — and the failure would appear at interpreter
+    startup, before any test could report it.
+
+    This is the "lint-excluded directory = never-cleaned directory" rule from the project's
+    degradation rules, applied to a test exemption: an exemption without its own check is a
+    permanent blind spot.
+    """
+    site_dir = os.path.join(REPO_ROOT, "site")
+    if not os.path.isdir(site_dir):
+        pytest.skip("no site/ directory in this checkout")
+
+    python_files = []
+    for root, _dirs, files in os.walk(site_dir):
+        python_files.extend(os.path.join(root, f) for f in files if f.endswith(".py"))
+
+    assert not python_files, (
+        f"site/ now contains Python file(s): {python_files}. `site` is the STDLIB module the "
+        "interpreter imports automatically at startup, so a top-level `site/` package can "
+        "shadow it and break the interpreter before any test runs. Either move these files or "
+        "rename the directory (and remove `site` from _IGNORED above)."
+    )
