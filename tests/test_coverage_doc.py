@@ -33,6 +33,7 @@ passing without measuring would be the failure mode this whole file exists to pr
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -55,22 +56,51 @@ _TOLERANCE_POINTS = 5
 # A coverage.json older than this is a stale artifact from an unrelated run.
 _MAX_DATA_AGE_SECONDS = 24 * 3600
 
+# INV-DOC-5. When set, a missing/stale data file is an ERROR, not a skip.
+#
+# These three assertions are the only thing keeping `tests/README-coverage.md` honest (they
+# were written after five of its rows were found wrong by 16-61 points). They ran on
+# maintainer laptops — where `make ci` has already produced `.coverage` — and SKIPPED in CI
+# on every single run, because CI's `coverage run -m pytest tests` only writes the data file
+# when it EXITS. So during the test step there is no data, and the guard that keeps the
+# coverage doc honest was never verified in the one place that gates merges.
+#
+# Measured, not assumed: replicating CI's exact invocation locally reproduces `SKIPPED [3]`.
+#
+# ci.yml now runs this module as a separate step AFTER `coverage report`, with this variable
+# set. Without the variable the fix would be silent-failure-prone in the usual way — a later
+# change to the data-file path would restore the no-op and the step would still pass green.
+# `~/.claude/rules/degradation-and-guards.md`: "检查失败" and "检查通过" must not look alike.
+_REQUIRE_DATA_ENV = "SENTINEL_REQUIRE_COVERAGE_DATA"
+
+
+def _unavailable(reason: str) -> None:
+    """Skip locally, FAIL where the caller declared the data must exist."""
+    if os.environ.get(_REQUIRE_DATA_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
+        raise AssertionError(
+            f"{_REQUIRE_DATA_ENV}=1 but the coverage data is unusable: {reason} "
+            "This runs as a dedicated CI step after `coverage report`, so the data file "
+            "must exist here. Skipping would mean the documented coverage figures go "
+            "unverified in CI — which is exactly the defect this flag exists to prevent."
+        )
+    pytest.skip(reason)
+
 
 def _coverage_json() -> dict:
     """Measured coverage, from the existing .coverage data file.
 
-    Generates coverage.json from `.coverage` (cheap — it is a report, not a re-run) and
-    skips if there is no recent data.
+    Generates coverage.json from `.coverage` (cheap — it is a report, not a re-run). Absent
+    or stale data skips locally and FAILS when `SENTINEL_REQUIRE_COVERAGE_DATA=1`.
     """
     if not COVERAGE_DATA.is_file():
-        pytest.skip(
+        _unavailable(
             "no .coverage data file. Run `make ci` (or "
             "`coverage run -m pytest tests`) first; this test verifies the documented "
             "per-file figures against that run rather than re-measuring inside a unit test."
         )
     age = time.time() - COVERAGE_DATA.stat().st_mtime
     if age > _MAX_DATA_AGE_SECONDS:
-        pytest.skip(
+        _unavailable(
             f"the .coverage data file is {age / 3600:.1f}h old — too stale to check the "
             "documented figures against. Re-run `make ci`."
         )
@@ -128,11 +158,15 @@ def _coverage_launcher() -> list[str]:
             continue
         if probe.returncode == 0 and "coverage" in (probe.stdout + probe.stderr).lower():
             return candidate
-    pytest.skip(
+    # Same treatment as a missing data file: an unresolvable launcher is a genuine
+    # environment gap locally, but in CI it means the check silently did not happen. I read
+    # this particular skip as a success three times before it became an assertion.
+    _unavailable(
         "no way to run `coverage` was found (tried the parent interpreter, "
         "`uv run --with coverage`, and a bare `coverage`), so the documented figures "
         "cannot be verified here. This is a genuine environment gap, not a pass."
     )
+    raise AssertionError("unreachable")  # _unavailable always raises or skips
 
 
 def _documented_rows() -> list[tuple[str, int]]:
