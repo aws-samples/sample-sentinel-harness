@@ -94,6 +94,13 @@ def test_every_cited_node_id_is_collectible():
     Uses pytest's own collector so a renamed class/method is caught, not just a
     renamed file.
     """
+    # Repository-scoped: some cited nodes live in modules that skip at COLLECTION time
+    # outside a git checkout (the CI-config guards — see tests/repo_infra.py), and pytest
+    # cannot collect a node inside a skipped module. Verifying citations is a maintainer's
+    # job on the repo, not a downstream packager's on an sdist.
+    from repo_infra import require_git_checkout
+    require_git_checkout("test_every_cited_node_id_is_collectible")
+
     node_ids = _cited_node_ids()
     assert node_ids, "no class/method-level citations parsed — check the doc format"
 

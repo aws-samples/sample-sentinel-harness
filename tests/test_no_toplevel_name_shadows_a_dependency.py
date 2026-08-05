@@ -217,7 +217,9 @@ def test_the_container_requirements_still_pull_litellm(specialist):
 # --------------------------------------------------------------------------- #
 def _ci_jobs() -> dict:
     yaml_mod = pytest.importorskip("yaml")
-    path = os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")
+    from repo_infra import require_workflow
+
+    path = require_workflow("workflows", "ci.yml")
     with open(path, encoding="utf-8") as fh:
         return yaml_mod.safe_load(fh)["jobs"]
 

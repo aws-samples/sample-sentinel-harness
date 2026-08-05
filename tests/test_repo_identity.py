@@ -51,6 +51,13 @@ import os
 import re
 import subprocess
 
+from repo_infra import require_git_checkout  # noqa: E402
+
+# Repository-scoped by design: the scan uses `git ls-files` and its own sanity check
+# requires site/ and .github/ paths that an sdist omits. Skips outside a checkout, and
+# NEVER inside one — see tests/repo_infra.py.
+require_git_checkout("test_repo_identity")
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # --- canonical identity ---------------------------------------------------- #
