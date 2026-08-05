@@ -1,4 +1,4 @@
-# litellm.gateway — inference-gateway skeleton
+# sentinel_inference_gateway — inference-gateway skeleton
 
 A standalone, provider-agnostic **inference gateway**: one audited chokepoint that
 a specialist (or any caller) points at instead of talking to a model provider
@@ -27,7 +27,7 @@ gateway instead, replace the direct call with the gateway entry-point:
 
 ```python
 # In a specialist, instead of calling LiteLLMModel(...).converse(...) directly:
-from litellm.gateway import InferenceGateway
+from sentinel_inference_gateway import InferenceGateway
 
 gateway = InferenceGateway(model_id=os.environ["SENTINEL_GATEWAY_MODEL"])
 result = gateway.complete(messages)   # one audit record emitted per call
@@ -36,11 +36,11 @@ result = gateway.complete(messages)   # one audit record emitted per call
 or the one-liner convenience for simple callers:
 
 ```python
-from litellm.gateway import complete
+from sentinel_inference_gateway import complete
 result = complete(messages)           # uses the env-configured default model
 ```
 
-The audit records land on the `sentinel.litellm.gateway.audit` logger — attach a
+The audit records land on the `sentinel.inference_gateway.audit` logger — attach a
 handler (or a CloudWatch sink) in your container entrypoint to ship them.
 
 ## Configuration (12-factor — no hardcoded account / ARN / model / key)
