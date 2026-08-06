@@ -66,6 +66,34 @@ jobs:
         # the build so a known-vulnerable dependency cannot silently ship.
         run: pip-audit --strict --progress-spinner=off -r audit-requirements.txt
 
+      - name: Audit the DEPLOYED container dependency sets
+        # The step above audits only what `pyproject.toml` declares. The deps that actually run
+        # in the Runtime images live in their own requirements.txt files, and until this step
+        # existed they were audited by NOTHING while also being outside Dependabot's coverage
+        # (INV-SUPPLY-1). Measured at the time this was added: each of the four specialists
+        # carried 19 known advisories — `litellm` (12) and `starlette` (7), both TRANSITIVE via
+        # `strands-agents[a2a,litellm]` and `fastapi`, so neither appeared as a line in any file.
+        # `longrunning/bas-runner` was clean, the negative control showing the audit discriminates.
+        #
+        # Blocking, and the loop is written so a failure in ANY file fails the job — a `for` loop
+        # whose body swallows the exit code would report green while auditing nothing.
+        run: |
+          status=0
+          shopt -s nullglob
+          files=(specialists/*/requirements.txt longrunning/*/requirements.txt)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no container requirements.txt found — this step would audit nothing"
+            exit 1
+          fi
+          for req in "${files[@]}"; do
+            echo "----- auditing $req -----"
+            if ! pip-audit --strict --progress-spinner=off -r "$req"; then
+              echo "::error file=$req::known vulnerability in a DEPLOYED container dependency set"
+              status=1
+            fi
+          done
+          exit $status
+
   bandit:
     name: bandit (advisory / non-blocking)
     runs-on: ubuntu-latest

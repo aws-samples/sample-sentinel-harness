@@ -1,9 +1,25 @@
 # Dependabot configuration for the sentinel-harness supply chain.
 #
-# Keeps three ecosystems patched on a weekly cadence:
+# Keeps every ecosystem in the repo patched on a weekly cadence:
 #   - pip            : Python runtime/test deps declared in pyproject.toml + requirements.txt (repo root)
+#   - pip (containers): the DEPLOYED container deps — the four specialist Runtime images and the
+#                      bas-runner long-running image, each with its own requirements.txt
 #   - npm            : the AWS CDK app under iac-cdk/ (package.json / package-lock.json)
 #   - github-actions : the third-party actions used by the workflows in .github/workflows/
+#   - docker         : the base images those containers build FROM
+#
+# The container entries are NOT decorative. Before they existed, Dependabot covered only pip at
+# the repo root, and the five container requirements.txt files were updated exclusively BY HAND —
+# verifiable in the history: every commit touching them is a human one, and Dependabot's own
+# commits only ever touched `.github/workflows/`. `pip-audit` in supply-chain.yml did not close
+# the gap either: it resolves its audit set from `pyproject.toml` alone, so the deps that actually
+# run in the deployed containers were audited by NOTHING.
+#
+# Measured at the time these entries were added: `pip-audit -r` on each specialist reported
+# **19 known vulnerabilities in 2 packages** — `litellm` (12) and `starlette` (7) — both pulled
+# TRANSITIVELY by `strands-agents[a2a,litellm]==1.9.1` and `fastapi==0.139.0`. `bas-runner` was
+# clean, which is the negative control proving the audit was discriminating rather than red for
+# everything. So the coverage gap had already let vulnerable dependencies ship.
 #
 # All PRs are grouped where it reduces churn and labelled so they are easy to triage.
 # This file is token-free: Dependabot runs with GitHub's built-in permissions.
@@ -26,6 +42,64 @@ updates:
       prefix: "chore(deps)"
     groups:
       python-dev:
+        patterns:
+          - "*"
+
+  # --- Python in the DEPLOYED containers ----------------------------------
+  # One `pip` entry covering every container requirements.txt via `directories`. These are the
+  # deps that actually run in the Runtime images; the root `pip` entry above does not see them.
+  #
+  # Grouped into ONE PR per run deliberately: `test_specialist_containers.py` asserts all four
+  # specialists ship a byte-identical dependency set, so four separate PRs would each break that
+  # invariant until the last one merged. A single grouped PR keeps them in step.
+  - package-ecosystem: "pip"
+    directories:
+      - "/specialists/adversarial-reviewer"
+      - "/specialists/attack-mapper"
+      - "/specialists/cve-intel"
+      - "/specialists/threat-hunt"
+      - "/longrunning/bas-runner"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+      - "containers"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      container-runtime:
+        patterns:
+          - "*"
+
+  # --- Base images those containers build FROM ----------------------------
+  # A pinned base image still goes stale: `python:3.13-slim` gets rebuilt with OS-level CVE fixes,
+  # and nothing here was watching it. Grouped for the same reason as above — the specialists are
+  # asserted to be at base-image parity.
+  - package-ecosystem: "docker"
+    directories:
+      - "/specialists/adversarial-reviewer"
+      - "/specialists/attack-mapper"
+      - "/specialists/cve-intel"
+      - "/specialists/threat-hunt"
+      - "/longrunning/bas-runner"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      base-images:
         patterns:
           - "*"
 
