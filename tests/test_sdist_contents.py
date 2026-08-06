@@ -64,6 +64,13 @@ _DELIBERATELY_ABSENT = {
     "dist",
     # The published landing page is a website artifact, not source needed to build or test.
     "site",
+    # Maintainer tooling, in the same category as `.github/` above: `scripts/sync_action_pins.py`
+    # re-derives the INV-CI-3 pin table from the GitHub API (INV-CI-5). It needs `gh`, it edits
+    # workflow files and a test module, and it is meaningless outside this repository — shipping it
+    # would put a network-dependent maintenance script in a downstream packager's build tree. The
+    # guard that reads it (`test_pin_sync_tool.py`) is repository-scoped through
+    # `repo_infra.require_git_checkout`, so it skips honestly in an sdist rather than failing.
+    "scripts",
     # Not directories — these came from the reference scan as string literals.
     "litellm", "ls-files",
 }
