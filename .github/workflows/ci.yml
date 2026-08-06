@@ -20,11 +20,11 @@ jobs:
 
     steps:
       - name: Checkout
-        # actions/checkout v7.0.0
+        # actions/checkout v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Python ${{ matrix.python-version }}
-        # actions/setup-python v6.3.0
+        # actions/setup-python v7.0.0
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python-version }}
@@ -136,11 +136,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        # actions/checkout v7.0.0
+        # actions/checkout v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Python 3.12
-        # actions/setup-python v6.3.0
+        # actions/setup-python v7.0.0
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
@@ -194,7 +194,7 @@ jobs:
         working-directory: iac-cdk
     steps:
       - name: Checkout
-        # actions/checkout v7.0.0
+        # actions/checkout v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Node 20
@@ -239,11 +239,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        # actions/checkout v7.0.0
+        # actions/checkout v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Python 3.13
-        # actions/setup-python v6.3.0
+        # actions/setup-python v7.0.0
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.13"
@@ -309,7 +309,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        # actions/checkout v7.0.0
+        # actions/checkout v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       # This repo is PUBLIC open source. It must contain ZERO trace of any
