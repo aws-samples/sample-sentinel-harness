@@ -1,8 +1,32 @@
-# bas-runner Runtime image dependencies (pinned loosely; pin exact for a release).
-# bedrock_agentcore provides the long-running Runtime app + async-task heartbeat.
-bedrock-agentcore>=1.19.0
-boto3>=1.43.62
-# The Play-Mode / sandbox-hook logic this runner reuses lives in sentinel-harness.
-# In the image, install it from the repo (built wheel or `pip install -e .` of the
-# repo root); listed here so the intent is explicit.
-# sentinel-harness
+# bas-runner Runtime image dependencies — EXACTLY pinned, like the four specialists.
+#
+# These were `bedrock-agentcore>=1.19.0` / `boto3>=1.43.62`, with a comment saying "pinned
+# loosely; pin exact for a release". The project has shipped v0.5.1, so that TODO had expired,
+# and the range was resolving to something else: measured, `>=1.19.0` installed
+# **bedrock-agentcore 1.21.0** — two minors above what every specialist pins — and a rebuild
+# tomorrow could install something different again. For an adversary-emulation workload whose
+# output is forensic evidence, "which version produced this" must be answerable from the repo.
+#
+# 1.21.0 is what the range already resolved to and what the image was verified against, so the
+# pin records reality rather than rolling anything back. The API surface this runner uses
+# (`BedrockAgentCoreApp`, `@app.entrypoint`, `add_async_task`, `complete_async_task`, `run`) was
+# checked present at BOTH 1.19.0 and 1.21.0 before choosing.
+bedrock-agentcore==1.21.0
+boto3==1.43.65
+# sentinel-harness itself — INSTALLED, not merely mentioned.
+#
+# `bedrock_entrypoint.py` does an UNGUARDED top-level `from sentinel_harness import core`
+# (unlike its `bedrock_agentcore` import, which is try/except-guarded). This line used to be
+# COMMENTED OUT with a note that it is "listed here so the intent is explicit", and the
+# Dockerfile never installed it either — so the image built fine and
+# `CMD ["python","bedrock_entrypoint.py"]` died with `ModuleNotFoundError: No module named
+# 'sentinel_harness'`. Verified inside the built image; the README's sanity check missed it
+# because it runs from the repo root, where the module is importable from the working tree.
+#
+# Intent in a comment is not a build step. Pinned like everything else here: the Docker build
+# context is `longrunning/bas-runner/`, so it cannot reach the repo root, and installing from
+# PyPI is the honest option rather than restructuring the build for this one line. 0.5.1 is the
+# current published release AND this checkout's `pyproject.toml` version, so the image gets the
+# same code either way today — and if they ever diverge, the pin says which one shipped instead
+# of leaving it to whatever the build day resolves.
+sentinel-harness==0.5.1
