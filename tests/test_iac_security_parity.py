@@ -70,9 +70,18 @@ TF_DIR = os.path.join(REPO_ROOT, "iac-terraform")
 CDK_IDENTITY = os.path.join(CDK_DIR, "identity-stack.ts")
 CDK_GUARDRAIL = os.path.join(CDK_DIR, "guardrail-stack.ts")
 CDK_NETWORK = os.path.join(CDK_DIR, "network-stack.ts")
+CDK_HARNESS = os.path.join(CDK_DIR, "harness-stack.ts")
 TF_IDENTITY = os.path.join(TF_DIR, "identity.tf")
 TF_GUARDRAIL = os.path.join(TF_DIR, "guardrail.tf")
 TF_VPC = os.path.join(TF_DIR, "vpc.tf")
+TF_HARNESS_VARS = os.path.join(TF_DIR, "variables-harness.tf")
+
+# Harness-loop defaults both trees must agree on. Neither is a security boundary in the
+# guardrail/Cognito sense, but a silent divergence changes agent behaviour between the two
+# deployment paths while README calls them a mirror: a shorter timeout truncates long tool loops,
+# and a different model id means the two paths run a different model entirely.
+_EXPECTED_HARNESS_TIMEOUT = 300
+_EXPECTED_HARNESS_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 
 # The two secret-shape regexes both trees must spell identically, resolved from their fragments.
 # Kept here as the EXPECTED value so a drift in either tree fails, rather than the two being
@@ -378,6 +387,70 @@ def test_neither_tree_puts_the_agent_subnet_on_the_public_internet():
         "iac-terraform does not explicitly set `map_public_ip_on_launch = false`. The AWS default "
         "for a non-default subnet is false, but relying on an unstated default for a network "
         "boundary is how it flips unnoticed — state it."
+    )
+
+
+def test_both_trees_agree_on_the_harness_loop_defaults():
+    """The fifth domain README claims is mirrored, and the last one left uncompared.
+
+    Neither value is a security boundary in the guardrail/Cognito sense, but a silent divergence
+    changes agent BEHAVIOUR between the two deployment paths while README calls them a mirror:
+
+      * `timeoutSeconds` bounds one agent-loop invocation. A shorter value on one path truncates
+        long tool loops there and nowhere else, which surfaces as "the agent gives up in Terraform
+        but not in CDK" — a difference with no error message attached.
+      * `modelId` decides which model actually runs. Two paths on different models is the widest
+        possible divergence for a claimed mirror.
+
+    Both are compared against an EXPECTED constant rather than to each other, for the reason
+    recorded on the regex check: two identical drifts pass a mutual comparison.
+
+    Note what is deliberately NOT asserted: that the model id carries a `-YYYYMMDD-vN:M` version
+    suffix. `test_specialist_containers.py::test_default_model_id_is_version_pinned` requires that
+    of the specialists because they name a DIRECT model id, where an unpinned name reaches READY and
+    then fails on first invoke. These trees name a cross-region INFERENCE PROFILE
+    (`global.anthropic.…`), which has no dated version to pin — the Terraform variable says so
+    explicitly ("No unverifiable version pinned"). Applying the specialists' rule here would demand
+    a suffix that does not exist.
+    """
+    cdk = _strip_comments_ts(_read(CDK_HARNESS))
+    tf_vars = _strip_comments_tf(_read(TF_HARNESS_VARS))
+
+    cdk_timeout = re.search(r"timeoutSeconds\s*\?\?\s*(\d+)", cdk)
+    assert cdk_timeout, (
+        "could not find the CDK harness timeout default (`props.timeoutSeconds ?? N`). If the "
+        "defaulting changed shape, update this resolver — silently resolving nothing would make "
+        "the comparison vacuous."
+    )
+    assert int(cdk_timeout.group(1)) == _EXPECTED_HARNESS_TIMEOUT, (
+        f"CDK defaults the harness timeout to {cdk_timeout.group(1)}s, expected "
+        f"{_EXPECTED_HARNESS_TIMEOUT}s."
+    )
+
+    tf_timeout = re.search(
+        r'variable\s+"harness_timeout_seconds"\s*\{.*?default\s*=\s*(\d+)', tf_vars, re.S
+    )
+    assert tf_timeout, "could not find the Terraform harness_timeout_seconds default"
+    assert int(tf_timeout.group(1)) == _EXPECTED_HARNESS_TIMEOUT, (
+        f"Terraform defaults harness_timeout_seconds to {tf_timeout.group(1)}s but CDK uses "
+        f"{_EXPECTED_HARNESS_TIMEOUT}s — the same harness would give up at different points "
+        "depending on which path deployed it."
+    )
+
+    cdk_model = re.search(r'modelId\s*\?\?\s*"([^"]+)"', cdk)
+    assert cdk_model, "could not find the CDK harness modelId default"
+    assert cdk_model.group(1) == _EXPECTED_HARNESS_MODEL_ID, (
+        f"CDK defaults modelId to {cdk_model.group(1)!r}, expected "
+        f"{_EXPECTED_HARNESS_MODEL_ID!r}."
+    )
+
+    tf_model = re.search(
+        r'variable\s+"harness_model_id"\s*\{.*?default\s*=\s*"([^"]+)"', tf_vars, re.S
+    )
+    assert tf_model, "could not find the Terraform harness_model_id default"
+    assert tf_model.group(1) == _EXPECTED_HARNESS_MODEL_ID, (
+        f"Terraform defaults harness_model_id to {tf_model.group(1)!r} but CDK uses "
+        f"{_EXPECTED_HARNESS_MODEL_ID!r} — the two paths would run different models."
     )
 
 
