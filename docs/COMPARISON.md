@@ -37,12 +37,12 @@ is partial, it is marked 🟡 here exactly as it is there.
 | **Memory** | Managed AgentCore Memory (SEMANTIC / SUMMARIZATION) keyed by `actorId` per analyst; passed at `create`/invoke | Session state is yours; add a store | Checkpointer + store (you host/select the backend) | You design the store |
 | **Observability** | CloudWatch dashboard + a `TokensPerScenario` metric + Budgets stack (live-deployed) | Your own tracing/metrics | LangSmith (excellent) or your own | Your own |
 | **Infrastructure-as-Code** | Dual-track: 9 CDK stacks + a `terraform validate`-clean Terraform mirror (Guardrail / Cognito JWT identity / observability / private-VPC egress live-deployed on a non-prod account) | None shipped | None shipped | None shipped |
-| **Evidence / reproducibility** | 21 runnable scenarios each write an account-scrubbed JSON to `evidence/` (36 artifacts); 2365 offline, deterministic tests (zero AWS by default) | Your tests | Your tests | Your tests |
+| **Evidence / reproducibility** | 23 runnable scenarios each write an account-scrubbed JSON to `evidence/` (36 artifacts); 2365 offline, deterministic tests (zero AWS by default) | Your tests | Your tests | Your tests |
 | **Lock-in** | Low by design: `sentinel export <harness.yaml>` emits editable Strands starter code (model · prompt · tool allowlist · memory) so you can walk off the managed harness | None (it *is* the portable layer) | Framework-level; portable model providers | None (you own everything) |
 | **Code you own/maintain** | Least — agents are YAML; the heavy lifting is the AWS-managed loop + a tested library | Moderate — the loop is yours | Moderate–high — graph topology + hosting | Most — everything |
 | **Security-ops opinionation** | High — three-layer SecOps blueprint, Play Mode, BAS detection-replay, sandbox hooks, egress control ship in the box | None (general-purpose) | None (general-purpose) | None |
 
-Numbers above (2365 tests, 21 scenarios, 36 evidence artifacts, 20 tools, 9 skills,
+Numbers above (3987 tests, 23 scenarios, 38 evidence artifacts, 20 tools, 9 skills,
 8 harnesses, 9 CDK stacks) match the README and are all offline/deterministic unless a
 row says **live-validated**; live claims were validated on a **non-production dev/test
 account** with every account id scrubbed to `000000000000`.
