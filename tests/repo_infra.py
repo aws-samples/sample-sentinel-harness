@@ -108,3 +108,23 @@ def require_git_checkout(what: str) -> None:
         f"repository-scoped by design — see tests/repo_infra.py.",
         allow_module_level=True,
     )
+
+def count_test_files() -> int:
+    """THE test-file count, so the docs guards cannot disagree about it.
+
+    Two guards measured this two ways and both passed, because they checked different documents:
+    `test_docs_drift.py` used `os.listdir` (top level only -> 169) and
+    `test_invariants_doc.py` used `os.walk` (recursive -> 170). The difference is
+    `tests/smoke/test_m4_acceptance.py`.
+
+    Recursive is the honest answer: pytest collects it, so it IS a test file. One definition, so a
+    future doc update cannot satisfy one guard while contradicting the other — the "same fact,
+    two implementations" shape this repo records more than any other.
+    """
+    tests_dir = os.path.join(REPO_ROOT, "tests")
+    return sum(
+        1
+        for _root, _dirs, files in os.walk(tests_dir)
+        for name in files
+        if name.startswith("test_") and name.endswith(".py")
+    )
