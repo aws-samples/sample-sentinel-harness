@@ -198,8 +198,13 @@ def test_quoted_test_FILE_counts_match_reality():
     # file yields a guard that runs and verifies nothing. Files are added a handful at a time,
     # so ±3 is generous and still catches real drift.
     _FILE_COUNT_TOLERANCE = 3
-    actual = len([n for n in os.listdir(os.path.join(REPO_ROOT, "tests"))
-                  if n.startswith("test_") and n.endswith(".py")])
+    # Shared measurement: this used `os.listdir` (169) while test_invariants_doc.py used
+    # `os.walk` (170, counting tests/smoke/). Both passed because they checked different
+    # documents — one fact, two implementations, which is how a doc update satisfies one guard
+    # and contradicts the other.
+    from repo_infra import count_test_files
+
+    actual = count_test_files()
     patterns = (
         re.compile(r"across (\d{2,4}) test files"),
         re.compile(r"\|\s*`tests/`\s*\|\s*(\d{2,4}) files"),

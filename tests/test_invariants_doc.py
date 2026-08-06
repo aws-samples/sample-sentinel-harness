@@ -209,3 +209,109 @@ def test_every_invariant_row_names_an_owner_and_a_test():
     assert not offenders, (
         f"invariant rows missing an owner or a real test citation: {offenders}"
     )
+
+# --------------------------------------------------------------------------- #
+# Numeric claims in the invariant rows (INV-DOC-7)                            #
+# --------------------------------------------------------------------------- #
+_HISTORICAL_MARKER = "AT THE TIME"
+
+# Countable things an invariant row may quantify, each with a way to measure it NOW.
+_COUNTABLE = {
+    "harnesses": lambda: sum(
+        1 for name in os.listdir(os.path.join(REPO_ROOT, "harnesses"))
+        if os.path.isfile(os.path.join(REPO_ROOT, "harnesses", name, "harness.yaml"))
+    ),
+    "evidence": lambda: len(
+        [p for p in os.listdir(os.path.join(REPO_ROOT, "evidence")) if p.endswith(".json")]
+    ),
+    # NOTE: "test files" is deliberately NOT in this map. The only `N test files` figure in the
+    # whole document is INV-PKG-3's historical 162, which the AT-THE-TIME exemption skips — so an
+    # entry here would be dead configuration that no assertion could ever exercise. Discovered by
+    # mutating `repo_infra.count_test_files` and seeing only test_docs_drift.py react; the
+    # unreactive side was correct, not broken. That count IS shared between the two guards via
+    # `repo_infra.count_test_files`, which is what stops them disagreeing about tests/smoke/.
+    "specialists": lambda: sum(
+        1 for name in os.listdir(os.path.join(REPO_ROOT, "specialists"))
+        if os.path.isfile(os.path.join(REPO_ROOT, "specialists", name, "agent_a2a.py"))
+    ),
+}
+
+
+def _invariant_rows() -> list:
+    return [line for line in _doc_text().splitlines() if line.startswith("| **INV-")]
+
+
+def test_every_current_state_count_in_an_invariant_row_is_accurate():
+    """A number in an invariant row is a checkable claim, and two had already drifted.
+
+    INV-TEST-2 said "across 169 files" while the suite had 170 — wrong within two rounds of being
+    written, because the suite grows and the number did not. (Fixed by restating it as coverage:
+    "every test module", which cannot drift.)
+
+    This checks the remaining countable claims. It deliberately does NOT flag numbers marked
+    `AT THE TIME`: INV-PKG-3 records that the sdist "carried all 162 test files AT THE TIME", a
+    historical measurement of a defect. Forcing that to track the current count would make the
+    guard demand the falsification of a record — the same trap the CHANGELOG guard hit when a bulk
+    rename rewrote released entries, and the reason the docs-drift guard distinguishes
+    present-tense claims from changelog lines.
+
+    A guard that cannot tell a claim from a record pressures you into rewriting history for green.
+    """
+    offenders = []
+    for row in _invariant_rows():
+        invariant = re.match(r"\| \*\*(INV-[A-Z0-9-]+)\*\*", row)
+        name = invariant.group(1) if invariant else "?"
+        for noun, measure in _COUNTABLE.items():
+            for match in re.finditer(rf"\b(\d{{1,4}})\s+{re.escape(noun)}\b", row):
+                # Historical figures are exempt, but only when explicitly marked. Guessing from
+                # verb tense would be unreliable and would let a stale claim hide behind "carried".
+                trailing = row[match.end(): match.end() + 90]
+                if _HISTORICAL_MARKER in trailing:
+                    continue
+                actual = measure()
+                if int(match.group(1)) != actual:
+                    offenders.append(
+                        f"{name}: says {match.group(0)!r}, actual {actual}"
+                    )
+    assert not offenders, (
+        "invariant row(s) quote a stale count:\n  " + "\n  ".join(offenders)
+        + f"\n\nEither update the number, restate it as coverage (\"every test module\") so it "
+        f"cannot drift, or — if it records a past measurement — mark it "
+        f"{_HISTORICAL_MARKER!r} so this guard leaves it alone."
+    )
+
+
+def test_the_countable_measurements_are_non_trivial():
+    """Positive control. Each measurement above must return a plausible number; a lambda returning
+    0 (a renamed directory, say) would make every comparison pass or fail for the wrong reason."""
+    for noun, measure in _COUNTABLE.items():
+        value = measure()
+        assert value >= 4, f"measuring {noun!r} returned {value} — this check is now blind"
+
+
+def test_the_historical_exemption_marks_a_real_number():
+    """Guard the exemption without coupling it to the measurement map.
+
+    My first version required the marked row to contain a number DISAGREEING with a current
+    measurement. That broke the moment I removed the dead `"test files"` entry from `_COUNTABLE`,
+    because nothing in the map covers INV-PKG-3's figure any more — the guard and the map had
+    become coupled in a way neither needed.
+
+    What has to hold is simpler and independent: the marker must sit just after a number, so it
+    exempts something rather than decorating prose. A marker on a row with no figure would be a
+    dead branch — the "lint-exempt directory = never-cleaned directory" rule applied to a test's
+    own escape hatch.
+    """
+    marked = [row for row in _invariant_rows() if _HISTORICAL_MARKER in row]
+    assert marked, (
+        f"no invariant row carries the {_HISTORICAL_MARKER!r} marker any more. If the historical "
+        "count was removed, delete this test and the exemption; if the marker was dropped by "
+        "accident, the count guard will start reporting a recorded measurement as drift."
+    )
+    for row in marked:
+        index = row.index(_HISTORICAL_MARKER)
+        window = row[max(0, index - 60):index]
+        assert re.search(r"\d", window), (
+            f"the {_HISTORICAL_MARKER!r} marker appears with no number before it, so it exempts "
+            f"nothing:\n  ...{window}[{_HISTORICAL_MARKER}]..."
+        )
