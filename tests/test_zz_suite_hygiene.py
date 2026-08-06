@@ -485,3 +485,108 @@ def test_no_new_unnormalised_sys_path_insert_is_added():
         "Either they were all fixed — delete them from _KNOWN_UNNORMALISED_INSERTS and say so — "
         "or the detection broke."
     )
+
+def _insert_sites() -> list:
+    """`(file, lineno, guarded)` for every `sys.path.insert` in the suite.
+
+    `guarded` is judged PER STATEMENT — is this call inside an `if <x> not in sys.path:` body —
+    not by asking whether the file mentions that phrase anywhere. The round that first documented
+    these figures used the file-level test and reported "38 guards"; the statement-level answer is
+    37 guarded / 26 unguarded. A file-level substring test standing in for a statement-level
+    structural question, committed while documenting a guard against exactly that.
+    """
+    sites = []
+    for path in _test_sources():
+        tree = _parse(path)
+        if tree is None:
+            continue
+
+        guard_ranges = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            tests_sys_path = False
+            for compare in ast.walk(node.test):
+                if not isinstance(compare, ast.Compare):
+                    continue
+                if not any(isinstance(op, ast.NotIn) for op in compare.ops):
+                    continue
+                right = compare.comparators[0] if compare.comparators else None
+                if isinstance(right, ast.Attribute) and right.attr == "path":
+                    tests_sys_path = True
+            if not tests_sys_path:
+                continue
+            for stmt in node.body:
+                guard_ranges.append(
+                    (stmt.lineno, getattr(stmt, "end_lineno", None) or stmt.lineno)
+                )
+
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            if node.func.attr != "insert":
+                continue
+            owner = node.func.value
+            if not (isinstance(owner, ast.Attribute) and owner.attr == "path"):
+                continue
+            guarded = any(start <= node.lineno <= end for start, end in guard_ranges)
+            sites.append((path.name, node.lineno, guarded))
+    return sites
+
+
+def test_the_documented_sys_path_figures_are_current():
+    """INV-TEST-2 quotes counts for the `sys.path` debt. Numbers in a doc drift; this re-derives
+    them.
+
+    The first version of that invariant entry had three wrong figures — "38 guards" (37), "tests/
+    24x" (25), and it omitted that the repo root appears 27x once aliases are resolved, which is the
+    number that actually matters. Hand-written counts in a document describing a guard is the same
+    shape as INV-DOC-2's stale coverage table, so the doc now states them and this checks them.
+    """
+    doc = (REPO_ROOT / "docs" / "INVARIANTS.md").read_text(encoding="utf-8")
+    entry_start = doc.find("| **INV-TEST-2**")
+    assert entry_start != -1, "INV-TEST-2 is gone from docs/INVARIANTS.md"
+    entry = doc[entry_start:doc.find("\n", entry_start)]
+
+    sites = _insert_sites()
+    guarded = sum(1 for _f, _l, g in sites if g)
+    unguarded = len(sites) - guarded
+
+    # Tolerance of 0: these are exact counts derived from the same tree the doc describes.
+    # BOTH spellings, not either. My first version used `or`, and the mutation "drop the
+    # `63 sys.path entries` phrase" survived because the doc also says `63 insert sites` further
+    # along — one claim going stale while an unrelated sentence kept the assertion satisfied. An
+    # `or` across two independent statements of the same fact means neither is actually pinned.
+    for phrase in (f"{len(sites)} `sys.path`", f"{len(sites)} insert sites"):
+        assert phrase in entry, (
+            f"INV-TEST-2 no longer states {phrase!r}. Both phrasings describe the same count "
+            f"(total entries carried, and total insert sites), so both must track it — otherwise "
+            f"one can go stale while the other keeps this check green.\n{entry[:400]}"
+        )
+    assert f"{unguarded} of the {len(sites)}" in entry, (
+        f"INV-TEST-2 does not state that {unguarded} of {len(sites)} sites are unguarded "
+        f"(it must, or the diagnosis reads as a guard problem rather than a missing-guard "
+        f"problem):\n{entry[:400]}"
+    )
+    assert f"{guarded} that do" in entry, (
+        f"INV-TEST-2 does not state the current guarded count of {guarded}:\n{entry[:400]}"
+    )
+
+
+def test_the_statement_level_guard_split_is_what_the_doc_claims():
+    """Positive control for the scan above, and the correction it encodes.
+
+    Asserts the split is non-trivial in BOTH directions: a scan reporting 0 unguarded would mean it
+    stopped recognising bare inserts, and one reporting 0 guarded would mean it stopped recognising
+    the `if ... not in sys.path` idiom. Either failure would make the figures above meaningless
+    while still producing a number.
+    """
+    sites = _insert_sites()
+    guarded = sum(1 for _f, _l, g in sites if g)
+    unguarded = len(sites) - guarded
+    assert len(sites) >= 50, f"only found {len(sites)} sys.path.insert sites — the scan is blind"
+    assert guarded > 0, "the scan recognises no guarded inserts; the `if ... not in` detection broke"
+    assert unguarded > 0, (
+        "the scan recognises no UNGUARDED inserts. Either they were all fixed — a real "
+        "improvement that must be reflected in INV-TEST-2 — or the detection broke."
+    )
