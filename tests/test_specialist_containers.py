@@ -36,9 +36,35 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPECIALISTS_DIR = os.path.join(REPO_ROOT, "specialists")
 
-# The reference/source-of-truth specialist the other two must match.
+# The reference/source-of-truth specialist the others must match.
 REFERENCE = "cve-intel"
-SPECIALISTS = ("cve-intel", "attack-mapper", "threat-hunt")
+
+
+def _specialists_on_disk() -> tuple:
+    """Every specialist with a packaged container, DERIVED rather than listed.
+
+    This was a hand-written `("cve-intel", "attack-mapper", "threat-hunt")` while the repo has
+    FOUR packaged specialists — `adversarial-reviewer` was absent, so all 12 parametrised checks
+    here skipped it silently.
+
+    Measured before changing anything: that turned out NOT to be a coverage hole.
+    `test_adversarial_reviewer.py` carries its own packaging section with **13** equivalent
+    assertions (it additionally checks two-stage, that CMD launches agent_a2a, and the default
+    port), so the fourth specialist was covered — by a second implementation of the same contract.
+
+    That is the defect this repo records more than any other, and the reason to fix it anyway: a
+    new assertion added HERE covers three specialists and quietly not the fourth, and the two
+    lists agree only until one is edited. Deriving the set from disk means a new specialist is
+    covered the moment it is packaged, and a removed one cannot leave a stale entry.
+    """
+    return tuple(sorted(
+        name for name in os.listdir(SPECIALISTS_DIR)
+        if os.path.isfile(os.path.join(SPECIALISTS_DIR, name, "Dockerfile"))
+        and os.path.isfile(os.path.join(SPECIALISTS_DIR, name, "requirements.txt"))
+    ))
+
+
+SPECIALISTS = _specialists_on_disk()
 
 # A 12-digit run of digits that is NOT the all-zeros placeholder = a real account id.
 _ACCOUNT_ID_RE = re.compile(r"\b\d{12}\b")
@@ -115,6 +141,28 @@ def _requirement_map(name: str) -> dict[str, str]:
 def test_packaging_files_exist(name):
     for path in (_dockerfile(name), _requirements(name), _agent_module_path(name)):
         assert os.path.isfile(path), f"missing packaging file: {path}"
+
+
+def test_the_derived_specialist_set_is_complete():
+    """Positive control for `SPECIALISTS`, which is now derived from disk rather than listed.
+
+    Deriving fixes drift but introduces a new failure mode: if the derivation returned an empty or
+    short tuple — a renamed directory, a moved `specialists/`, a missing Dockerfile — every
+    parametrised test above would collect nothing and the module would report green while checking
+    nothing. That is the vacuous-pass shape this repo records most, so the count is asserted.
+
+    Four is the current number; the bound is `>=` so adding a fifth specialist does not need an edit
+    here, while losing one fails loudly.
+    """
+    assert len(SPECIALISTS) >= 4, (
+        f"only {len(SPECIALISTS)} packaged specialist(s) discovered: {SPECIALISTS}. Either a "
+        "specialist lost its Dockerfile/requirements.txt or this derivation is looking in the "
+        "wrong place — both must fail loudly rather than shrink the parametrised coverage."
+    )
+    assert REFERENCE in SPECIALISTS, (
+        f"the reference specialist {REFERENCE!r} is not in the derived set {SPECIALISTS}, so every "
+        "'matches the reference' comparison below would be meaningless."
+    )
 
 
 # --------------------------------------------------------------------------- #

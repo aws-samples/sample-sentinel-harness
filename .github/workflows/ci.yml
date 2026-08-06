@@ -434,21 +434,42 @@ jobs:
           docker info > /dev/null
           docker --version
 
-      - name: Build the image and prove it serves A2A
+      - name: Build every deployable image and prove each one serves
         env:
           SENTINEL_CONTAINER_BUILD: "1"
-        # A skip here would mean this job verified nothing, so the run is asserted to have
-        # executed the gated tests rather than skipped them — the INV-CI-1 / INV-DOC-5 rule.
+        # Covers BOTH images with a real build+start: the cve-intel specialist (INV-CONTAINER-1,
+        # A2A on 9000) and the bas-runner long-running Runtime (INV-CONTAINER-2, the AgentCore
+        # HTTP contract on 8080). bas-runner is here because it was the only deployable image
+        # nothing verified, and it could not start at all: `sentinel-harness` was a commented-out
+        # requirement, so `CMD ["python","bedrock_entrypoint.py"]` died with ModuleNotFoundError
+        # while `docker build` reported success.
+        #
+        # A skip here would mean this job verified nothing, so the run is asserted to have executed
+        # the gated tests rather than skipped them — the INV-CI-1 / INV-DOC-5 rule.
         run: |
           python -m pytest -q -p no:randomly -ra \
-            tests/test_container_image_builds_and_serves.py | tee /tmp/container.log
+            tests/test_container_image_builds_and_serves.py \
+            tests/test_bas_runner_image.py | tee /tmp/container.log
           if grep -qE "^[0-9]+ passed, [0-9]+ skipped" /tmp/container.log; then
             echo "::error::some container tests SKIPPED while SENTINEL_CONTAINER_BUILD=1 was set."
             echo "::error::That means this job built nothing and its green result is meaningless."
             grep -E "^SKIPPED" /tmp/container.log || true
             exit 1
           fi
-          grep -qE "^7 passed" /tmp/container.log || {
-            echo "::error::expected 7 passing container tests; the selection changed."
+          # The expected count is DERIVED, not a magic number. A hardcoded `^7 passed` was already
+          # wrong the moment a second image was added, and a stale literal here either breaks CI on
+          # an unrelated addition or — worse, if someone "fixes" it downward — hides a shrinking
+          # selection. Collect-only tells us how many there should be.
+          expected="$(python -m pytest -q -p no:randomly --collect-only \
+            tests/test_container_image_builds_and_serves.py \
+            tests/test_bas_runner_image.py 2>/dev/null \
+            | grep -oE '[0-9]+ tests? collected' | grep -oE '^[0-9]+')"
+          if [ -z "$expected" ]; then
+            echo "::error::could not determine the expected container-test count."
+            exit 1
+          fi
+          echo "expected $expected container tests to pass"
+          grep -qE "^${expected} passed" /tmp/container.log || {
+            echo "::error::expected $expected passing container tests; the selection changed."
             exit 1
           }

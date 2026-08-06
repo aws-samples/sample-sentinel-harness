@@ -7,7 +7,7 @@
 #
 # NOTE: review_detection() (the deterministic adversarial critique reasoner) needs
 # NONE of these — it is pure stdlib Python. These deps only serve the A2A wrapper.
-bedrock-agentcore==1.19.0
+bedrock-agentcore==1.21.0
 bedrock-agentcore-starter-toolkit==0.3.11
 strands-agents[a2a,litellm]==1.50.2
 mcp==1.29.0
