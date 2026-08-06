@@ -3,6 +3,12 @@
 MITRE ATT&CK technique lookup tool template for a security operations
 (SecOps) team.
 
+> **CLEARLY-LABELED MOCK DATA for POC / testing only.** By default this returns a
+> deterministic **stub** (`"source": "stub"`), **not** a live MITRE ATT&CK feed, so
+> technique metadata may be incomplete or out of date relative to the real corpus.
+> Set the tool's `*_LIVE` env var to reach the real source. Always branch on the
+> `source` field.
+
 ## Purpose
 
 Map observed behavior to the MITRE ATT&CK framework. Given a technique id
