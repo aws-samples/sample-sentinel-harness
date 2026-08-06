@@ -51,7 +51,23 @@ yaml = pytest.importorskip("yaml", reason="PyYAML parses the registry and harnes
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HARNESSES_DIR = os.path.join(REPO_ROOT, "harnesses")
+SKILLS_DIR = os.path.join(REPO_ROOT, "skills")
 REGISTRY_PATH = os.path.join(REPO_ROOT, "registry", "tools.yaml")
+
+# Skill SOPs that MANDATE a tool rather than merely mentioning one. Written as (skill, tool) pairs
+# because the requirement is per-claim: a skill may name several tools and only some be mandatory.
+#
+# These were found by reading the prose, and they are worse than the harness case. `cve-triage-rubric`
+# rule 3 is "**Egress via `web_search`, not raw download**" and `ioc-vetting` rule 4 is "**Egress via
+# reputation tools + `web_search`** … Never download the sample" — each makes `web_search` the ONLY
+# compliant way out, while `resolve("web_search")` raises. An SOP whose sole permitted path is
+# unavailable is a dead end in a SAFETY procedure: the agent either abandons external context
+# (degraded but safe) or finds another route (violating the SOP). The disclosure has to say which.
+_SKILLS_MANDATING_TOOLS = {
+    ("cve-triage-rubric", "web_search"),
+    ("ioc-vetting", "web_search"),
+    ("detection-writing-sop", "web_search"),
+}
 
 # Phrases that count as disclosing "this grant does not resolve today". Any ONE suffices; the point
 # is that a reader scanning the allowlist is warned, not that a fixed sentence is present.
@@ -195,6 +211,105 @@ def test_the_disclosure_is_removed_once_approved():
         "harness(es) still warn that a tool is unresolvable after the registry approved it:\n  "
         + "\n  ".join(stale)
         + "\n\nRemove the note — it now tells an operator that a working capability is unavailable."
+    )
+
+
+def test_a_skill_that_mandates_a_non_approved_tool_discloses_it():
+    """The same coupling on a second, more dangerous surface: skill SOPs.
+
+    `cve-triage-rubric` rule 3 reads "**Egress via `web_search`, not raw download**" and
+    `ioc-vetting` rule 4 "**Egress via reputation tools + `web_search`** … Never download the
+    sample". Each makes `web_search` the ONLY compliant way to reach external context — while
+    `registry.resolve("web_search")` raises `RegistryError`.
+
+    That is worse than the harness case. There the consequence is a missing capability; here the SOP
+    prescribes a path that does not exist, so an agent following it either abandons enrichment
+    (degraded but safe) or improvises (violating the very rule that forbids raw downloads). A safety
+    procedure must not contain a dead end silently, and the disclosure has to state WHICH branch is
+    correct — recording `UNKNOWN` rather than substituting a download.
+    """
+    status = _registry_status()
+    undisclosed = []
+    for skill, tool in sorted(_SKILLS_MANDATING_TOOLS):
+        if status.get(tool) in (None, "approved"):
+            continue
+        path = os.path.join(SKILLS_DIR, skill, "SKILL.md")
+        assert os.path.isfile(path), (
+            f"skills/{skill}/SKILL.md is missing, but this module records it as mandating "
+            f"{tool!r}. Update _SKILLS_MANDATING_TOOLS — a guard whose subject moved verifies "
+            "nothing."
+        )
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        if tool not in text:
+            continue  # the mandate was removed; nothing to disclose
+        if not _DISCLOSURE_RE.search(text):
+            undisclosed.append(f"{skill} mandates {tool!r} (status={status[tool]!r})")
+
+    assert not undisclosed, (
+        "skill SOP(s) MANDATE a tool the registry has not approved, with nothing saying so:\n  "
+        + "\n  ".join(undisclosed)
+        + "\n\nThese are not optional mentions — the prose makes the tool the only compliant egress "
+        "path, while `registry.resolve()` refuses it. An agent following the SOP hits a dead end and "
+        "must either degrade or improvise; the file has to say which is correct (record UNKNOWN, "
+        "never substitute a raw download). Add that note beside the rule."
+    )
+
+
+def test_the_skill_mandate_disclosures_say_what_to_do_instead():
+    """A disclosure that only says "unavailable" is half a fix.
+
+    The rules these notes sit beside are PROHIBITIONS ("never download the sample", "no raw
+    download"). Telling an agent the approved path is gone, without saying the prohibition still
+    holds, invites exactly the substitution the rule exists to prevent — the degradation rule this
+    repo applies elsewhere: a failure must be distinguishable from a pass, and the safe branch must
+    be named.
+    """
+    status = _registry_status()
+    thin = []
+    for skill, tool in sorted(_SKILLS_MANDATING_TOOLS):
+        if status.get(tool) in (None, "approved"):
+            continue
+        path = os.path.join(SKILLS_DIR, skill, "SKILL.md")
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        if not _DISCLOSURE_RE.search(text):
+            continue  # the other test reports this
+
+        # Scoped to the BLOCKQUOTE LINES — the disclosure itself — and nothing else.
+        #
+        # Two narrowings were needed, both found by mutation rather than reasoning:
+        #
+        #  1. A file-wide search for UNKNOWN/never SURVIVED "strip the safe branch from the note":
+        #     these SOPs say "never" and "UNKNOWN" throughout, so the evidence came from unrelated
+        #     prose.
+        #  2. Splitting into paragraph-ish blocks ALSO survived, because the block containing the
+        #     note also contains the rule it annotates — and that rule opens with "Never download
+        #     binaries". The guard was reading the prohibition it exists to protect as proof that
+        #     the note restates it.
+        #
+        # The disclosure is written as a markdown blockquote, so `>`-prefixed lines isolate it from
+        # the rule above it. A guard whose evidence can come from the very text it is checking
+        # against is not checking anything.
+        disclosure = "\n".join(
+            line for line in text.splitlines() if line.lstrip().startswith(">")
+        )
+        if not _DISCLOSURE_RE.search(disclosure):
+            thin.append(f"{skill}: the {tool!r} disclosure is not in a blockquote, so it cannot be "
+                        "distinguished from the rule it annotates")
+            continue
+        if not re.search(r"UNKNOWN|never|not ready|unconditional|stands regardless",
+                         disclosure, re.I):
+            thin.append(f"{skill}: discloses {tool!r} is unavailable but names no safe branch")
+
+    assert not thin, (
+        "disclosure(s) state a mandated tool is unavailable without saying what to do instead:\n  "
+        + "\n  ".join(thin)
+        + "\n\nThe adjacent rule is a PROHIBITION. A note that only reports the gap invites the "
+        "substitution the rule forbids. State the safe branch — record UNKNOWN, or declare the rule "
+        "not ready — and that the prohibition still holds."
     )
 
 

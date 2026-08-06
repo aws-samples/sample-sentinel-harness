@@ -13,6 +13,7 @@ How a security operations team decides whether an indicator (hash / domain / IP)
 2. **Deterministic confidence.** The confidence score is computed by fixed rules from source agreement — never estimated by the model.
 3. **False-positive checks are mandatory.** Every candidate-malicious verdict must pass explicit FP checks (see per-type checks) before disposition.
 4. **Egress via reputation tools + `web_search`.** Query reputation through the `enrich_ioc` tool and pull context via `web_search` (text). Never download the sample, resolve-and-connect, or fetch content from the indicator.
+   > **`web_search` is NOT approved yet.** `registry/tools.yaml` ships it as `status: pending` (SecOps has not signed off its egress allowlist), so `registry.resolve("web_search")` raises `RegistryError` and the tool is unavailable at runtime. `enrich_ioc` **is** approved and remains available. The prohibition stands regardless: with corroborating search unavailable, record `UNKNOWN` for the affected sources and let the confidence score fall accordingly — never resolve-and-connect or fetch the indicator's content as a substitute. Once the allowlist is approved, flip the registry entry and delete this note.
 5. **Blocking is human-gated.** This SOP produces a disposition and recommendation; a human approves before an IOC is added to a blocklist or containment fires.
 
 ## Step 1 — Normalize and classify the indicator
