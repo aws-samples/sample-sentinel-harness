@@ -95,6 +95,13 @@ _MEASURED_SECONDS = {
     ("codeql.yml", "analyze"): 94,
     ("supply-chain.yml", "pip-audit"): 90,
     ("supply-chain.yml", "bandit"): 13,
+    # INV-CONTAINER-1's arm64 build+serve job, measured in CI at 95s on a NATIVE
+    # `ubuntu-24.04-arm` runner (`runner arch: aarch64`, 7 passed in 44.64s of pytest). Locally on
+    # Apple Silicon a cold build is 112s. The 20-minute bound is deliberately looser than the ~3x
+    # rule of thumb (12.6x): this job pulls a base image and installs the whole specialist stack, so
+    # its runtime is dominated by network I/O that a slow registry day can multiply — and unlike the
+    # other jobs, a timeout here means the image was never proven to build at all.
+    ("ci.yml", "container-build"): 95,
 }
 
 # The upper bound on any timeout. GitHub's default is 360; anything near it is not a bound.
