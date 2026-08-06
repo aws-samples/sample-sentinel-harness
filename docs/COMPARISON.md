@@ -42,7 +42,7 @@ is partial, it is marked 🟡 here exactly as it is there.
 | **Code you own/maintain** | Least — agents are YAML; the heavy lifting is the AWS-managed loop + a tested library | Moderate — the loop is yours | Moderate–high — graph topology + hosting | Most — everything |
 | **Security-ops opinionation** | High — three-layer SecOps blueprint, Play Mode, BAS detection-replay, sandbox hooks, egress control ship in the box | None (general-purpose) | None (general-purpose) | None |
 
-Numbers above (4142 tests, 23 scenarios, 38 evidence artifacts, 20 tools, 9 skills,
+Numbers above (4161 tests, 23 scenarios, 38 evidence artifacts, 20 tools, 9 skills,
 8 harnesses, 9 CDK stacks) match the README and are all offline/deterministic unless a
 row says **live-validated**; live claims were validated on a **non-production dev/test
 account** with every account id scrubbed to `000000000000`.
