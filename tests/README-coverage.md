@@ -76,7 +76,7 @@ entire suite stays green (all tests pass under the `--include` run).
 ## Current M3 numbers
 
 Ground truth from the `--include` run above over the full `tests/` suite
-(3979 passed, 9 skipped; branch coverage on).
+(3983 passed, 9 skipped; branch coverage on).
 
 Three of those nine skips are `test_coverage_doc.py` itself, and the reason is structural
 rather than incidental: `coverage run -m pytest tests` writes `.coverage` only when it
@@ -85,7 +85,7 @@ time that meant the guard keeping this very table honest **never ran in CI** —
 only on maintainer laptops, where `make ci` had already produced the file. CI now runs the
 module as a dedicated step *after* `coverage report`, with
 `SENTINEL_REQUIRE_COVERAGE_DATA=1`, under which absent data raises instead of skipping. Under
-a plain `pytest tests` (no coverage wrapper) the count is 3979 passed / 6 skipped, because
+a plain `pytest tests` (no coverage wrapper) the count is 3983 passed / 6 skipped, because
 `.coverage` from a previous `make ci` is present. See INV-DOC-5.
 
 > These numbers are **checked, not asserted**.

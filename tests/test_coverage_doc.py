@@ -74,6 +74,11 @@ _MAX_DATA_AGE_SECONDS = 24 * 3600
 _REQUIRE_DATA_ENV = "SENTINEL_REQUIRE_COVERAGE_DATA"
 
 
+# The badge shows the aggregate TOTAL, which is stable: measured 91.907 under three different
+# pytest-randomly seeds. So it gets its own tight bound rather than the per-file tolerance above.
+_BADGE_TOLERANCE_POINTS = 1
+
+
 def _unavailable(reason: str) -> None:
     """Skip locally, FAIL where the caller declared the data must exist."""
     if os.environ.get(_REQUIRE_DATA_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
@@ -287,3 +292,112 @@ def test_the_stated_suite_size_is_current():
         f"suite now collects {actual}. Re-measure and update the header — a figure from a "
         "different era makes every row below it suspect."
     )
+
+# --------------------------------------------------------------------------- #
+# The README badges (INV-DOC-8)                                               #
+# --------------------------------------------------------------------------- #
+README = REPO_ROOT / "README.md"
+
+
+def _badge_value(label: str) -> str | None:
+    """The value segment of a shields.io badge, e.g. `coverage-92%25-1D8102` -> `92%25`."""
+    text = README.read_text(encoding="utf-8")
+    match = re.search(rf"img\.shields\.io/badge/{re.escape(label)}-([^-\"]+)-", text)
+    return match.group(1) if match else None
+
+
+def test_the_coverage_badge_matches_measured_coverage():
+    """The badge is the first number a reader sees, and it had drifted to 90% against a real 92%.
+
+    Worse than stale on its own: `tests/README-coverage.md` said 92% in the same repo, so the two
+    documents contradicted each other and the WRONG one was the shields.io badge a reader takes at
+    face value.
+
+    It survived every counting guard because the value is URL-encoded — `coverage-90%25` contains no
+    bare `90%`, so no regex looking for a percentage matched it. A guard scoped to one spelling of a
+    fact leaves the other spellings unguarded, which is the shape this repo records most.
+
+    Deliberately in THIS module rather than a new one: the badge and the table are two statements of
+    one measurement, so they must share `_coverage_json` — a third implementation is how they came
+    to disagree.
+    """
+    raw = _badge_value("coverage")
+    assert raw, "the README coverage badge is gone or its markup changed"
+    claimed = int(re.sub(r"%25|%", "", raw))
+
+    measured = _coverage_json()["totals"]["percent_covered"]
+    # A DEDICATED tolerance, not `_TOLERANCE_POINTS`. That one is 5 because PER-FILE coverage moves
+    # with the pytest-randomly seed. The badge states the aggregate TOTAL over 8643 statements, and
+    # measured across three seeds it does not move at all (91.907 every time), so 5 points is far
+    # too loose: it swallowed the very drift this guard was written for — the mutation "revert the
+    # badge to 90%" SURVIVED, because |90-92| < 5.
+    #
+    # A tolerance is calibrated to a magnitude. Borrowing one across two magnitudes yields a check
+    # that runs and verifies nothing — the same mistake as reusing a +/-60 test-count tolerance for
+    # a 157-file count. 1 point absorbs rounding of the displayed integer and nothing else.
+    assert abs(claimed - measured) <= _BADGE_TOLERANCE_POINTS, (
+        f"the README coverage badge claims {claimed}% but the measured total is "
+        f"{measured:.1f}% (tolerance +/-{_BADGE_TOLERANCE_POINTS}). Update the badge — it is the first "
+        f"number a reader sees, and tests/README-coverage.md states the real figure, so a stale "
+        f"badge makes the two documents contradict each other."
+    )
+
+
+def test_the_version_badge_matches_the_package_version():
+    """Same class, different fact: the badge said 0.4.0 while the package was 0.5.1.
+
+    A version badge a full minor release behind misrepresents what a reader would install, and
+    nothing checked it — `test_docs_drift.py` guards test counts and evidence counts, not this.
+    """
+    import tomllib
+
+    raw = _badge_value("version")
+    assert raw, "the README version badge is gone or its markup changed"
+
+    with open(REPO_ROOT / "pyproject.toml", "rb") as fh:
+        declared = tomllib.load(fh)["project"]["version"]
+    assert raw == declared, (
+        f"the README version badge says {raw!r} but pyproject.toml declares {declared!r}."
+    )
+
+    # And that the package agrees with its own metadata, so the badge is not merely consistent
+    # with a wrong pyproject.
+    import sentinel_harness
+
+    assert sentinel_harness.__version__ == declared, (
+        f"sentinel_harness.__version__ is {sentinel_harness.__version__!r} but pyproject declares "
+        f"{declared!r} — the badge would be right about the wrong thing."
+    )
+
+
+def test_the_python_badge_matches_requires_python():
+    """The support claim a reader checks before installing.
+
+    Cheap, and it closes the set of README badges that state a machine-checkable fact: version,
+    coverage, python, and the test count (guarded by `test_docs_drift.py`). The rest are prose.
+    """
+    import tomllib
+
+    raw = _badge_value("python")
+    assert raw, "the README python badge is gone or its markup changed"
+    claimed = re.sub(r"%2B", "+", raw)  # shields.io encodes '+'
+
+    with open(REPO_ROOT / "pyproject.toml", "rb") as fh:
+        requires = tomllib.load(fh)["project"]["requires-python"]
+    floor = re.search(r"(\d+\.\d+)", requires)
+    assert floor, f"cannot parse a version floor from requires-python={requires!r}"
+    assert claimed.startswith(floor.group(1)), (
+        f"the README python badge says {claimed!r} but requires-python is {requires!r}."
+    )
+
+
+def test_every_badge_this_module_checks_still_exists():
+    """Positive control. Each test above returns early-ish if the markup changed; without this, a
+    README rewrite that dropped the badges would leave three tests passing on `None` handling
+    rather than on facts."""
+    for label in ("coverage", "version", "python"):
+        assert _badge_value(label) is not None, (
+            f"the {label!r} badge is no longer parseable from README.md, so the guard for it is "
+            "checking nothing. Either the badge was removed (delete its test) or the markup "
+            "changed (update `_badge_value`)."
+        )
