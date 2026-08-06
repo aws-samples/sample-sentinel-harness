@@ -37,6 +37,7 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
 import time
 
 import pytest
@@ -296,6 +297,21 @@ def test_the_stated_suite_size_is_current():
 # --------------------------------------------------------------------------- #
 # The README badges (INV-DOC-8)                                               #
 # --------------------------------------------------------------------------- #
+# TOML reader. `tomllib` is stdlib only on 3.11+, so 3.10 uses the marker-gated `tomli` from the
+# `test` extra — the pattern already used by test_ci_installs_the_test_extra.py and
+# test_sdist_contents.py. My first version of the badge guards did a bare `import tomllib` inside
+# two test bodies, which passed on 3.11/3.12/3.13 and failed on 3.10 only. CI's version matrix
+# caught it; a second implementation of a problem this repo had already solved.
+#
+# Not a silent skip: `tomli` IS installed on CI's 3.10 (verified — zero tomli-related skips in that
+# job), so the guard runs on every Python in the matrix.
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - exercised on 3.10 only
+    tomllib = pytest.importorskip(
+        "tomli", reason="TOML parsing on 3.10 needs the `tomli` marker-gated dep")
+
+
 README = REPO_ROOT / "README.md"
 
 
@@ -349,8 +365,6 @@ def test_the_version_badge_matches_the_package_version():
     A version badge a full minor release behind misrepresents what a reader would install, and
     nothing checked it — `test_docs_drift.py` guards test counts and evidence counts, not this.
     """
-    import tomllib
-
     raw = _badge_value("version")
     assert raw, "the README version badge is gone or its markup changed"
 
@@ -376,8 +390,6 @@ def test_the_python_badge_matches_requires_python():
     Cheap, and it closes the set of README badges that state a machine-checkable fact: version,
     coverage, python, and the test count (guarded by `test_docs_drift.py`). The rest are prose.
     """
-    import tomllib
-
     raw = _badge_value("python")
     assert raw, "the README python badge is gone or its markup changed"
     claimed = re.sub(r"%2B", "+", raw)  # shields.io encodes '+'
