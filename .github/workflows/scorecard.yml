@@ -21,10 +21,16 @@ on:
 # Minimal top-level permissions; the job elevates only what it needs.
 permissions: read-all
 
+concurrency:
+  # Scheduled + on-push posture scan; only the newest matters.
+  group: scorecard-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analysis:
     name: Scorecard analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       security-events: write   # upload SARIF results to code scanning
       id-token: write          # OIDC token for publish_results (no secret needed)
