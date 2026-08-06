@@ -44,6 +44,34 @@ updates:
       python-dev:
         patterns:
           - "*"
+    # mcp is held below 2, with evidence rather than caution — and Dependabot has already
+    # proposed lifting it once (PR #59, "update mcp requirement from <2,>=1.0 to >=1.0,<3"),
+    # which is why the bound needs to be stated HERE and not only in pyproject.toml's comment
+    # and docs/INVARIANTS.md. Dependabot does not read either of those, so without this `ignore`
+    # the same PR arrives every week and the reason has to be re-derived each time.
+    #
+    # mcp 2.0.0 is a breaking rewrite of the low-level server API this package is built on.
+    # Re-verified against the real 2.0.0 release rather than trusted from the record:
+    #
+    #   mcp 2.0.0   from mcp.server import Server        -> OK  (an import check proves nothing)
+    #   mcp 2.0.0   Server("probe").list_tools           -> GONE
+    #   mcp 2.0.0   Server("probe").call_tool            -> GONE
+    #   mcp 2.0.0   sentinel_harness.mcp_server.create_server()
+    #                 -> AttributeError: 'Server' object has no attribute 'list_tools'
+    #
+    # Those two decorators are how `mcp_server.py` registers every handler, so on 2.x
+    # `pip install sentinel-harness[mcp] && sentinel mcp serve` cannot start AT ALL — a
+    # user-facing install-time break, not a test artifact (INV-MCP-5).
+    #
+    # Lifting this bound means PORTING mcp_server.py to 2.0's request-handler API, not bumping a
+    # number. Re-verify with:
+    #     uv run --with 'mcp>=2.0' python -c \
+    #       "from sentinel_harness.mcp_server import create_server; create_server()"
+    # `tests/test_mcp_version_bound.py` fails if the bound is removed while the code still needs
+    # the 1.x decorators, so this ignore cannot silently outlive its reason.
+    ignore:
+      - dependency-name: "mcp"
+        versions: [">=2.0.0"]
 
   # --- Python in the DEPLOYED containers ----------------------------------
   # One `pip` entry covering every container requirements.txt via `directories`. These are the
@@ -75,6 +103,28 @@ updates:
       container-runtime:
         patterns:
           - "*"
+    # Same mcp 2.x bound as the root entry, for a DIFFERENT reason — and it has to be repeated
+    # because Dependabot `ignore` is per-update-block, not global. PR #60 (the first PR this very
+    # entry produced) proposed `mcp==1.28.1 -> mcp==2.0.0` in all four specialists.
+    #
+    # The root bound is about the SERVER surface (`Server.list_tools` / `.call_tool`, gone in 2.0).
+    # The specialists never touch that; they use the CLIENT surface. So this needed its own
+    # measurement rather than an assumption that the same bound applies — and it does, because the
+    # client surface broke too:
+    #
+    #   mcp 2.0.0   from mcp import ClientSession                                  -> OK
+    #   mcp 2.0.0   from mcp.client.streamable_http import streamablehttp_client   -> ImportError
+    #
+    # All four `specialists/*/agent_a2a.py` import `streamablehttp_client` to reach the Gateway,
+    # so 2.x breaks the A2A specialists as surely as it breaks `sentinel mcp serve` — two
+    # independent breakages behind one version number.
+    #
+    # Lifting this means porting the client calls to 2.0's API in the same change. Re-verify with:
+    #     uv run --with 'mcp>=2.0' python -c \
+    #       "from mcp.client.streamable_http import streamablehttp_client"
+    ignore:
+      - dependency-name: "mcp"
+        versions: [">=2.0.0"]
 
   # --- Base images those containers build FROM ----------------------------
   # A pinned base image still goes stale: `python:3.13-slim` gets rebuilt with OS-level CVE fixes,
