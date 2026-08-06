@@ -14,8 +14,15 @@ invoking a docker daemon:
   - compose.yaml is valid YAML, drives the model id from an env var, exposes the
     A2A port, and carries NO hardcoded secret / real 12-digit account id.
 
-An actual `docker build` (if a daemon exists) is attempted only in the *verify*
-step, never here — the unit test must run on a machine with no docker at all.
+An actual `docker build` is never attempted here — this module must run on a machine with no
+docker at all. The *verify* step it used to defer to is
+``tests/test_container_image_builds_and_serves.py`` (INV-CONTAINER-1), opt-in with
+``SENTINEL_CONTAINER_BUILD=1``.
+
+That step did not exist when this sentence was first written, so "attempted only in the verify
+step" pointed at nothing and a reader could reasonably conclude the image was verified somewhere
+when only its Dockerfile had been read. Everything below is TEXT analysis; whether the arm64 image
+builds, boots, and serves is covered there and nowhere else.
 
 The specialist module is loaded by an explicit path under a UNIQUE name to avoid
 the shared ``agent_a2a`` / sibling ``handler`` sys.modules collisions across
