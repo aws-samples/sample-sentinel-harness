@@ -100,6 +100,20 @@ resource "aws_cognito_user_pool_client" "human" {
 
   supported_identity_providers = ["COGNITO"]
 
+  # Account-enumeration defence. MUST be set explicitly: the AWS default is LEGACY, under which
+  # Cognito returns a DIFFERENT error for "user does not exist" than for "wrong password", so an
+  # attacker can enumerate valid usernames by reading the error alone.
+  #
+  # `iac-cdk/lib/identity-stack.ts` sets `preventUserExistenceErrors: true` on its human client and
+  # this mirror did not, so the Terraform path deployed a WEAKER pool than the CDK path while
+  # README called them a mirror. Neither `terraform validate` nor `cdk synth` can see that — the
+  # setting is valid in both states — which is why INV-IAC-5 tests it (same shape as INV-IAC-4,
+  # where the mirror claim was false for observability).
+  #
+  # Only the human client needs it: the machine client below uses client_credentials, which
+  # authenticates an app identity rather than a user, so it has no username surface to enumerate.
+  prevent_user_existence_errors = "ENABLED"
+
   # The hosted UI / OAuth endpoints require the domain to exist first.
   depends_on = [aws_cognito_user_pool_domain.this]
 }
