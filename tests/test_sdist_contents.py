@@ -48,6 +48,8 @@ import tarfile
 
 import pytest
 
+from pristine_tree import pristine_copy
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST = os.path.join(REPO_ROOT, "MANIFEST.in")
 
@@ -124,10 +126,24 @@ def sdist_names(tmp_path_factory) -> set:
             )
         pytest.skip("no way to build an sdist was found")
 
+    # Built from a PRISTINE COPY, not in place. This module used `cwd=REPO_ROOT`, and its two
+    # sibling guards did not — an asymmetry with two measured consequences:
+    #
+    #   1. It inherited the staleness it exists to detect. With a ghost handler planted in
+    #      `build/lib/tools/`, `test_wheel_contents.py` FAILED (caught it) while this module
+    #      reported `6 passed`. Same shape as INV-PKG-2, whose fix is quoted in the wheel
+    #      guard's own docstring — written in the same round as this file.
+    #   2. It left a `sentinel_harness.egg-info/` in the working tree. That path is gitignored,
+    #      so `git status` stayed clean: a test silently mutating the repository it tests.
+    #
+    # The sdist ARTIFACT was never wrong — `MANIFEST.in`'s `prune build` keeps a stale staging
+    # tree out of the tarball (verified: 20 handlers, no ghost). The defect was the guard's
+    # method and its side effect.
+    src = pristine_copy(tmp_path_factory.mktemp("src"))
     out = tmp_path_factory.mktemp("sdist")
     argv = ([*launcher, "--sdist", "-o", str(out)] if launcher[0] == "uv"
-            else [*launcher, "--sdist", "--outdir", str(out), REPO_ROOT])
-    proc = subprocess.run(argv, cwd=REPO_ROOT, capture_output=True, text=True, timeout=900)
+            else [*launcher, "--sdist", "--outdir", str(out), src])
+    proc = subprocess.run(argv, cwd=src, capture_output=True, text=True, timeout=900)
     assert proc.returncode == 0, f"sdist build failed:\n{(proc.stdout + proc.stderr)[-2000:]}"
 
     tarballs = list(out.glob("*.tar.gz"))

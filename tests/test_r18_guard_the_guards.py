@@ -714,3 +714,107 @@ class TestTheAssembledSuiteFiresEndToEnd:
         the probe up as a real module and the suite fails for the wrong reason."""
         leftovers = sorted(p.name for p in TESTS_DIR.glob("test_r18_probe*"))
         assert not leftovers, f"probe files left behind: {leftovers}"
+
+class TestArtifactBuildsUseOnePristineCopy:
+    """INV-TEST-1 — no test hand-rolls its own `copytree` exclusion list.
+
+    Three modules build a distribution artifact from source. Two carried a byte-identical
+    twelve-entry `shutil.ignore_patterns(...)`; the third built IN PLACE with `cwd=REPO_ROOT`.
+
+    That third one was measurably weaker. With a ghost handler planted in `build/lib/tools/`:
+
+        test_wheel_contents.py  (pristine copy)  -> FAILED, caught it
+        test_sdist_contents.py  (in place)       -> 6 passed, saw nothing
+
+    It inherited the staleness it exists to detect — and the wheel guard's own docstring, written
+    in the same round, says why in-place is wrong. It also left a gitignored
+    `sentinel_harness.egg-info/` behind, so the pollution was invisible to `git status`.
+
+    The exclusion list now has one definition in `tests/pristine_tree.py`. A fourth hand-rolled
+    copy would silently reintroduce either failure mode, so this forbids one.
+    """
+
+    def test_no_test_module_writes_its_own_ignore_patterns(self):
+        offenders = []
+        tests_dir = pathlib.Path(__file__).resolve().parent
+        for path in sorted(tests_dir.glob("test_*.py")):
+            source = path.read_text(encoding="utf-8")
+            if "ignore_patterns" not in source:
+                continue
+            # Mentioning it in prose is fine; CALLING it is what duplicates the list.
+            try:
+                tree = ast.parse(source)
+            except SyntaxError:  # pragma: no cover
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr == "ignore_patterns":
+                    offenders.append(f"{path.name}:{node.lineno}")
+        assert not offenders, (
+            f"test module(s) call `shutil.ignore_patterns` directly: {offenders}. Use "
+            "`tests/pristine_tree.pristine_copy` so the exclusion list has ONE definition — "
+            "`build`/`dist` in particular, without which a guard cannot see the stale staging "
+            "tree it exists to detect (INV-PKG-2)."
+        )
+
+    def test_the_shared_helper_excludes_the_load_bearing_entries(self):
+        """The helper is only worth centralising if its list is right.
+
+        `build` and `dist` are the entries that matter: copying them in is what made the sdist
+        guard blind. Asserted by name so a well-meaning trim cannot quietly drop them.
+        """
+        from pristine_tree import ignored_patterns
+
+        patterns = ignored_patterns()
+        for required in ("build", "dist", ".git", "*.egg-info"):
+            assert required in patterns, (
+                f"the pristine-copy exclusion list lost {required!r}: {patterns}"
+            )
+
+    def test_every_artifact_building_module_uses_the_helper(self):
+        """Positive control AND the coupling.
+
+        A module that builds a wheel/sdist but does not import the helper is either building in
+        place (the defect) or carrying a fourth copy. Fails if it finds NO such modules, because
+        that would mean this scan is looking for the wrong thing.
+        """
+        tests_dir = pathlib.Path(__file__).resolve().parent
+        builders, using = [], []
+        for path in sorted(tests_dir.glob("test_*.py")):
+            if path.name == pathlib.Path(__file__).name:
+                # A scanner must not treat its OWN detection markers as the thing it detects.
+                # This file names the build flags in string literals to FIND builders, so a
+                # literal scan classified it as one — and it does not call `pristine_copy`, so it
+                # reported itself as the violator. Same self-recognition trap as substring-
+                # matching an `ast.dump()`.
+                continue
+            source = path.read_text(encoding="utf-8")
+            if not any(marker in source for marker in ('"--wheel"', '"--sdist"')):
+                continue
+            builders.append(path.name)
+            # A real CALL to `pristine_copy`, checked via AST. My first version tested
+            # `"pristine_copy" in source`, and the mutation "replace the import with
+            # `pristine_copy = None`" SURVIVED it — the name was still in the text. Substring
+            # matching standing in for a structural question, in the same file where I had just
+            # used the AST to avoid exactly that.
+            try:
+                builder_tree = ast.parse(source)
+            except SyntaxError:  # pragma: no cover
+                continue
+            for node in ast.walk(builder_tree):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id == "pristine_copy"):
+                    using.append(path.name)
+                    break
+        assert builders, (
+            "no artifact-building test module found — this scan is blind. Either they were "
+            "renamed or the build invocation changed shape."
+        )
+        missing = sorted(set(builders) - set(using))
+        assert not missing, (
+            f"module(s) {missing} build a distribution artifact without "
+            "`pristine_tree.pristine_copy`. Building in place inherits a stale `build/lib/` and "
+            "leaves an egg-info in the working tree."
+        )

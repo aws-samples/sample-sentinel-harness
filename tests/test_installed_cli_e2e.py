@@ -51,6 +51,8 @@ import subprocess
 
 import pytest
 
+from pristine_tree import pristine_copy
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HARNESSES_DIR = os.path.join(REPO_ROOT, "harnesses")
 
@@ -95,14 +97,11 @@ def installed_wheel(tmp_path_factory) -> str:
             )
         pytest.skip("uv is required to install a wheel into an isolated environment")
 
-    src = tmp_path_factory.mktemp("src") / "repo"
-    shutil.copytree(
-        REPO_ROOT, src,
-        ignore=shutil.ignore_patterns(
-            ".git", "build", "dist", "*.egg-info", "__pycache__", ".venv", "node_modules",
-            ".pytest_cache", ".ruff_cache", ".hypothesis", "cdk.out", ".terraform",
-        ),
-    )
+    # Shared helper: the exclusion list has ONE definition (tests/pristine_tree.py). It was
+    # duplicated verbatim here and in test_installed_cli_e2e.py, while test_sdist_contents.py
+    # built IN PLACE and was therefore blind to a stale build/ — with a ghost handler planted
+    # in build/lib/tools/, this module caught it and that one reported 6 passed.
+    src = pristine_copy(tmp_path_factory.mktemp("src"))
     out = tmp_path_factory.mktemp("wheel")
     proc = subprocess.run(["uv", "build", "--wheel", "-o", str(out)],
                           cwd=src, capture_output=True, text=True, timeout=900)
