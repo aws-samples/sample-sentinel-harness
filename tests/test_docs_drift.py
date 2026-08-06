@@ -335,3 +335,177 @@ def test_quoted_evidence_count_matches_reality():
         f"docs over-claim the evidence count (evidence/ really has {actual} JSON "
         f"artifacts): {wrong}"
     )
+
+# --------------------------------------------------------------------------- #
+# Counts in the public docs and the landing page (INV-DOC-9)                  #
+# --------------------------------------------------------------------------- #
+# Files that state facts to a reader. `site/index.html` is included deliberately: it is
+# hand-written, git-tracked and published to GitHub Pages, and its claims are HTML-encoded, so the
+# markdown-oriented patterns above never reached it. INV-DOC-8 is the record of the same blindness
+# for URL-encoded README badges — one fact, several encodings.
+_PUBLIC_DOCS = ("README.md", "docs/COMPARISON.md", "docs/FIDELITY-REPORT.md",
+                "docs/ROADMAP.md", "site/index.html")
+
+# Nouns whose TOTAL is measurable from the tree.
+_TOTALS = {
+    "scenarios": lambda: len([
+        p for p in os.listdir(os.path.join(REPO_ROOT, "scenarios"))
+        if p.startswith("scenario_") and p.endswith(".py")
+    ]),
+    "evidence artifacts": lambda: len([
+        p for p in os.listdir(os.path.join(REPO_ROOT, "evidence")) if p.endswith(".json")
+    ]),
+    "evidence JSON artifacts": lambda: len([
+        p for p in os.listdir(os.path.join(REPO_ROOT, "evidence")) if p.endswith(".json")
+    ]),
+    "tools": lambda: len([
+        d for d in os.listdir(os.path.join(REPO_ROOT, "tools"))
+        if os.path.isfile(os.path.join(REPO_ROOT, "tools", d, "handler.py"))
+    ]),
+}
+
+# SUBSET claims: a smaller number that is correct because it counts part of the whole. Each maps to
+# the exact members, so the claim is verified rather than merely excused.
+#
+# Without this the guard would demand "7-tool detection suite" become "20-tool", which is the
+# failure mode INV-DOC-7 records for historical figures, in a different costume: a guard that
+# cannot tell a subset from a total pressures you into making a correct sentence wrong.
+_SUBSETS = {
+    "7-tool": (
+        "sigma_yara_lint", "detection_translate", "detection_dedup", "detection_coverage",
+        "detection_audit", "detection_navigator", "detection_baseline",
+    ),
+    "suite (7 tools": (
+        "sigma_yara_lint", "detection_translate", "detection_dedup", "detection_coverage",
+        "detection_audit", "detection_navigator", "detection_baseline",
+    ),
+    # The landing page words it differently again ("7 deterministic tools"), which my first
+    # marker list missed — a fourth phrasing of the same subset. Every new wording is another
+    # spelling that must be enumerated, which is the cost of prose stating facts.
+    "7 deterministic tools": (
+        "sigma_yara_lint", "detection_translate", "detection_dedup", "detection_coverage",
+        "detection_audit", "detection_navigator", "detection_baseline",
+    ),
+    "Suite (7 tools": (
+        "sigma_yara_lint", "detection_translate", "detection_dedup", "detection_coverage",
+        "detection_audit", "detection_navigator", "detection_baseline",
+    ),
+}
+
+
+def test_every_total_count_in_the_public_docs_is_accurate():
+    """Totals stated to a reader must match the tree.
+
+    Found by auditing: `docs/COMPARISON.md` said "2365 tests, 21 scenarios, 36 evidence artifacts"
+    — all three long stale, the test count by 1600 — because its phrasing ("Numbers above (...)")
+    matched none of the present-tense patterns the older guards look for.
+    `docs/FIDELITY-REPORT.md` was off by one on two counts, and `site/index.html` claimed
+    "21 offline scenarios" for a command that runs a narrated tour touching 9.
+
+    Subset claims are checked separately below, not exempted.
+    """
+    offenders = []
+    for relative in _PUBLIC_DOCS:
+        path = os.path.join(REPO_ROOT, relative)
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        for noun, measure in _TOTALS.items():
+            # An ADJECTIVE may sit between the number and the noun: `21 offline scenarios`,
+            # `38 evidence JSON artifacts`. My first pattern required them adjacent and so missed
+            # the site's "21 offline scenarios" entirely — the mutation reinstating that exact
+            # defect SURVIVED. Same lesson as INV-DOC-8's URL-encoded badges: a guard scoped to one
+            # SPELLING of a claim leaves the other spellings unguarded.
+            #
+            # Bounded to two intervening words: wide enough for the real phrasings, narrow enough
+            # that `20 tools ... 9 skills` cannot be read as "20 skills".
+            pattern = rf"\b(\d{{1,4}})\s+(?:[a-z]+\s+){{0,2}}{re.escape(noun)}\b"
+            for match in re.finditer(pattern, text):
+                if any(marker in text[max(0, match.start() - 30):match.end()]
+                       for marker in _SUBSETS):
+                    continue  # a subset claim; verified by the test below
+                actual = measure()
+                if int(match.group(1)) != actual:
+                    offenders.append(f"{relative}: {match.group(0)!r} (actual {actual})")
+    assert not offenders, (
+        "public doc(s) state a stale total:\n  " + "\n  ".join(offenders)
+        + "\n\nThese are the numbers a reader takes at face value."
+    )
+
+
+def test_every_subset_claim_names_members_that_all_exist():
+    """A subset claim is verified, not excused.
+
+    "7-tool detection suite" is CORRECT — it counts part of the 20 tools — so the total guard must
+    skip it. But skipping is not enough: the claim has to be true. This checks the arithmetic (the
+    stated number equals the member count) and that every named member is a real tool on disk.
+
+    I nearly mis-fixed this: guessing the membership from name prefixes gave 8 (it wrongly included
+    `sigma_match`, which is the matching engine rather than a suite member). README enumerates the
+    seven explicitly; the authoritative list belongs here, not in a prefix heuristic.
+    """
+    tools_dir = os.path.join(REPO_ROOT, "tools")
+    for marker, members in _SUBSETS.items():
+        stated = int(re.search(r"(\d+)", marker).group(1))
+        assert stated == len(members), (
+            f"subset marker {marker!r} claims {stated} but names {len(members)} members: {members}"
+        )
+        missing = [m for m in members
+                   if not os.path.isfile(os.path.join(tools_dir, m, "handler.py"))]
+        assert not missing, (
+            f"subset {marker!r} names tool(s) that do not exist: {missing}"
+        )
+
+
+def test_the_subset_markers_are_actually_present_in_the_docs():
+    """Positive control for the exemption.
+
+    An exemption nobody exercises is either unnecessary or silently broken — the same rule as
+    INV-DOC-7's historical marker. If no doc contains a subset marker, the skip branch above is
+    dead and the membership check has nothing to protect.
+    """
+    # EVERY marker must still appear somewhere, not just one of them. My first version asserted
+    # only that the list was non-empty, and the mutation "reword ROADMAP's `suite (7 tools`"
+    # SURVIVED because two other markers were still present — one claim going stale while
+    # unrelated ones kept the assertion satisfied. Identical to the `or` across two badge
+    # spellings one round earlier: a check on the union of independent facts pins none of them.
+    missing = []
+    for marker in sorted(_SUBSETS):
+        present = False
+        for relative in _PUBLIC_DOCS:
+            path = os.path.join(REPO_ROOT, relative)
+            if not os.path.isfile(path):
+                continue
+            with open(path, encoding="utf-8") as fh:
+                if marker in fh.read():
+                    present = True
+                    break
+        if not present:
+            missing.append(marker)
+    assert not missing, (
+        f"subset marker(s) {missing} appear in no public doc. Either the claim was reworded — "
+        "update _SUBSETS — or the exemption for it is now dead code that would let a stale subset "
+        "count through unexamined."
+    )
+
+
+def test_the_landing_page_is_covered_by_this_scan():
+    """`site/index.html` is the most public artifact here and the last one to get checked.
+
+    Asserted explicitly because it is easy to drop from a list of "docs" — it is not markdown, its
+    claims are HTML-encoded, and the older guards' patterns never matched it. That is exactly how
+    "21 offline scenarios" survived next to a command that runs a 9-scenario tour.
+    """
+    assert "site/index.html" in _PUBLIC_DOCS
+    path = os.path.join(REPO_ROOT, "site", "index.html")
+    assert os.path.isfile(path), "site/index.html is missing"
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    # It must contain at least one measurable claim, or including it proves nothing.
+    hits = sum(len(re.findall(rf"\b\d{{1,4}}\s+{re.escape(noun)}\b", text))
+               for noun in _TOTALS)
+    assert hits >= 1, (
+        "site/index.html states no measurable count any more, so including it in this scan is "
+        "vacuous. Either it was rewritten (fine — simplify this test) or the phrasing changed."
+    )
