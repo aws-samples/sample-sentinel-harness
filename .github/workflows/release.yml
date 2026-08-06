@@ -25,6 +25,20 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # DELIBERATELY `cancel-in-progress: false`, unlike every other workflow here.
+  #
+  # This job publishes. Cancelling a release midway can leave the world in a half-finished
+  # state that no retry cleanly repairs — a GitHub Release created and tagged while PyPI never
+  # received the upload, or an attestation signed for artifacts that were never published.
+  # Two tags pushed in quick succession is exactly when that would happen, i.e. precisely when
+  # `cancel-in-progress: true` would fire.
+  #
+  # The group is keyed by the TAG (github.ref), so re-running the same tag still queues behind
+  # itself rather than racing, while different tags proceed independently.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Quality gate: the tagged commit MUST pass lint + the full test suite (with
   # coverage) before anything is built, released, or published. CI (ci.yml) runs on
@@ -34,6 +48,7 @@ jobs:
   gate:
     name: quality gate (lint + tests)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -64,6 +79,7 @@ jobs:
     name: build + SBOM + provenance
     needs: gate            # never build/release a commit that fails the quality gate
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write        # create the GitHub Release + upload assets
       id-token: write        # keyless signing for the provenance attestation
@@ -142,6 +158,7 @@ jobs:
     name: PyPI publish (API token; OIDC-ready)
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Only publish real releases to PyPI, never pre-releases (…-rc/-a/-b tags).
     if: ${{ !contains(github.ref_name, '-') }}
     environment:

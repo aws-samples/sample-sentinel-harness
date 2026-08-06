@@ -26,10 +26,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Same reasoning as ci.yml. The weekly schedule runs on `main`, so it shares main's group
+  # and a push simply supersedes it — which is correct: the newer commit is the one to scan.
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analyze:
     name: analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write   # required to upload CodeQL results to code scanning

@@ -27,10 +27,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Same reasoning as ci.yml — an audit of a superseded commit tells nobody anything.
+  group: supply-chain-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pip-audit:
     name: pip-audit (blocking)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         # actions/checkout v7.0.1
@@ -97,6 +103,7 @@ jobs:
   bandit:
     name: bandit (advisory / non-blocking)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout
         # actions/checkout v7.0.1

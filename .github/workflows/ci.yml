@@ -9,10 +9,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # A new push to the same ref makes the previous run's verdict obsolete, so cancel it and
+  # stop paying for a result nobody will read. Keyed by workflow+ref so main and each PR
+  # queue independently.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -134,6 +142,7 @@ jobs:
   mypy:
     name: mypy (strict on security modules, lenient elsewhere)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         # actions/checkout v7.0.1
@@ -189,6 +198,7 @@ jobs:
   iac:
     name: iac (cdk synth + stack tests)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: iac-cdk
@@ -237,6 +247,7 @@ jobs:
     # affected files, which take ~3s once installed.
     name: real specialist stack (strands + litellm)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         # actions/checkout v7.0.1
@@ -312,6 +323,7 @@ jobs:
   secret-and-name-scan:
     name: secret-and-name scan
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     steps:
       - name: Checkout
         # actions/checkout v7.0.1
