@@ -29,9 +29,20 @@ harnesses/<name>/
 > `model` / `tools` / `memory` / `allowedTools` / `maxIterations` / `timeoutSeconds`
 > through to `create_harness()`. A missing `${ENV_VAR}` fails loudly, naming the
 > variable. For runnable end-to-end flows (invoke + HITL resume), see `scenarios/`.
-> The Gateway tools these supervisors reference (`search_registry`, `siem_query`,
-> `enrich_ioc`, …) have reference-stub handlers under `tools/`; point
-> `SENTINEL_GATEWAY_ARN` at a Gateway that hosts them to run against live data.
+> Most Gateway tools these supervisors reference (`siem_query`, `asset_lookup`,
+> `enrich_ioc`, `create_ticket`, `nvd_lookup`, `epss_kev`, `attack_lookup`, `ops_query`,
+> `web_search`, `sigma_yara_lint`, `harness_ops`, `run_evaluation` — 12 of the 14) have
+> reference-stub handlers under `tools/`; point `SENTINEL_GATEWAY_ARN` at a Gateway that
+> hosts them to run against live data.
+>
+> **Two have no stub, deliberately**: `search_registry` and `invoke_specialist` are
+> *platform* operations, not SecOps tools. `search_registry` queries the AgentCore
+> Registry (see `sentinel_harness/registry_live.py` for the live client) and
+> `invoke_specialist` dispatches to an A2A specialist container under `specialists/`
+> — both are provided by the Gateway you point at, so a local stub would be a
+> misleading no-op rather than a reference. An earlier version of this note listed
+> `search_registry` as an example of a tool that *does* have a stub, which was wrong.
+> `tests/test_harness_tool_refs.py` keeps this split accurate.
 
 All content is generic security-operations material. There are no organization-,
 customer-, or company-specific references, no hardcoded AWS account IDs, and no role
