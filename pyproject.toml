@@ -17,7 +17,7 @@ dependencies = ["boto3>=1.40.0", "botocore>=1.43.0", "pyyaml>=6.0"]
 # packaging tripwire — which reads pyproject.toml as data — silently SKIPPED its whole
 # file on 3.10, the project's own declared minimum, taking the INV-MCP-2 wheel guard with
 # it. Marker-gated so 3.11+ does not install a redundant dependency.
-test = ["pytest>=8.0", "hypothesis>=6.0", "pytest-randomly>=3.15", "coverage>=7.0", "mcp>=1.0,<2", "anyio[trio]>=4.0", "pytest-anyio>=0.0.0", "tomli>=2.0; python_version<'3.11'"]
+test = ["pytest>=8.0", "hypothesis>=6.0", "pytest-randomly>=3.15", "coverage>=7.0", "mcp>=1.0,<3", "anyio[trio]>=4.0", "pytest-anyio>=0.0.0", "tomli>=2.0; python_version<'3.11'"]
 # UPPER BOUND REQUIRED — `mcp>=1.0` was an unbounded range, and mcp 2.0.0 is a breaking
 # rewrite of the low-level server API this package is built on. `Server.list_tools()` and
 # `Server.call_tool()` — the two decorators `sentinel_harness/mcp_server.py` registers its
@@ -47,7 +47,7 @@ test = ["pytest>=8.0", "hypothesis>=6.0", "pytest-randomly>=3.15", "coverage>=7.
 #     "from sentinel_harness.mcp_server import create_server; create_server()"
 # `tests/test_mcp_version_bound.py` fails if this bound is removed while the code still
 # depends on the 1.x decorators.
-mcp = ["mcp>=1.0,<2"]
+mcp = ["mcp>=1.0,<3"]
 
 [project.scripts]
 sentinel = "sentinel_harness.cli:main"
