@@ -3,6 +3,12 @@
 Exploitability enrichment tool template for a security operations (SecOps)
 team: EPSS score + CISA KEV catalog status.
 
+> **CLEARLY-LABELED MOCK DATA for POC / testing only.** By default this returns a
+> deterministic **stub** (`"source": "stub"`), **not** real EPSS scores or real CISA
+> KEV membership. A fictional "not in KEV" answer must never be read as "this CVE is
+> not being exploited". Set the tool's `*_LIVE` env var to reach the real feeds; the
+> reply then names the live source. Always branch on the `source` field.
+
 ## Purpose
 
 CVSS says how bad a vulnerability *could* be; EPSS and KEV say how likely it

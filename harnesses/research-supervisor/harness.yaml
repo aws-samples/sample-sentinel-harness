@@ -41,6 +41,18 @@ allowedTools:
   - "@gateway/nvd_lookup"           # CVE / CVSS lookup
   - "@gateway/epss_kev"             # EPSS score + CISA KEV enrichment
   - "@gateway/attack_lookup"        # MITRE ATT&CK technique lookup
+  # NOT YET RESOLVABLE — `registry/tools.yaml` ships web_search as status='pending'
+  # (SecOps has not approved its egress allowlist), so `registry.resolve("web_search")`
+  # raises RegistryError and this grant yields NO tool at runtime. Verified:
+  #   RegistryError: tool 'web_search' is registered but status='pending' (not approved)
+  #
+  # The grant is kept deliberately: it documents the capability this supervisor is
+  # intended to have, and `pending` is an on-purpose governance demo (see
+  # docs/GOVERNANCE.md). But `allowedTools` is a GRANT, not a lookup — an unresolvable
+  # name does not raise, the agent just comes up with a smaller tool surface than the
+  # config implies (INV-HARNESS-1). Without this comment an operator reads the file and
+  # believes the supervisor can search the web. Flip the registry entry to `approved`
+  # once the egress allowlist is signed off, and delete these lines.
   - "@gateway/web_search"           # egress-controlled web search (text, no download)
 
 memory:

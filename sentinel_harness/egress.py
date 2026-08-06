@@ -75,7 +75,14 @@ def parse_ip_literal(host: str) -> Optional[ipaddress._BaseAddress]:
     except ValueError:
         pass
     try:
-        if candidate.lower().startswith("0x"):
+        # NOTE the `"." not in candidate` guards. Without them the integer branches claim
+        # dotted spellings they cannot parse: `0xa9.0xfe.0xa9.0xfe` starts with "0x", so
+        # `int(candidate, 16)` was tried, raised ValueError, and the whole function returned
+        # None — meaning `assert_safe_url` treated a dotted-hex metadata address as a DNS name
+        # and ALLOWED it. The dotted-hex branch below (`octet.lower().startswith("0x")`) was
+        # therefore unreachable, which is how coverage surfaced the bug: two statements written
+        # for hex octets had never executed.
+        if candidate.lower().startswith("0x") and "." not in candidate:
             value = int(candidate, 16)
         elif candidate.isdigit():
             # A leading zero means octal in this notation; a plain digit run is decimal.
@@ -128,6 +135,39 @@ def assert_safe_url(url: str) -> None:
     ip = parse_ip_literal(host)
     if ip is None:
         return  # a DNS name — resolution is the runtime egress policy's business
+    # `is_loopback` and `is_private` are load-bearing, not belt-and-braces.
+    #
+    # This check previously listed only link_local / multicast / reserved / unspecified, and the
+    # error message already claimed to refuse "non-routable" addresses. Measured, it did not:
+    #
+    #   http://169.254.169.254/latest/meta-data/   BLOCKED  (link-local, so it happened to be caught)
+    #   http://127.0.0.1:8080/admin               ALLOWED  <-- loopback
+    #   http://10.0.0.5/internal                  ALLOWED  <-- private
+    #   http://192.168.1.1/router                 ALLOWED  <-- private
+    #   http://100.64.0.1/x                       ALLOWED  <-- CGNAT (is_private covers 100.64/10)
+    #
+    # So the metadata service was blocked while an agent could still reach a service on the
+    # runtime's own loopback or pivot into the VPC — the SSRF cases an egress guard exists for.
+    # IPv6 loopback `::1` was caught only incidentally, because CPython also reports it as
+    # `is_reserved`; relying on that coincidence for v6 while v4 fell through is exactly the kind
+    # of accidental coverage this repo records as indistinguishable from a real check.
+    # DELIBERATELY not `not ip.is_global`, and this scope was re-derived rather than assumed.
+    #
+    # Broadening the check to refuse every non-global address (loopback, RFC 1918, CGNAT) looked
+    # like a strict improvement and is NOT one. It fails 46 tests across 10 modules, and reading
+    # them showed why: `test_web_search_live.py` names `http://127.0.0.1:8080/search` a SAFE
+    # target, because an adopter points a `*_LIVE` tool at a stub or a sidecar on the runtime's own
+    # loopback. This module's docstring draws the same line — it defends against alternate IP
+    # spellings of the METADATA service and against redirects, and states that resolution-time
+    # concerns are "the runtime network policy's job". Loopback and VPC-internal egress is that
+    # policy's call, not this pre-flight check's.
+    #
+    # So 46 failures were evidence of a deliberate contract, not of 46 latent bugs. Recorded
+    # because the tempting move — "edit the tests, they assert something unsafe" — would have
+    # rewritten a design decision to match a guess.
+    #
+    # What WAS a genuine defect is the parse bug above: `0xa9.0xfe.0xa9.0xfe` is the metadata
+    # service, squarely inside this guard's stated remit, and it was allowed through.
     if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
         raise EgressError(
             f"refusing to open URL targeting non-routable/metadata address {host!r} "

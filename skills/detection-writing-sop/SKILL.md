@@ -126,4 +126,5 @@ Emit the candidate rule plus a short rationale (hypothesis, references, known FP
 
 - Never author a rule against a private/internal detail; use generic public techniques and examples only.
 - Do not download live malware to build a YARA rule — reference public sample hashes and writeups via `web_search`.
+  > **`web_search` is NOT approved yet** — `registry/tools.yaml` ships it as `status: pending`, so `registry.resolve("web_search")` raises `RegistryError`. The prohibition is unconditional: if you cannot reach a public writeup, author the rule from the hashes you already have or say the rule is not ready — never download a live sample instead. Delete this note when the registry entry flips to `approved`.
 - If you cannot name the false-positive surface, the rule is not ready — say so rather than shipping a blind rule.

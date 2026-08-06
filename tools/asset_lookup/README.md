@@ -3,6 +3,12 @@
 Exposure / asset-surface lookup tool template for a security operations (SecOps)
 team. Feeds the attack-path reasoning specialist (`specialists/attack-mapper`).
 
+> **CLEARLY-LABELED MOCK DATA for POC / testing only.** By default this returns a
+> deterministic **stub** (`"source": "stub"`) from the fictional `mockdata` world —
+> **not** a real CMDB or exposure scan. A fictional "not internet-facing" answer must
+> never be read as evidence that a real host is safe. Set the tool's `*_LIVE` env var
+> to reach a real inventory. Always branch on the `source` field.
+
 ## Purpose
 
 Given an asset or subnet query, return the **exposure surface** the attack-path

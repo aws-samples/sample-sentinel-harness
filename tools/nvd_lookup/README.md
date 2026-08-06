@@ -2,12 +2,24 @@
 
 CVE metadata lookup tool template for a security operations (SecOps) team.
 
+> **CLEARLY-LABELED MOCK DATA for POC / testing only.** By default this returns a
+> deterministic **stub** (`"source": "stub"` in every reply), **not** real NVD data —
+> the CVSS scores and severities below are fictional and must never drive a real
+> patch-or-defer decision. Set `NVD_LIVE=1` (plus an egress policy that permits it)
+> to query the real NVD; the reply then carries `"source": "nvd"`. Always branch on
+> the `source` field rather than assuming.
+
 ## Purpose
 
-Given a CVE identifier, return authoritative vulnerability metadata
-(description, CVSS v3 score/severity, CWE identifiers, references) sourced
-from the NVD (National Vulnerability Database). Intended to be wired into an
-Amazon Bedrock AgentCore Gateway as an MCP target.
+Given a CVE identifier, return vulnerability metadata (description, CVSS v3
+score/severity, CWE identifiers, references). **Under `NVD_LIVE=1`** that metadata is
+authoritative, sourced from the NVD (National Vulnerability Database); by default it is
+the fictional stub described above. Intended to be wired into an Amazon Bedrock
+AgentCore Gateway as an MCP target.
+
+The conditional wording is deliberate, not pedantry: this sentence used to state that
+claim unconditionally while the default reply carries `"source": "stub"`. A reader who
+believed it would treat a fictional CVSS score as grounds to defer a real patch.
 
 ## Signature
 

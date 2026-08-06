@@ -41,6 +41,8 @@ include =
     */longrunning/*
     */specialists/*
     */sentinel_harness/*
+    */intake/*
+    */mockdata/*
 omit =
     */site-packages/*
     */.venv/*

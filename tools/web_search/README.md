@@ -3,6 +3,12 @@
 Egress-controlled, text-only open-web search tool template for a security
 operations (SecOps) team.
 
+> **CLEARLY-LABELED MOCK DATA for POC / testing only.** By default this performs **no
+> network request at all** and returns a deterministic **stub** (`"source": "stub"`)
+> — the results are fictional and are not open-web content. Set the tool's `*_LIVE`
+> env var (plus an egress policy that permits it) to perform a real search. Always
+> branch on the `source` field.
+
 ## Purpose
 
 Give an agent open-web context during threat research (advisories, write-ups,
