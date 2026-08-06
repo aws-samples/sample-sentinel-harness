@@ -385,3 +385,70 @@ jobs:
             exit 1
           fi
           echo "secret-and-name scan passed — no customer names or hardcoded credentials found."
+
+  container-build:
+    # INV-CONTAINER-1: the specialist image is BUILT and SERVED, not just read as text.
+    #
+    # docs/FIDELITY-REPORT.md claims cve-intel "really docker builds", and until this job existed
+    # nothing executed that claim: no workflow contained `docker build`, and both container test
+    # modules analyse the Dockerfile as TEXT. Meanwhile Dependabot now bumps the container
+    # requirements weekly (INV-SUPPLY-1), which is exactly the change class that breaks an image
+    # build while every offline test stays green.
+    #
+    # NATIVE arm64 runner, deliberately. AgentCore Runtime is arm64, and building arm64 on x86
+    # needs QEMU emulation — measured natively at 112s cold, QEMU would be several times that and
+    # could exceed a sane timeout. `ubuntu-24.04-arm` is free for public repositories, which this
+    # repo is; if that ever changes, the honest options are to move it to a scheduled workflow or
+    # drop it, NOT to leave a job that silently queues forever.
+    name: container image builds + serves (arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Python 3.13
+        # actions/setup-python v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+
+      - name: Install the test extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      - name: Confirm the runner is arm64 and Docker is up
+        # Fail loudly here rather than letting the guard skip. The guard itself treats a missing
+        # daemon as a FAILURE when the gate is on, but checking first makes a broken runner
+        # obvious in the log instead of surfacing as a pytest error.
+        run: |
+          arch="$(uname -m)"
+          echo "runner arch: $arch"
+          if [ "$arch" != "aarch64" ] && [ "$arch" != "arm64" ]; then
+            echo "::error::expected an arm64 runner, got $arch — the image targets arm64 and a"
+            echo "::error::QEMU cross-build here would be slow enough to hit the job timeout."
+            exit 1
+          fi
+          docker info > /dev/null
+          docker --version
+
+      - name: Build the image and prove it serves A2A
+        env:
+          SENTINEL_CONTAINER_BUILD: "1"
+        # A skip here would mean this job verified nothing, so the run is asserted to have
+        # executed the gated tests rather than skipped them — the INV-CI-1 / INV-DOC-5 rule.
+        run: |
+          python -m pytest -q -p no:randomly -ra \
+            tests/test_container_image_builds_and_serves.py | tee /tmp/container.log
+          if grep -qE "^[0-9]+ passed, [0-9]+ skipped" /tmp/container.log; then
+            echo "::error::some container tests SKIPPED while SENTINEL_CONTAINER_BUILD=1 was set."
+            echo "::error::That means this job built nothing and its green result is meaningless."
+            grep -E "^SKIPPED" /tmp/container.log || true
+            exit 1
+          fi
+          grep -qE "^7 passed" /tmp/container.log || {
+            echo "::error::expected 7 passing container tests; the selection changed."
+            exit 1
+          }
