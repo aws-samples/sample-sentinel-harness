@@ -224,6 +224,28 @@ def _ci_jobs() -> dict:
         return yaml_mod.safe_load(fh)["jobs"]
 
 
+# Two ways a CI step can install the real specialist stack, both acceptable:
+#
+#   literal   pip install "strands-agents[a2a,litellm]==1.50.2"
+#   from file pip install -r specialists/cve-intel/requirements.txt
+#
+# The second is STRONGER and is what ci.yml now does (INV-SUPPLY-1): a re-typed version is a copy
+# that can drift, and it did — the job claimed to install "the SAME version the containers pin"
+# while sitting at ==1.9.1 after the containers had moved on, so the job verifying the shipped
+# stack was verifying a version nothing shipped. Installing from the file makes agreement
+# structural instead of asserted.
+#
+# This recogniser accepts either, so the invariant is about the JOB EXISTING and being honest —
+# not about one particular spelling. A guard that only knew the literal form reported "no CI job
+# installs the real stack" the moment the better implementation landed.
+_REAL_STACK_LITERAL = re.compile(r"strands-agents\[[^\]]*\]==([0-9][0-9.]*)")
+_REAL_STACK_FROM_FILE = re.compile(r"pip install\s+-r\s+(specialists/[^\s]*requirements\.txt)")
+
+
+def _installs_real_stack(body: str) -> bool:
+    return bool(_REAL_STACK_LITERAL.search(body) or _REAL_STACK_FROM_FILE.search(body))
+
+
 def test_ci_has_a_job_that_installs_the_real_stack():
     """Without this job, `importorskip("strands")` skips in CI exactly as it always did.
 
@@ -234,12 +256,14 @@ def test_ci_has_a_job_that_installs_the_real_stack():
     jobs = _ci_jobs()
     matching = [
         name for name, job in jobs.items()
-        if any("strands-agents" in (s.get("run") or "") for s in job.get("steps") or [])
+        if _installs_real_stack(" ".join(s.get("run") or "" for s in job.get("steps") or []))
     ]
     assert matching, (
         f"no CI job installs the real specialist stack. Jobs: {sorted(jobs)}. Without one, the "
         "ten importorskip('strands'/'litellm') calls skip in every environment — which is how "
-        "the litellm namespace collision survived undetected."
+        "the litellm namespace collision survived undetected.\n\n"
+        "Accepted forms: a literal `pip install \"strands-agents[...]==X\"`, or "
+        "`pip install -r specialists/<name>/requirements.txt` (preferred — it cannot drift)."
     )
 
 
@@ -252,8 +276,6 @@ def test_that_job_pins_the_same_version_the_containers_pin():
         s.get("run") or ""
         for job in jobs.values() for s in job.get("steps") or []
     )
-    ci_pins = set(re.findall(r"strands-agents\[[^\]]*\]==([0-9][0-9.]*)", runs))
-    assert ci_pins, f"no pinned strands-agents install found in ci.yml: {runs[:300]}"
 
     container_pins = set()
     for specialist in ("cve-intel", "attack-mapper", "threat-hunt", "adversarial-reviewer"):
@@ -265,9 +287,46 @@ def test_that_job_pins_the_same_version_the_containers_pin():
                 if m:
                     container_pins.add(m.group(1))
     assert container_pins, "no specialist requirements.txt pins strands-agents"
+
+    # Preferred form: CI installs FROM a specialist's requirements.txt, so "the same version the
+    # containers pin" is structural rather than a claim that can go stale. Then the only thing to
+    # check is that the file it reads is a REAL specialist manifest which really pins the stack —
+    # `-r` pointed at some unrelated file would install nothing relevant while satisfying a
+    # looser check.
+    from_file = _REAL_STACK_FROM_FILE.findall(runs)
+    if from_file:
+        for rel in from_file:
+            path = os.path.join(REPO_ROOT, rel)
+            assert os.path.isfile(path), (
+                f"ci.yml installs the real stack from {rel}, which does not exist — the job would "
+                "fail at runtime with a path error instead of testing anything."
+            )
+            with open(path, encoding="utf-8") as fh:
+                pinned = {
+                    m.group(1)
+                    for line in fh
+                    if (m := re.match(r"strands-agents\[[^\]]*\]==([0-9][0-9.]*)",
+                                      line.split("#", 1)[0].strip()))
+                }
+            assert pinned, (
+                f"ci.yml installs the real stack from {rel}, but that file pins no "
+                "strands-agents — the job would not install the stack it claims to test."
+            )
+            assert pinned <= container_pins, (
+                f"{rel} pins strands-agents {sorted(pinned)}, which is not among the versions the "
+                f"specialists pin ({sorted(container_pins)})."
+            )
+        return
+
+    # Legacy form: a re-typed literal. Still permitted, but then it MUST match the containers —
+    # this is the assertion that caught nothing when the literal sat at 1.9.1 for a while, because
+    # the containers were at 1.9.1 too; it fires the moment only one side is bumped.
+    ci_pins = set(_REAL_STACK_LITERAL.findall(runs))
+    assert ci_pins, f"no strands-agents install (literal or -r) found in ci.yml: {runs[:300]}"
     assert ci_pins == container_pins, (
         f"CI installs strands-agents {sorted(ci_pins)} but the containers pin "
-        f"{sorted(container_pins)}. The job would validate a stack that never ships."
+        f"{sorted(container_pins)}. The job would validate a stack that never ships. Prefer "
+        "`pip install -r specialists/<name>/requirements.txt`, which cannot disagree."
     )
 
 
@@ -282,9 +341,9 @@ def test_that_job_treats_a_skip_as_a_failure():
     jobs = _ci_jobs()
     for name, job in jobs.items():
         steps = job.get("steps") or []
-        if not any("strands-agents" in (s.get("run") or "") for s in steps):
-            continue
         body = " ".join(s.get("run") or "" for s in steps)
+        if not _installs_real_stack(body):
+            continue
 
         # The check is by SKIP REASON, not by the presence of the word or by a count.
         #

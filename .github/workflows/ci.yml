@@ -252,9 +252,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test]"
-          # Pinned to the SAME version the specialist containers pin, so this job tests the
-          # stack that actually ships rather than whatever resolves today.
-          pip install "strands-agents[a2a,litellm]==1.9.1"
+          # Installed FROM the specialist's own requirements.txt rather than from a version
+          # re-typed here. This job's purpose is to test the stack that actually ships, and a
+          # hand-copied pin cannot guarantee that: it said `==1.9.1` while the containers had
+          # moved on, so "the SAME version the containers pin" was a claim, not a fact. Reading
+          # the file makes it a fact — the same reason `-e ".[test]"` replaced a hand-copied dep
+          # list in this workflow (INV-CI-1). All four specialists pin an identical stack, which
+          # tests/test_specialist_containers.py asserts, so any one of them is representative.
+          pip install -r specialists/cve-intel/requirements.txt
           # Fail loudly here rather than skipping quietly later — the entire point of this job
           # is that these imports resolve. A silent skip would restore the original defect.
           python -c "import strands, litellm; print('real stack OK')"
