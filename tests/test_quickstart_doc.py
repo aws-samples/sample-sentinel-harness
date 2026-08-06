@@ -23,14 +23,21 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 QUICKSTART = os.path.join(_REPO_ROOT, "docs", "QUICKSTART.md")
 MAKEFILE = os.path.join(_REPO_ROOT, "Makefile")
 
-# The canonical Makefile target names the delivery story is built around. These
-# are the contract the QUICKSTART advertises and (when the Makefile lands) the
-# targets it must define.
+# The canonical Makefile target names the delivery story is built around. These are the contract
+# the QUICKSTART advertises and the targets it must define.
+#
+# This list named 10 while QUICKSTART advertised 11 `make X` commands: `deploy-endpoints` was
+# missing, so neither check below covered it — not "the doc mentions it" and not "the doc agrees
+# with the Makefile". Fourth instance of the same shape in four rounds (INV-SKILL-1 five-of-nine,
+# INV-HARNESS-1's reference side, INV-MAKE-1 thirteen-of-sixteen), so the fix is the same: keep it
+# explicit so a REMOVED target fails loudly, and reconcile against the document by
+# `test_the_canonical_list_covers_every_advertised_target` so an ADDED one cannot go unchecked.
 CANONICAL_TARGETS = [
     "test",
     "lint",
     "synth",
     "deploy",
+    "deploy-endpoints",
     "seed-registry",
     "create-harnesses",
     "smoke",
@@ -128,4 +135,64 @@ def test_quickstart_has_no_real_account_id(quickstart_text: str) -> None:
     assert not offenders, (
         f"QUICKSTART.md must not hardcode a real 12-digit AWS account id; found {offenders}. "
         "Use the 000000000000 placeholder or env vars."
+    )
+
+# --------------------------------------------------------------------------- #
+# The canonical list itself (INV-DOC-10)                                      #
+# --------------------------------------------------------------------------- #
+def _advertised_targets(text: str) -> set:
+    """Every `make <target>` the QUICKSTART tells a reader to run."""
+    return set(re.findall(r"\bmake\s+([a-z][a-z0-9-]*)", text))
+
+
+def test_the_canonical_list_covers_every_advertised_target(quickstart_text: str) -> None:
+    """A `make X` in the doc that the list omits is a command nothing checks.
+
+    Measured: QUICKSTART advertised 11 commands and this list named 10 — `deploy-endpoints` was
+    missing, so neither "the doc mentions it" nor "the doc agrees with the Makefile" covered it.
+
+    The list is a deliberate SUBSET of the Makefile (the delivery story's contract, not every
+    target), so it is reconciled against the DOCUMENT rather than against the Makefile — the
+    Makefile-wide inventory is INV-MAKE-1's job. Getting that distinction wrong would demand this
+    list grow to all 16 targets, which is the subset-vs-total trap INV-DOC-9 records.
+    """
+    advertised = _advertised_targets(quickstart_text)
+    assert advertised, (
+        "no `make <target>` found in QUICKSTART.md — either the doc stopped showing commands or "
+        "this parser is blind; both must fail rather than pass vacuously."
+    )
+    uncovered = sorted(advertised - set(CANONICAL_TARGETS))
+    assert not uncovered, (
+        f"QUICKSTART advertises `make {'`, `make '.join(uncovered)}` but CANONICAL_TARGETS omits "
+        f"{uncovered}, so every check parametrised over that list silently skips them."
+    )
+
+
+def test_no_canonical_target_is_unadvertised(quickstart_text: str) -> None:
+    """The other direction: a listed target the doc no longer shows.
+
+    That means either the doc dropped a command it should still teach, or the entry is stale. Both
+    are worth a failure — a list entry nobody exercises is the "exemption nobody uses" shape.
+    """
+    advertised = _advertised_targets(quickstart_text)
+    orphans = sorted(set(CANONICAL_TARGETS) - advertised)
+    assert not orphans, (
+        f"CANONICAL_TARGETS names {orphans}, which QUICKSTART.md no longer shows as `make <t>`. "
+        "Either restore the command in the doc or drop the entry."
+    )
+
+
+def test_every_canonical_target_exists_in_the_makefile() -> None:
+    """The doc must not teach a command that does not exist.
+
+    Complements INV-MAKE-1, which asserts the Makefile's own inventory is fully covered; this
+    asserts the direction that matters to a READER — every command QUICKSTART shows is real.
+    """
+    with open(MAKEFILE, encoding="utf-8") as handle:
+        declared = set(re.findall(r"^([a-z][a-z0-9-]*):", handle.read(), re.M))
+    assert len(declared) >= 15, f"the Makefile parse found only {len(declared)} targets"
+    missing = sorted(set(CANONICAL_TARGETS) - declared)
+    assert not missing, (
+        f"QUICKSTART teaches `make {'`, `make '.join(missing)}` but the Makefile declares no such "
+        f"target: {missing}. A reader following the doc gets 'No rule to make target'."
     )
