@@ -139,6 +139,25 @@ _SECRET_PATTERNS: tuple = (
      lambda m: f"{m.group('key')}{m.group('sep')}{_REDACTED}"),
     # AWS access key ids and long opaque secret-ish blobs
     (re.compile(r"\b(?:AKIA|ASIA|ABSK)[0-9A-Za-z_-]{8,}\b"), lambda _m: _REDACTED),
+    # Provider-prefixed tokens with NO key name in front of them.
+    #
+    # The key=value rule above needs `token=`/`secret:` before the value, and the AWS rule covers
+    # only AKIA/ASIA/ABSK — so a BARE `sk-…` or `ghp_…` sailed through verbatim. Measured:
+    #
+    #     token=sk-<24>                   -> token=[redacted]
+    #     upstream rejected: sk-<24>      -> upstream rejected: sk-<24>     <-- leaked
+    #     git push failed: ghp_<24>       -> git push failed: ghp_<24>      <-- leaked
+    #
+    # The unkeyed form is the COMMON one: an upstream echoes the credential it rejected straight into
+    # its error message, with no obliging `token=` label. And these two prefixes are not a standard I
+    # invented for this file — `.github/workflows/ci.yml`'s secret-and-name scan greps commits for
+    # exactly `sk-` / `ghp_` / `ABSK`, so the repo already treats them as credential shapes. The
+    # redactor was missing a class its own CI gate enforces.
+    #
+    # The prefix is kept in the output (`sk-[redacted]`) rather than swallowed: an operator reading a
+    # log needs to know WHICH credential to rotate, and the prefix is the only part that says so.
+    (re.compile(r"\b(?P<prefix>sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[0-9A-Za-z_-]{16,}\b"),
+     lambda m: f"{m.group('prefix')}{_REDACTED}"),
     # query strings can carry anything; drop the whole thing rather than guess
     (re.compile(r"\?[^\s\"']{4,}"), lambda _m: f"?{_REDACTED}"),
 )
