@@ -29,16 +29,34 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILLS_DIR = os.path.join(REPO_ROOT, "skills")
 TOOLS_DIR = os.path.join(REPO_ROOT, "tools")
 
-# The five named cyber-skills this task adds. Kept explicit (not globbed) so the
-# test fails loudly if one is renamed or removed, and so it never accidentally
-# depends on skills owned by a parallel agent.
-NEW_SKILLS = [
-    "cve-asset-triage",
-    "soc-ip-lookup",
-    "soc-triage",
-    "incident-ticketing",
-    "multi-account-ops",
-]
+SKILLS_DIR = os.path.join(REPO_ROOT, "skills")
+
+
+def _skills_on_disk() -> list:
+    """Every `skills/<name>/SKILL.md` in the repo.
+
+    DERIVED, not hand-listed. This was a literal five-name list, added when those five were new —
+    and by the time anyone looked, `skills/` held NINE. The four that arrived later
+    (`attack-path-reasoning`, `cve-triage-rubric`, `detection-writing-sop`, `ioc-vetting`) were
+    covered by nothing: not the frontmatter check, not the body-size floor, and not the
+    anti-hallucination check that every tool a skill names must exist. A skill could have cited an
+    invented tool and no test would have noticed.
+
+    The original comment gave two reasons for keeping it explicit: a rename should fail loudly, and
+    it should not depend on skills owned by a parallel agent. The second no longer applies. The
+    first is preserved WITHOUT the cost, by deriving the list here and asserting it against the
+    documented set in `test_the_skill_inventory_matches_the_documented_set` — a rename still fails,
+    and a new skill is covered automatically instead of silently ignored.
+    """
+    return sorted(
+        name for name in os.listdir(SKILLS_DIR)
+        if os.path.isfile(os.path.join(SKILLS_DIR, name, "SKILL.md"))
+    )
+
+
+# The skills every parametrised check below runs over. Named NEW_SKILLS historically; it is now the
+# full inventory.
+NEW_SKILLS = _skills_on_disk()
 
 # A body shorter than this is a stub, not a usable SOP. The existing skills are
 # ~6 KB; this floor is deliberately conservative so the test asserts "genuinely
@@ -177,3 +195,85 @@ def test_expected_tool_universe_present() -> None:
     }
     missing = expected - _allowed_tools()
     assert not missing, f"expected tool universe missing: {sorted(missing)}"
+
+# --------------------------------------------------------------------------- #
+# The inventory itself (INV-SKILL-1)                                          #
+# --------------------------------------------------------------------------- #
+# Every skill the repo ships, as a DOCUMENTED set. Deriving the parametrised list from disk means a
+# new skill is covered automatically; this set is what makes a rename or a deletion still fail
+# loudly, which is what the original hand-written list was protecting.
+_DOCUMENTED_SKILLS = frozenset({
+    "attack-path-reasoning",
+    "cve-asset-triage",
+    "cve-triage-rubric",
+    "detection-writing-sop",
+    "incident-ticketing",
+    "ioc-vetting",
+    "multi-account-ops",
+    "soc-ip-lookup",
+    "soc-triage",
+})
+
+
+def test_the_skill_inventory_matches_the_documented_set():
+    """A skill added, renamed or removed must be an explicit decision.
+
+    This replaces the guarantee the hand-written `NEW_SKILLS` list gave — a rename fails — without
+    its cost, which was real: the list named five skills while `skills/` held nine, so four were
+    checked by NOTHING. Not the frontmatter parse, not the body-size floor, and not the
+    anti-hallucination rule that every tool a skill names must exist. A skill citing an invented
+    tool would have shipped unnoticed.
+
+    Both directions fail:
+      - a skill on disk but not documented -> it was added without review
+      - a documented skill missing from disk -> it was renamed or deleted
+    """
+    on_disk = set(_skills_on_disk())
+    undocumented = sorted(on_disk - _DOCUMENTED_SKILLS)
+    assert not undocumented, (
+        f"skill(s) {undocumented} exist under skills/ but are not in _DOCUMENTED_SKILLS. Add them "
+        "here so the addition is deliberate — every parametrised check in this module now runs "
+        "over whatever is on disk, and this set is what makes a rename visible."
+    )
+    missing = sorted(_DOCUMENTED_SKILLS - on_disk)
+    assert not missing, (
+        f"documented skill(s) {missing} have no skills/<name>/SKILL.md. Either they were renamed "
+        "(update this set and any doc that cites them) or deleted (remove them here)."
+    )
+
+
+def test_the_derived_list_is_non_trivial():
+    """Positive control. Every parametrised check in this module iterates `NEW_SKILLS`; an empty or
+    truncated derivation would make them all vanish rather than fail — which is precisely how four
+    skills went unchecked for as long as they did."""
+    assert len(NEW_SKILLS) >= 9, (
+        f"only {len(NEW_SKILLS)} skills derived from {SKILLS_DIR}: {NEW_SKILLS}. The parametrised "
+        "checks below cover only what this list contains, so a short list is a silent coverage gap."
+    )
+    assert len(NEW_SKILLS) == len(set(NEW_SKILLS)), f"duplicate entries: {NEW_SKILLS}"
+
+
+def test_the_docs_state_the_current_skill_count():
+    """The public docs quote a skill count; it must track the inventory.
+
+    Same class as INV-DOC-9: a number stated to a reader. Checked here rather than in the docs guard
+    because the authoritative measurement lives in this module.
+    """
+    count = len(_skills_on_disk())
+    hits = []
+    for relative in ("README.md", "docs/COMPARISON.md", "docs/ROADMAP.md"):
+        path = os.path.join(REPO_ROOT, relative)
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        for match in re.finditer(r"\b(\d{1,3})\s+(?:named\s+)?(?:cyber-)?skills\b", text):
+            hits.append((relative, int(match.group(1))))
+    assert hits, (
+        "no public doc states a skill count any more. If the claim was removed, delete this test; "
+        "if it was reworded, update the pattern — a silent no-op here is a coverage gap."
+    )
+    stale = [(f, n) for f, n in hits if n != count]
+    assert not stale, (
+        f"doc(s) quote a stale skill count (actual {count}): {stale}"
+    )
