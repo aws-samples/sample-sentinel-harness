@@ -37,10 +37,19 @@ SMOKE_SH = os.path.join(_DEPLOY_DIR, "smoke.sh")
 WRAPPERS = [SEED_SH, CREATE_SH, SMOKE_SH]
 
 # Every target the delivery story promises. Declared as ``name:`` at column 0.
+#
+# This list drifted: it named 13 targets while the Makefile declared 16, so `ci`, `typecheck` and
+# `dist` — the local gate entry point, the two mypy gates, and the clean-tree build added a few
+# rounds ago — were covered by NOTHING here, including `test_makefile_targets_are_phony`. Same shape
+# as INV-SKILL-1 (five listed, nine on disk) one round earlier: a hand-written inventory that stops
+# tracking what it mirrors.
+#
+# Kept explicit so a REMOVED target fails loudly, and reconciled against the Makefile by
+# `test_the_target_inventory_matches_the_makefile` so an ADDED one cannot go unchecked.
 KEY_TARGETS = [
-    "help", "test", "lint", "synth", "deploy", "deploy-endpoints",
+    "help", "ci", "typecheck", "test", "lint", "synth", "deploy", "deploy-endpoints",
     "seed-registry", "create-harnesses", "smoke", "reset", "destroy",
-    "demo", "clean",
+    "demo", "clean", "dist",
 ]
 
 # A 12-digit run that is NOT the scrubbed placeholder is a leaked account id.
@@ -168,3 +177,90 @@ def test_seed_registry_is_offline_governance():
     assert "load_registry" in text
     assert "governance_check" in text
     assert "OFFLINE" in text or "offline" in text
+
+# --------------------------------------------------------------------------- #
+# The target inventory (INV-MAKE-1)                                           #
+# --------------------------------------------------------------------------- #
+def _makefile_text() -> str:
+    """The Makefile's contents.
+
+    `MAKEFILE` is a `str` path (this module uses `os.path`, not `pathlib`). My first version called
+    `MAKEFILE.read_text()` — importing a second file-access idiom into a module that already had
+    one, and getting an AttributeError for it. Matching the surrounding style is cheaper than
+    mixing.
+    """
+    with open(MAKEFILE, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _declared_targets() -> set:
+    """Every `name:` target declared at column 0 in the Makefile."""
+    return set(re.findall(r"^([a-z][a-z0-9-]*):", _makefile_text(), re.M))
+
+
+def test_the_target_inventory_matches_the_makefile():
+    """KEY_TARGETS must mirror the Makefile, or checks silently stop covering targets.
+
+    It had drifted to 13 of 16. The three missing were `ci` (the local gate everyone runs),
+    `typecheck` (both mypy gates) and `dist` (the clean-tree build) — so
+    `test_makefile_targets_are_phony` never covered them, and `dist` was in fact **missing from
+    `.PHONY`**. Extending the list made that check fail immediately, which is the whole argument for
+    reconciling inventories: the drift was not the defect, it was the thing hiding one.
+
+    Same shape as INV-SKILL-1 (five listed, nine on disk) one round earlier.
+
+    Both directions fail, so an added target gets covered and a removed one is noticed.
+    """
+    declared = _declared_targets()
+    listed = set(KEY_TARGETS)
+    uncovered = sorted(declared - listed)
+    assert not uncovered, (
+        f"Makefile declares target(s) {uncovered} that KEY_TARGETS omits, so every check "
+        "parametrised over that list silently skips them — including the .PHONY check, which is "
+        "how `dist` came to be undeclared."
+    )
+    stale = sorted(listed - declared)
+    assert not stale, (
+        f"KEY_TARGETS names target(s) {stale} that the Makefile no longer declares. Either they "
+        "were renamed (update both) or removed (drop them here)."
+    )
+
+
+def test_the_inventory_is_non_trivial():
+    """Positive control. Every parametrised check in this module iterates KEY_TARGETS; a truncated
+    list makes them vanish rather than fail — exactly how three targets went unchecked."""
+    assert len(KEY_TARGETS) >= 15, (
+        f"only {len(KEY_TARGETS)} targets listed: {KEY_TARGETS}. The checks below cover only what "
+        "this list contains."
+    )
+    assert len(KEY_TARGETS) == len(set(KEY_TARGETS)), f"duplicates: {KEY_TARGETS}"
+    assert len(_declared_targets()) >= 15, "the Makefile parse found too few targets to trust"
+
+
+def test_every_declared_target_is_phony():
+    """`.PHONY` over the FULL declared set, not just the listed subset.
+
+    None of these targets produces a file of its own name, so all of them must be phony: otherwise a
+    same-named file or directory in the repo root can make `make <target>` a no-op. `dist` was the
+    one missing.
+
+    Measured honestly: with a same-named file planted, these targets still ran (they have no
+    prerequisites, so make runs the recipe anyway), so the omission was not causing a live failure.
+    The declaration is still required — it states the intent that these are commands, not artifacts,
+    and `demo` and `dist` are names that DO exist as directories in this repo at times.
+    """
+    # LINE CONTINUATIONS are joined first. `.PHONY` here spans two lines with a trailing `\`, and
+    # my first version matched `^\.PHONY:(.*)$` per line — capturing only the first half and a
+    # literal `\` token, then reporting the six names on the continuation line as missing. The
+    # Makefile was correct; the parser was not. Reading a line-continued declaration line-by-line is
+    # the same class of error as substring-matching a structure.
+    text = re.sub(r"\\\n\s*", " ", _makefile_text())
+    phony: set = set()
+    for match in re.finditer(r"^\.PHONY:(.*)$", text, re.M):
+        phony |= set(match.group(1).split())
+    missing = sorted(_declared_targets() - phony)
+    assert not missing, (
+        f"target(s) {missing} are declared but not in .PHONY. A file or directory of that name in "
+        "the repo root could turn the target into a no-op — and `demo`/`dist` are exactly such "
+        "names here."
+    )

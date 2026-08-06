@@ -21,7 +21,10 @@ PYTEST := uv run --no-project --python 3.13 --with pytest --with hypothesis --wi
 
 .DEFAULT_GOAL := help
 .PHONY: help ci typecheck test lint synth deploy deploy-endpoints seed-registry create-harnesses \
-        smoke reset destroy demo clean
+        smoke reset destroy demo clean dist
+# `dist` was added as a target a few rounds ago and NOT declared here. It went unnoticed
+# because tests/test_makefile.py's KEY_TARGETS list had drifted to 13 of the 16 targets, so
+# the PHONY check never covered it. Both are fixed together.
 
 help: ## List available targets (default).
 	@echo "sentinel-harness — make targets"
