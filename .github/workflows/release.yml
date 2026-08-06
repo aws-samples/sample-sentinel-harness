@@ -37,9 +37,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      # actions/checkout v7.0.0
+      # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      # actions/setup-python v6.3.0
+      # actions/setup-python v7.0.0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
@@ -71,10 +71,10 @@ jobs:
     outputs:
       version: ${{ steps.notes.outputs.version }}
     steps:
-      # actions/checkout v7.0.0
+      # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      # actions/setup-python v6.3.0
+      # actions/setup-python v7.0.0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
@@ -120,7 +120,7 @@ jobs:
           echo "Extracted $(wc -l < release-notes.md) lines for $VERSION"
 
       - name: Create GitHub Release
-        # softprops/action-gh-release v3.0.1 (Node 24)
+        # softprops/action-gh-release v3.0.2 (Node 24)
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           body_path: release-notes.md
