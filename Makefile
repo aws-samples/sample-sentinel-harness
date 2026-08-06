@@ -21,7 +21,7 @@ PYTEST := uv run --no-project --python 3.13 --with pytest --with hypothesis --wi
 
 .DEFAULT_GOAL := help
 .PHONY: help ci typecheck test lint synth deploy deploy-endpoints seed-registry create-harnesses \
-        smoke reset destroy demo clean dist
+        smoke reset destroy demo clean dist sync-action-pins
 # `dist` was added as a target a few rounds ago and NOT declared here. It went unnoticed
 # because tests/test_makefile.py's KEY_TARGETS list had drifted to 13 of the 16 targets, so
 # the PHONY check never covered it. Both are fixed together.
@@ -80,6 +80,15 @@ test: ## Run the offline test suite (hermetic, no AWS).
 
 lint: ## Static-check the Python with ruff.
 	uv run --no-project --python 3.13 --with ruff ruff check .
+
+sync-action-pins: ## Re-derive the INV-CI-3 pin table + version comments from GitHub (needs `gh`).
+	# The supported way to fix `test_action_pin_comments.py` after a SHA bump. Dependabot bumps
+	# Actions weekly and cannot update the authoritative table, so without this the only route was
+	# hand-copying a 40-hex SHA and hand-resolving it — the manual work the guard exists to remove.
+	# Dry-run first, on purpose: this rewrites a test module, so the diff gets read before it lands.
+	uv run python scripts/sync_action_pins.py
+	@echo ""
+	@echo "Dry run above. To apply:  uv run python scripts/sync_action_pins.py --write"
 
 synth: ## CDK synth the 9 Layer-3 stacks locally (offline, no deploy).
 	cd iac-cdk && npx cdk synth

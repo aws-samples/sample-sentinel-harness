@@ -49,7 +49,7 @@ WRAPPERS = [SEED_SH, CREATE_SH, SMOKE_SH]
 KEY_TARGETS = [
     "help", "ci", "typecheck", "test", "lint", "synth", "deploy", "deploy-endpoints",
     "seed-registry", "create-harnesses", "smoke", "reset", "destroy",
-    "demo", "clean", "dist",
+    "demo", "clean", "dist", "sync-action-pins",
 ]
 
 # A 12-digit run that is NOT the scrubbed placeholder is a leaked account id.

@@ -161,7 +161,9 @@ def test_the_scan_finds_the_pins_at_all():
         "moved or the pin regex broke — both must fail loudly, not shrink the check."
     )
     assert len({p.sha for p in _PINS}) >= 12, (
-        f"only {len({p.sha for p in _PINS})} distinct SHAs; the authoritative table expects 12"
+        f"only {len({p.sha for p in _PINS})} distinct SHAs; the authoritative table expects 12. "
+        "If pins were legitimately consolidated, re-derive the table: "
+        "uv run python scripts/sync_action_pins.py --write"
     )
 
 
@@ -202,8 +204,19 @@ def test_every_pin_matches_the_authoritative_version():
 
     `_AUTHORITATIVE` was built by resolving SHAs against GitHub, so this catches a comment that
     drifted away from its pin. A SHA absent from the table fails too — that is a pin bumped without
-    the table being updated, and the fix is to re-resolve it authoritatively (run this module with
-    SENTINEL_VERIFY_ACTION_PINS=1), never to copy the comment into the table.
+    the table being updated, and the fix is to re-resolve it authoritatively with
+    `scripts/sync_action_pins.py`, never to copy the comment into the table.
+
+    This message used to point at `SENTINEL_VERIFY_ACTION_PINS=1`, which was WRONG (INV-CI-5). The
+    online layer only *validates* entries already in the table, so on a brand-new SHA it iterates
+    nothing and PASSES while this assertion fails — measured, reproducing Dependabot PR #61:
+
+        offline layer                        2 failed   (SHA not in the table)
+        online layer (VERIFY_ACTION_PINS=1)  PASSED     (it never sees the new SHA)
+
+    So the guard blocked the bump correctly and then told the reader to run something that could not
+    fix it, leaving hand-copying a 40-hex SHA as the only route — the exact manual work this guard
+    exists to remove, on a weekly Dependabot cadence.
     """
     wrong = []
     unknown = []
@@ -217,13 +230,17 @@ def test_every_pin_matches_the_authoritative_version():
     assert not unknown, (
         "pinned SHA(s) are not in the authoritative table — a pin was changed without recording "
         "what it now is:\n  " + "\n  ".join(map(repr, unknown))
-        + "\n\nResolve each against GitHub (SENTINEL_VERIFY_ACTION_PINS=1 does this) and add the "
-        "real version to _AUTHORITATIVE. Do NOT copy the comment — the comment is what may be wrong."
+        + "\n\nFIX:  make sync-action-pins        (dry run)\n"
+        "      uv run python scripts/sync_action_pins.py --write\n\n"
+        "That re-derives the whole table from GitHub by resolving each SHA to the tag pointing at "
+        "it. Do NOT copy the neighbouring comment into the table — the comment is what may be "
+        "wrong, and laundering it in is how a stale label becomes 'authoritative'."
     )
     assert not wrong, (
         "version comment(s) disagree with what the SHA authoritatively is:\n  "
         + "\n  ".join(f"{p!r} — comment says {p.label}, SHA is actually {exp}"
                       for p, exp in wrong)
+        + "\n\nFIX:  uv run python scripts/sync_action_pins.py --write"
     )
 
 
@@ -235,7 +252,8 @@ def test_the_table_has_no_stale_entries():
     stale = sorted(sha for sha in _AUTHORITATIVE if sha not in pinned)
     assert not stale, (
         f"_AUTHORITATIVE has entries for SHA(s) no longer pinned in any workflow: {stale}. "
-        "Remove them so the table mirrors the workflows exactly."
+        "Remove them so the table mirrors the workflows exactly.\n\n"
+        "FIX:  uv run python scripts/sync_action_pins.py --write"
     )
 
 
@@ -318,4 +336,10 @@ def test_the_authoritative_table_matches_github():
                 f"{repo}: table says {sha[:12]} is {expected}, but {expected} resolves to "
                 f"{real[:12]} — the authoritative table has drifted from GitHub"
             )
-    assert not failures, "authoritative table no longer matches GitHub:\n  " + "\n  ".join(failures)
+    assert not failures, (
+        "authoritative table no longer matches GitHub:\n  " + "\n  ".join(failures)
+        + "\n\nFIX:  uv run python scripts/sync_action_pins.py --write\n\n"
+        "This is the assertion that catches the offline table having gone stale relative to the "
+        "real world, so it is the one where naming the regeneration tool matters most — and it was "
+        "the one that omitted it (INV-CI-5)."
+    )
