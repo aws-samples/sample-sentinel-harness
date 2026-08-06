@@ -49,6 +49,8 @@ import zipfile
 
 import pytest
 
+from pristine_tree import pristine_copy
+
 yaml = pytest.importorskip("yaml", reason="pyyaml is a CORE dependency; absence is a bug")
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -113,16 +115,11 @@ def built_wheel(tmp_path_factory) -> str:
             )
         pytest.skip("no way to build a wheel was found (tried `uv build`, `python -m build`)")
 
-    src = tmp_path_factory.mktemp("src") / "repo"
-    # copytree with an ignore list rather than `git archive`: this must work in a dirty tree
-    # too, since the point is to check what WOULD be shipped from the current source.
-    shutil.copytree(
-        REPO_ROOT, src,
-        ignore=shutil.ignore_patterns(
-            ".git", "build", "dist", "*.egg-info", "__pycache__", ".venv", "node_modules",
-            ".pytest_cache", ".ruff_cache", ".hypothesis", "cdk.out", ".terraform",
-        ),
-    )
+    # Shared helper: the exclusion list has ONE definition (tests/pristine_tree.py). It was
+    # duplicated verbatim here and in test_installed_cli_e2e.py, while test_sdist_contents.py
+    # built IN PLACE and was therefore blind to a stale build/ — with a ghost handler planted
+    # in build/lib/tools/, this module caught it and that one reported 6 passed.
+    src = pristine_copy(tmp_path_factory.mktemp("src"))
     out = tmp_path_factory.mktemp("wheel")
     proc = subprocess.run([*launcher, "--wheel", "-o", str(out)] if launcher[0] == "uv"
                           else [*launcher, "--wheel", "--outdir", str(out), str(src)],
