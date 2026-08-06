@@ -70,18 +70,18 @@ WORKFLOWS_DIR = os.path.dirname(CI_YML)
 # to a commit on the release/v1 line, so its comment tracks the branch rather than a version. (That
 # SHA is also tag v1.14.2; the online layer verifies the branch containment, not a tag equality.)
 _AUTHORITATIVE = {
-    "0f67c3f4856b2e3261c31976d6725780e5e4c373": "v4.1.1",     # actions/attest-build-provenance
-    "3d3c42e5aac5ba805825da76410c181273ba90b1": "v7.0.1",     # actions/checkout
-    "cd2ce8fcbc39b97be8ca5fce6e763baed58fa128": "v5.0.0",     # actions/deploy-pages
-    "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c": "v8.0.1",     # actions/download-artifact
-    "820762786026740c76f36085b0efc47a31fe5020": "v7.0.0",     # actions/setup-node
-    "5fda3b95a4ea91299a34e894583c3862153e4b97": "v7.0.0",     # actions/setup-python
-    "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a": "v7.0.1",     # actions/upload-artifact
-    "fc324d3547104276b827a68afc52ff2a11cc49c9": "v5.0.0",     # actions/upload-pages-artifact
-    "f205ea1c3313d32999d8d6a48b4f6530d4437b38": "v4.37.4",    # github/codeql-action/{init,analyze,upload-sarif}
-    "2d1146689b8cda280b9bc96326124645441f03bc": "v2.4.4",     # ossf/scorecard-action
-    "dc37677b2e1c63e2034f94d8a5b11f265b73ba33": "release/v1",  # pypa/gh-action-pypi-publish (branch)
-    "3d0d9888cb7fd7b750713d6e236d1fcb99157228": "v3.0.2",     # softprops/action-gh-release
+    "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a": "v7.0.1",             # actions/upload-artifact
+    "0f67c3f4856b2e3261c31976d6725780e5e4c373": "v4.1.1",             # actions/attest-build-provenance
+    "2d1146689b8cda280b9bc96326124645441f03bc": "v2.4.4",             # ossf/scorecard-action
+    "3d0d9888cb7fd7b750713d6e236d1fcb99157228": "v3.0.2",             # softprops/action-gh-release
+    "3d3c42e5aac5ba805825da76410c181273ba90b1": "v7.0.1",             # actions/checkout
+    "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c": "v8.0.1",             # actions/download-artifact
+    "5fda3b95a4ea91299a34e894583c3862153e4b97": "v7.0.0",             # actions/setup-python
+    "820762786026740c76f36085b0efc47a31fe5020": "v7.0.0",             # actions/setup-node
+    "cd2ce8fcbc39b97be8ca5fce6e763baed58fa128": "v5.0.0",             # actions/deploy-pages
+    "d1ba80a13dd99fba24a470575428917156a28b43": "v4.37.5",            # github/codeql-action/{analyze,init,upload-sarif}
+    "dc37677b2e1c63e2034f94d8a5b11f265b73ba33": "release/v1",         # pypa/gh-action-pypi-publish (branch)
+    "fc324d3547104276b827a68afc52ff2a11cc49c9": "v5.0.0",             # actions/upload-pages-artifact
 }
 
 # A version token: `v1`, `v7.0.1`, or a `release/vN` branch ref. Deliberately anchored so a bare
