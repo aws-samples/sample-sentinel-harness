@@ -11,8 +11,8 @@
 # pin records reality rather than rolling anything back. The API surface this runner uses
 # (`BedrockAgentCoreApp`, `@app.entrypoint`, `add_async_task`, `complete_async_task`, `run`) was
 # checked present at BOTH 1.19.0 and 1.21.0 before choosing.
-bedrock-agentcore==1.21.0
-boto3==1.43.65
+bedrock-agentcore==1.22.0
+boto3==1.43.77
 # sentinel-harness itself — INSTALLED, not merely mentioned.
 #
 # `bedrock_entrypoint.py` does an UNGUARDED top-level `from sentinel_harness import core`
