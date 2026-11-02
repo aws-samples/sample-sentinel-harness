@@ -10,7 +10,7 @@
 
 # --- Stage 1: builder --------------------------------------------------------
 # Pinned base by full tag (not :latest) so builds are reproducible.
-FROM --platform=linux/arm64 python:3.13-slim AS builder
+FROM --platform=linux/arm64 python:3.14-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -28,7 +28,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # --- Stage 2: runtime --------------------------------------------------------
-FROM --platform=linux/arm64 python:3.13-slim AS runtime
+FROM --platform=linux/arm64 python:3.14-slim AS runtime
 
 # Never write .pyc, never buffer stdout (so container logs stream to CloudWatch).
 ENV PYTHONDONTWRITEBYTECODE=1 \
