@@ -9,6 +9,6 @@
 bedrock-agentcore==1.21.0
 bedrock-agentcore-starter-toolkit==0.3.11
 strands-agents[a2a,litellm]==1.50.2
-mcp==1.29.0
+mcp==1.30.0
 fastapi==0.141.1
 uvicorn[standard]==0.52.1
